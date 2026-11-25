@@ -177,9 +177,23 @@ fun HomeScreen(nav: NavController) {
                         Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        FilterChip(selected = tab == 0, onClick = { tab = 0 }, label = { Text("我的仓库") })
+                        FilterChip(selected = tab == 0, onClick = {
+                            if (tab != 0) {
+                                tab = 0
+                                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                                    listState.scrollToItem(0); UiCache.homeIndex = 0; UiCache.homeOffset = 0
+                                }
+                            }
+                        }, label = { Text("我的仓库") })
                         Spacer(Modifier.width(8.dp))
-                        FilterChip(selected = tab == 1, onClick = { tab = 1 }, label = { Text("已 Star") })
+                        FilterChip(selected = tab == 1, onClick = {
+                            if (tab != 1) {
+                                tab = 1
+                                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                                    listState.scrollToItem(0); UiCache.homeIndex = 0; UiCache.homeOffset = 0
+                                }
+                            }
+                        }, label = { Text("已 Star") })
                         Spacer(Modifier.weight(1f))
                         Box {
                             TextButton(onClick = { sortMenu = true }) {
@@ -246,7 +260,6 @@ fun HomeScreen(nav: NavController) {
             items(shown, key = { "${it.id}-${it.full_name}" }) { repo ->
                 val isRecent = recent.firstOrNull() == repo.full_name
                 val go = {
-                    Cfg.touchRepo(repo.full_name)
                     nav.navigate("repo/${repo.owner?.login ?: Cfg.login}/${repo.name}")
                 }
                 if (safeMode) SafeRepoRow(repo, isRecent, go) else RepoRow(repo, isRecent, go)

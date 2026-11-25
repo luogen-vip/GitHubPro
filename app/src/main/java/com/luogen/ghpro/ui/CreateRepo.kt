@@ -8,6 +8,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -25,20 +26,20 @@ import kotlinx.coroutines.launch
 fun CreateRepoScreen(nav: NavController) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
-    var name by remember { mutableStateOf("") }
-    var desc by remember { mutableStateOf("") }
-    var private by remember { mutableStateOf(false) }
-    var autoInit by remember { mutableStateOf(true) }
-    var homepage by remember { mutableStateOf("") }
-    var topics by remember { mutableStateOf("") }
-    var gitignore by remember { mutableStateOf("") }
-    var license by remember { mutableStateOf("") }
-    var customLicense by remember { mutableStateOf("") }
-    var showCustomLicense by remember { mutableStateOf(false) }
-    var hasIssues by remember { mutableStateOf(true) }
-    var hasWiki by remember { mutableStateOf(false) }
-    var hasProjects by remember { mutableStateOf(true) }
-    var hasDiscussions by remember { mutableStateOf(false) }
+    var name by rememberSaveable { mutableStateOf("") }
+    var desc by rememberSaveable { mutableStateOf("") }
+    var private by rememberSaveable { mutableStateOf(false) }
+    var autoInit by rememberSaveable { mutableStateOf(true) }
+    var homepage by rememberSaveable { mutableStateOf("") }
+    var topics by rememberSaveable { mutableStateOf("") }
+    var gitignore by rememberSaveable { mutableStateOf("") }
+    var license by rememberSaveable { mutableStateOf("") }
+    var customLicense by rememberSaveable { mutableStateOf("") }
+    var showCustomLicense by rememberSaveable { mutableStateOf(false) }
+    var hasIssues by rememberSaveable { mutableStateOf(true) }
+    var hasWiki by rememberSaveable { mutableStateOf(false) }
+    var hasProjects by rememberSaveable { mutableStateOf(true) }
+    var hasDiscussions by rememberSaveable { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var licMenu by remember { mutableStateOf(false) }
     var igMenu by remember { mutableStateOf(false) }
@@ -209,15 +210,15 @@ fun EditRepoScreen(nav: NavController, owner: String, name: String) {
     val scope = rememberCoroutineScope()
     var repo by remember { mutableStateOf<Repo?>(null) }
     var newName by remember { mutableStateOf(name) }
-    var desc by remember { mutableStateOf("") }
-    var homepage by remember { mutableStateOf("") }
-    var topics by remember { mutableStateOf("") }
-    var private by remember { mutableStateOf(false) }
+    var desc by rememberSaveable { mutableStateOf("") }
+    var homepage by rememberSaveable { mutableStateOf("") }
+    var topics by rememberSaveable { mutableStateOf("") }
+    var private by rememberSaveable { mutableStateOf(false) }
     var archived by remember { mutableStateOf(false) }
-    var hasIssues by remember { mutableStateOf(true) }
-    var hasWiki by remember { mutableStateOf(false) }
-    var hasProjects by remember { mutableStateOf(true) }
-    var hasDiscussions by remember { mutableStateOf(false) }
+    var hasIssues by rememberSaveable { mutableStateOf(true) }
+    var hasWiki by rememberSaveable { mutableStateOf(false) }
+    var hasProjects by rememberSaveable { mutableStateOf(true) }
+    var hasDiscussions by rememberSaveable { mutableStateOf(false) }
     var loading by remember { mutableStateOf(true) }
     var busy by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }

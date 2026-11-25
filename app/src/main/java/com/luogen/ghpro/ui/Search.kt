@@ -63,15 +63,15 @@ private fun RoundedSearchField(
     Row(
         Modifier.fillMaxWidth().height(40.dp)
             .clip(RoundedCornerShape(20.dp))
-            .background(GH.bg)
-            .border(1.dp, if (focused) GH.blue else GH.border, RoundedCornerShape(20.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, if (focused) GH.blue else MaterialTheme.colorScheme.outline, RoundedCornerShape(20.dp))
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(Icons.Filled.Search, null, Modifier.size(17.dp), tint = if (focused) GH.blue else GH.muted)
         Spacer(Modifier.width(8.dp))
         Box(Modifier.weight(1f)) {
-            if (value.isEmpty()) Text(hint, fontSize = 13.sp, color = GH.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (value.isEmpty()) Text(hint, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             BasicTextField(
                 value = value,
                 onValueChange = onValueChange,
@@ -142,7 +142,11 @@ fun SearchScreen(nav: NavController) {
                     if (!lang.isNullOrBlank()) append(" language:\"").append(lang).append("\"")
                 }
                 val r = Api.searchRepos(fullQ, 1, sort, if (sort != null) "desc" else null, perPage = 100)
-                repos = r.items; total = r.total_count; hasNext = r.items.size >= 100
+                val own = runCatching { Api.userRepos(text.trim(), 1, 100).items }.getOrDefault(emptyList())
+                val names = r.items.map { it.full_name }.toSet()
+                repos = (own + r.items.filter { it.full_name !in own.map { o -> o.full_name } })
+                total = r.total_count + own.count { it.full_name !in names }
+                hasNext = r.items.size >= 100
             } else if (type == 1) {
                 val r = Api.searchUsers(text, 1, 100)
                 users = r.items; total = r.total_count; hasNext = r.items.size >= 100
@@ -159,6 +163,8 @@ fun SearchScreen(nav: NavController) {
                 UiCache.searchIndex = 0; UiCache.searchOffset = 0
             }
             cacheWrite()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             error = e.message
         } finally {
@@ -191,6 +197,8 @@ fun SearchScreen(nav: NavController) {
             }
             page = next
             cacheWrite()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             error = e.message
         } finally {
@@ -205,7 +213,7 @@ fun SearchScreen(nav: NavController) {
         val filtersChanged = key != lastFilterKey
         lastFilterKey = key
         if (q.isBlank()) { clearAll(); cacheWrite(); return@LaunchedEffect }
-        delay(if (filtersChanged) 0 else 380)
+        delay(if (filtersChanged) 0 else 220)
         runFresh(q, resetScroll = true)
     }
 
@@ -287,11 +295,17 @@ fun SearchScreen(nav: NavController) {
                     fontSize = 11.sp, color = GH.muted
                 )
             }
-            when {
-                error != null -> ErrorBox(error) { retryTick++ }
-                loading && currentCount(repos, users, codes, issues) == 0 -> LoadingBox("正在搜索…")
-                else -> LazyColumn(Modifier.fillMaxSize(), state = listState) {
-                    when (type) {
+            LazyColumn(Modifier.fillMaxSize(), state = listState) {
+                when {
+                    error != null -> item {
+                        Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(messageOf(error), fontSize = 12.sp, color = GH.red)
+                            TextButton({ retryTick++ }) { Text("重试") }
+                        }
+                    }
+                    loading && currentCount(repos, users, codes, issues) == 0 -> item { LoadingBox("正在搜索…") }
+                }
+                when (type) {
                         0 -> items(repos, key = { "${it.id}-${it.full_name}" }) { r ->
                             RepoRow(r) { nav.navigate("repo/${r.full_name}") }
                         }
@@ -356,7 +370,6 @@ fun SearchScreen(nav: NavController) {
             }
         }
     }
-}
 
 private fun currentCount(r: List<Repo>, u: List<User>, c: List<CodeItem>, i: List<Issue>): Int = when {
     r.isNotEmpty() -> r.size

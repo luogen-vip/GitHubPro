@@ -12,6 +12,10 @@ import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.sync.Notifier
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -53,6 +57,26 @@ object Downloader {
 
     fun stateOf(name: String): DownloadState? = state.value[name]
 
+    /** 不随页面销毁的下载作用域：切标签、切后台、分屏都不会把下载掐断。 */
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    fun startDownload(
+        ctx: Context,
+        rawUrl: String,
+        fileName: String,
+        token: String? = null,
+        useMirror: Boolean = true,
+        onDone: ((java.io.File) -> Unit)? = null,
+        onError: ((String) -> Unit)? = null
+    ): Job = appScope.launch {
+        try {
+            val f = download(ctx, rawUrl, fileName, token, useMirror)
+            kotlinx.coroutines.withContext(Dispatchers.Main) { onDone?.invoke(f) }
+        } catch (e: Exception) {
+            kotlinx.coroutines.withContext(Dispatchers.Main) { onError?.invoke(e.message ?: "下载失败") }
+        }
+    }
+
     private fun update(s: DownloadState) {
         state.value = state.value + (s.fileName to s)
     }
@@ -92,6 +116,10 @@ object Downloader {
         notify: Boolean = true
     ): File = withContext(Dispatchers.IO) {
         val safe = sanitize(fileName)
+        val cur = state.value[safe]
+        if (cur != null && cur.status in listOf("连接中", "下载中", "重试中", "合并中")) {
+            throw java.io.IOException("这个文件正在下载中，进度条在上面")
+        }
         val outFile = File(dir(ctx), safe)
         val cands = candidates(rawUrl, useMirror)
         var lastError: Exception? = null

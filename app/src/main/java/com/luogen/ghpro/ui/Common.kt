@@ -172,7 +172,7 @@ fun ErrorBox(msg: String?, onRetry: (() -> Unit)? = null) {
         Modifier.fillMaxWidth().padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("出错了：${msg ?: "未知错误"}", color = GH.red, fontSize = 13.sp)
+        Text("出错了：${messageOf(msg)}", color = GH.red, fontSize = 13.sp)
         if (onRetry != null) {
             Spacer(Modifier.height(10.dp))
             OutlinedButton(onClick = onRetry) { Text("重试") }
@@ -226,4 +226,12 @@ fun openUrl(context: android.content.Context, url: String?) {
     try {
         context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
     } catch (e: Exception) { }
+}
+
+/** 把内部异常翻译成人话；被组合取消的请求不当作错误吓用户。 */
+fun messageOf(msg: String?): String {
+    if (msg.isNullOrBlank()) return "出错了"
+    if (msg.contains("coroutine scope left the composition")) return "请求被页面切换打断，点重试再搜一次就行"
+    if (msg.contains("Software caused connection abort") || msg.contains("Connection reset")) return "网络中断了一下，已自动重试，还失败就再点一次"
+    return msg
 }

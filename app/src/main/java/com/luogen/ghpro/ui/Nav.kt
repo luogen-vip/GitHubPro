@@ -40,6 +40,10 @@ fun NavRoot(onThemeChange: () -> Unit) {
             PullDetailScreen(nav, e.arguments?.getString("owner") ?: "", e.arguments?.getString("repo") ?: "",
                 e.arguments?.getString("number")?.toIntOrNull() ?: 0)
         }
+        composable("commit/{owner}/{repo}/{sha}") { e ->
+            CommitDetailScreen(nav, e.arguments?.getString("owner") ?: "", e.arguments?.getString("repo") ?: "",
+                e.arguments?.getString("sha") ?: "")
+        }
         composable("run/{owner}/{repo}/{runId}") { e ->
             RunDetailScreen(nav, e.arguments?.getString("owner") ?: "", e.arguments?.getString("repo") ?: "",
                 e.arguments?.getString("runId")?.toLongOrNull() ?: 0L)

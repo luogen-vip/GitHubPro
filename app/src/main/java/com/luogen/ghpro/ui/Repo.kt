@@ -22,8 +22,10 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -60,9 +62,9 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
     var error by remember { mutableStateOf<String?>(null) }
     var tab by remember { mutableStateOf(UiCache.repoTab[key] ?: 0) }
     var downloading by remember { mutableStateOf<String?>(null) }
-    var showMenu by remember { mutableStateOf(false) }
-    var confirmDelete by remember { mutableStateOf(false) }
-    var peopleDialog by remember { mutableStateOf<Int?>(null) }  // 0 star 1 fork 2 watch 3 contributors
+    var showMenu by rememberSaveable { mutableStateOf(false) }
+    var confirmDelete by rememberSaveable { mutableStateOf(false) }
+    var peopleDialog by rememberSaveable { mutableStateOf(-1) }  // 0 star 1 fork 2 watch 3 contributors
     var msg by remember { mutableStateOf<String?>(null) }
     val snackbar = remember { SnackbarHostState() }
     val tick by Bus.tick.collectAsState()
@@ -94,18 +96,13 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
         val branch = r.default_branch ?: "main"
         val fname = "${r.name}-$branch.zip"
         downloading = fname
-        scope.launch {
-            val res = runCatching {
-                Downloader.download(ctx, "https://github.com/${r.full_name}/archive/refs/heads/$branch.zip", fname)
-            }
-            res.onSuccess {
+        Downloader.startDownload(ctx, "https://github.com/${r.full_name}/archive/refs/heads/$branch.zip", fname,
+            onDone = {
                 val where = Downloader.stateOf(fname)?.publicPath ?: "下载/GitHubPro/$fname"
                 Toast.makeText(ctx, "已保存到 $where", Toast.LENGTH_LONG).show()
-            }.onFailure {
-                Toast.makeText(ctx, "下载失败：${it.message}", Toast.LENGTH_LONG).show()
-            }
-            downloading = null
-        }
+            },
+            onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
+        downloading = null
     }
     LaunchedEffect(tick) { if (tick > 0) runCatching { repo = Api.repo(owner, name) } }
     LaunchedEffect(Unit) {
@@ -133,10 +130,40 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                 },
                 navigationIcon = { IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
                 actions = {
-                    IconButton(onClick = { scope.launch { load() } }) { Icon(Icons.Filled.Visibility, "刷新") }
+                    IconButton(onClick = {
+                        val base = repo ?: return@IconButton
+                        val target = !starred
+                        starred = target
+                        UiCache.repoStarred[key] = target
+                        repo = base.copy(stargazers_count = (base.stargazers_count + if (target) 1 else -1).coerceAtLeast(0))
+                        scope.launch {
+                            runCatching { Api.star(owner, name, target) }
+                                .onSuccess { runCatching { Api.repo(owner, name).also { UiCache.repoData[key] = it; repo = it } } }
+                                .onFailure {
+                                    starred = !target; UiCache.repoStarred[key] = !target; repo = base
+                                    Toast.makeText(ctx, "操作失败：${'$'}{it.message}", Toast.LENGTH_SHORT).show()
+                                }
+                        }
+                    }) { Icon(if (starred) Icons.Filled.Star else Icons.Filled.StarBorder, "Star", tint = GH.yellow) }
+                    IconButton(onClick = {
+                        val target = !watching
+                        watching = target
+                        UiCache.repoWatching[key] = target
+                        Toast.makeText(ctx, if (target) "已关注：仓库有动态会收到通知（再点一次取消）" else "已取消关注", Toast.LENGTH_SHORT).show()
+                        scope.launch {
+                            runCatching { Api.watch(owner, name, target) }
+                                .onFailure {
+                                    watching = !target; UiCache.repoWatching[key] = !target
+                                    Toast.makeText(ctx, "操作失败：${'$'}{it.message}", Toast.LENGTH_SHORT).show()
+                                }
+                        }
+                    }) { Icon(if (watching) Icons.Filled.Visibility else Icons.Filled.VisibilityOff, "关注这个仓库") }
                     Box {
                         IconButton(onClick = { showMenu = true }) { Icon(Icons.Filled.MoreVert, "更多") }
                         DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                            DropdownMenuItem(text = { Text("刷新") }, leadingIcon = { Icon(Icons.Filled.Visibility, null) }, onClick = {
+                                showMenu = false; scope.launch { load() }
+                            })
                             DropdownMenuItem(text = { Text("在浏览器打开") }, leadingIcon = { Icon(Icons.Filled.OpenInNew, null) }, onClick = {
                                 showMenu = false; openUrl(ctx, repo?.html_url)
                             })
@@ -174,86 +201,32 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
             error?.let { e -> ErrorBox(e) { scope.launch { load() } }; return@Column }
             val r = repo ?: return@Column
 
-            if (tab == 0) Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(14.dp)) {
+            Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)
+                .padding(horizontal = 14.dp, vertical = 7.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(r.full_name, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    Text(r.full_name, fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                     if (r.isPrivate) TinyTag("私有", GH.yellow)
                 }
                 r.description?.takeIf { it.isNotBlank() }?.let {
-                    Spacer(Modifier.height(4.dp))
-                    Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(2.dp))
+                    Text(it, fontSize = 11.sp, color = GH.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    AssistChip(
-                        onClick = {
-                            val target = !starred
-                            val base = repo ?: r
-                            starred = target
-                            UiCache.repoStarred[key] = target
-                            repo = base.copy(stargazers_count = (base.stargazers_count + if (target) 1 else -1).coerceAtLeast(0))
-                            scope.launch {
-                                runCatching { Api.star(owner, name, target) }
-                                    .onSuccess { runCatching { repo = Api.repo(owner, name)?.also { UiCache.repoData[key] = it } } }
-                                    .onFailure {
-                                        starred = !target
-                                        UiCache.repoStarred[key] = !target
-                                        repo = base
-                                        snackbar.showSnackbar("操作失败：${it.message}")
-                                    }
-                            }
-                        },
-                        label = { Text(if (starred) "已 Star ${compactNum(r.stargazers_count)}" else "Star ${compactNum(r.stargazers_count)}", fontSize = 12.sp) },
-                        leadingIcon = { Icon(if (starred) Icons.Filled.Star else Icons.Filled.StarBorder, null, Modifier.size(15.dp), tint = GH.yellow) }
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    AssistChip(
-                        onClick = {
-                            val target = !watching
-                            watching = target
-                            UiCache.repoWatching[key] = target
-                            scope.launch {
-                                runCatching { Api.watch(owner, name, target) }
-                                    .onFailure {
-                                        watching = !target
-                                        UiCache.repoWatching[key] = !target
-                                        snackbar.showSnackbar("操作失败：${it.message}")
-                                    }
-                            }
-                        },
-                        label = { Text(if (watching) "已关注" else "关注", fontSize = 12.sp) }
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    AssistChip(onClick = { peopleDialog = 3 }, label = { Text("贡献者", fontSize = 12.sp) })
-                }
-                Spacer(Modifier.height(6.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    StatCol(compactNum(r.forks_count), "复刻", Modifier.weight(1f)) { peopleDialog = 1 }
-                    StatCol(compactNum(r.stargazers_count), "Star", Modifier.weight(1f)) { peopleDialog = 0 }
-                    StatCol(compactNum(r.subscribers_count), "关注", Modifier.weight(1f)) { peopleDialog = 2 }
-                    StatCol(compactNum(r.open_issues_count), "议题", Modifier.weight(1f)) { tab = 2 }
-                }
-                if (languages.isNotEmpty()) {
-                    Spacer(Modifier.height(10.dp))
-                    LanguageBar(languages)
-                }
-            }
-
-            if (tab != 0) {
-                Row(
-                    Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)
-                        .padding(horizontal = 14.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(r.full_name, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(if (starred) Icons.Filled.Star else Icons.Filled.StarBorder, null,
-                            Modifier.size(14.dp), tint = GH.yellow)
-                        Spacer(Modifier.width(3.dp))
-                        Text(compactNum(r.stargazers_count), fontSize = 11.sp, color = GH.muted)
-                    }
-                    TextButton(onClick = { tab = 0 }) { Text("概览", fontSize = 11.sp) }
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    buildString {
+                        append("Star ${compactNum(r.stargazers_count)} · 复刻 ${compactNum(r.forks_count)} · 关注 ${compactNum(r.subscribers_count)} · 议题 ${compactNum(r.open_issues_count)}")
+                        val top = languages.entries.maxByOrNull { it.value }
+                        if (top != null && languages.isNotEmpty()) {
+                            val pct = top.value * 100.0 / languages.values.sum().coerceAtLeast(1)
+                            append(" · ${top.key} ${String.format("%.1f", pct)}%")
+                        }
+                    },
+                    fontSize = 10.sp, color = GH.muted
+                )
+                if (tab == 0 && languages.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    LanguageBar(languages, legend = false)
                 }
             }
 
@@ -273,7 +246,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
 
             Box(Modifier.weight(1f)) {
                 when (tab) {
-                    0 -> OverviewTab(nav, owner, name, r)
+                    0 -> OverviewTab(nav, owner, name, r, languages)
                     1 -> CodeTab(nav, owner, name, r)
                     2 -> IssueListTab(nav, owner, name)
                     3 -> PullListTab(nav, owner, name)
@@ -288,7 +261,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
     }
 
     if (confirmDelete) {
-        var input by remember { mutableStateOf("") }
+        var input by rememberSaveable { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
             title = { Text("删除仓库") },
@@ -331,8 +304,8 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
         )
     }
 
-    peopleDialog?.let { kind ->
-        PeopleDialog(nav, owner, name, kind) { peopleDialog = null }
+    if (peopleDialog >= 0) {
+        PeopleDialog(nav, owner, name, peopleDialog) { peopleDialog = -1 }
     }
 }
 
@@ -345,7 +318,7 @@ fun StatCol(num: String, label: String, modifier: Modifier = Modifier, onClick: 
 }
 
 @Composable
-fun LanguageBar(languages: Map<String, Long>) {
+fun LanguageBar(languages: Map<String, Long>, legend: Boolean = true) {
     val total = languages.values.sum().coerceAtLeast(1)
     val entries = languages.entries.take(6)
     Column {
@@ -354,6 +327,7 @@ fun LanguageBar(languages: Map<String, Long>) {
                 Box(Modifier.weight(v.toFloat().coerceAtLeast(0.01f)).fillMaxHeight().background(GH.langColor(k)))
             }
         }
+        if (legend) {
         Spacer(Modifier.height(5.dp))
         Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -368,24 +342,36 @@ fun LanguageBar(languages: Map<String, Long>) {
                 }
             }
         }
+        }
     }
 }
 
 @Composable
-fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo) {
+fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, languages: Map<String, Long>) {
     val ctx = LocalContext.current
     var readme by remember { mutableStateOf<String?>(null) }
     var readmeLoading by remember { mutableStateOf(false) }
+    var readmeSha by remember { mutableStateOf<String?>(null) }
+    var showEdit by rememberSaveable { mutableStateOf(false) }
+    var editText by rememberSaveable { mutableStateOf("") }
+    var saving by remember { mutableStateOf(false) }
 
     LaunchedEffect(owner, name) {
         readmeLoading = true
         readme = runCatching { Api.fileContent(owner, name, "README.md", r.default_branch) }
             .recoverCatching { Api.fileContent(owner, name, "readme.md", r.default_branch) }
             .getOrNull()
+        readmeSha = runCatching { Api.fileItem(owner, name, "README.md", r.default_branch).sha }.getOrNull()
         readmeLoading = false
     }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
+        if (languages.isNotEmpty()) {
+            Text("语言占比", fontSize = 11.sp, color = GH.muted)
+            Spacer(Modifier.height(4.dp))
+            LanguageBar(languages)
+            Spacer(Modifier.height(10.dp))
+        }
         KeyValue("分支", r.default_branch ?: "main", onClick = { })
         KeyValue("语言", r.language ?: "—")
         KeyValue("许可", r.license?.name ?: "未声明")
@@ -401,33 +387,82 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo) {
             }
         }
         Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = {
                 nav.navigate("user/${r.owner?.login}")
             }) { Text("作者主页", fontSize = 12.sp) }
-            OutlinedButton(onClick = { kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+            OutlinedButton(onClick = {
                 val branch = r.default_branch ?: "main"
                 val fname = "${r.name}-$branch.zip"
-                runCatching {
-                    Downloader.download(ctx, "https://github.com/${r.full_name}/archive/refs/heads/$branch.zip", fname)
-                }.onSuccess {
-                    Toast.makeText(ctx, "已保存到 " + (Downloader.stateOf(fname)?.publicPath ?: "下载/GitHubPro/$fname"), Toast.LENGTH_LONG).show()
-                }.onFailure { Toast.makeText(ctx, "下载失败：${it.message}", Toast.LENGTH_LONG).show() }
-            } }) { Text("下载源码", fontSize = 12.sp) }
+                Downloader.startDownload(ctx, "https://github.com/${r.full_name}/archive/refs/heads/$branch.zip", fname,
+                    onDone = { Toast.makeText(ctx, "已保存到 " + (Downloader.stateOf(fname)?.publicPath ?: "下载/GitHubPro/$fname"), Toast.LENGTH_LONG).show() },
+                    onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
+            }) { Text("下载源码", fontSize = 12.sp) }
             OutlinedButton(onClick = { openUrl(ctx, r.html_url) }) { Text("浏览器", fontSize = 12.sp) }
         }
         Spacer(Modifier.height(12.dp))
         Divider1()
         Spacer(Modifier.height(10.dp))
-        Text("README", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("README", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = {
+                editText = readme ?: ""
+                showEdit = true
+                if (readmeSha == null) {
+                    // 拿 sha 供更新使用
+                }
+            }) { Text("编辑 README", fontSize = 12.sp) }
+        }
         Spacer(Modifier.height(6.dp))
         when {
             readmeLoading -> LoadingBox()
-            readme.isNullOrBlank() -> EmptyBox("这个仓库还没有 README")
-            else -> Text(readme!!.take(8000), fontFamily = FontFamily.Monospace, fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurface, lineHeight = 17.sp)
+            readme.isNullOrBlank() -> EmptyBox("这个仓库还没有 README，点右上角「编辑 README」可以直接创建")
+            else -> MdText(readme!!.take(40000), baseSize = 13)
         }
         Spacer(Modifier.height(30.dp))
+    }
+
+    if (showEdit) {
+        AlertDialog(
+            onDismissRequest = { if (!saving) showEdit = false },
+            title = { Text(if (readme.isNullOrBlank()) "创建 README" else "编辑 README", fontSize = 15.sp) },
+            text = {
+                Column {
+                    OutlinedTextField(editText, { editText = it }, modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp, max = 360.dp),
+                        label = { Text("支持 Markdown") }, textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, fontFamily = FontFamily.Monospace))
+                    Spacer(Modifier.height(6.dp))
+                    Text("保存后会直接提交到 ${r.default_branch ?: "main"} 分支，刷新即可看到效果。", fontSize = 11.sp, color = GH.muted)
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = !saving, onClick = {
+                    saving = true
+                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                        try {
+                            val branch = r.default_branch ?: "main"
+                            val path = if (readme.isNullOrBlank()) "README.md" else "README.md"
+                            val sha = readmeSha ?: runCatching { Api.fileItem(owner, name, path, branch).sha }.getOrNull()
+                            Api.putFile(owner, name, path, if (readme.isNullOrBlank()) "Create README.md" else "Update README.md",
+                                android.util.Base64.encodeToString(editText.toByteArray(), android.util.Base64.NO_WRAP), sha, branch)
+                            readme = editText
+                            readmeSha = null
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                Toast.makeText(ctx, "README 已保存", Toast.LENGTH_SHORT).show()
+                                showEdit = false
+                            }
+                        } catch (e: Exception) {
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                Toast.makeText(ctx, "保存失败：${'$'}{e.message}", Toast.LENGTH_LONG).show()
+                            }
+                        } finally {
+                            saving = false
+                        }
+                    }
+                }) { Text(if (saving) "保存中…" else "保存") }
+            },
+            dismissButton = { TextButton({ showEdit = false }) { Text("取消") } }
+        )
     }
 }
 
@@ -479,7 +514,7 @@ fun CommitsTab(nav: NavController, owner: String, name: String, repo: Repo) {
             else -> LazyColumn(Modifier.fillMaxSize()) {
                 items(list, key = { it.sha }) { c ->
                     Row(Modifier.fillMaxWidth().clickable {
-                        openUrl(ctx, c.html_url)
+                        nav.navigate("commit/$owner/$name/${c.sha}")
                     }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                         Avatar(c.author?.avatar_url ?: c.committer?.avatar_url, 26)
                         Spacer(Modifier.width(9.dp))

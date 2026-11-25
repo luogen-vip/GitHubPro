@@ -1,5 +1,6 @@
 package com.luogen.ghpro.ui
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -11,6 +12,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Cancel
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.PlayArrow
@@ -197,53 +199,62 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                 error != null -> ErrorBox(error) { scope.launch { load() } }
                 run != null -> {
                     val r = run!!
-                    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(14.dp)) {
-                        Text(r.display_title ?: r.name ?: "工作流", fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(6.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            StateChip(null, r.status, r.conclusion)
-                            Spacer(Modifier.width(8.dp))
-                            Text("${r.event ?: ""} · 分支 ${r.head_branch ?: "-"}", fontSize = 10.sp, color = GH.muted)
+                    Row(
+                        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(r.display_title ?: r.name ?: "工作流", fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                StateChip(null, r.status, r.conclusion)
+                                Spacer(Modifier.width(6.dp))
+                                Text("${r.event ?: ""} · ${r.head_branch ?: "-"} · #${r.run_number ?: runId}", fontSize = 10.sp, color = GH.muted)
+                            }
                         }
-                        Spacer(Modifier.height(6.dp))
-                        KeyValue("发起人", r.actor?.login ?: r.triggering_actor?.login)
-                        KeyValue("开始时间", fullTime(r.run_started_at ?: r.created_at))
-                        KeyValue("本步耗时", if (r.status == "in_progress") "已运行 ${durationText(r.run_started_at ?: r.created_at, null)}"
-                            else "总耗时 ${durationText(r.run_started_at ?: r.created_at, r.updated_at)}")
-                        KeyValue("提交", r.head_sha?.take(7))
-                        KeyValue("提交说明", r.head_commit?.message?.lineSequence()?.firstOrNull())
-                        Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            OutlinedButton(onClick = {
-                                scope.launch {
-                                    try { Api.rerun(owner, name, runId); snackbar.showSnackbar("已重新发起"); delay(1500); load() }
-                                    catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
-                                }
-                            }) { Icon(Icons.Filled.PlayArrow, null, Modifier.size(15.dp)); Text("重跑", fontSize = 11.sp) }
-                            OutlinedButton(onClick = {
-                                scope.launch {
-                                    try { Api.cancelRun(owner, name, runId); snackbar.showSnackbar("已取消"); delay(1500); load() }
-                                    catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
-                                }
-                            }) { Icon(Icons.Filled.Stop, null, Modifier.size(15.dp)); Text("取消", fontSize = 11.sp) }
-                            OutlinedButton(onClick = {
-                                scope.launch {
-                                    try { Api.deleteRun(owner, name, runId); snackbar.showSnackbar("已删除运行记录"); nav.popBackStack() }
-                                    catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
-                                }
-                            }) { Icon(Icons.Filled.Delete, null, Modifier.size(15.dp), tint = GH.red); Text("删除", fontSize = 11.sp) }
-                            OutlinedButton(onClick = {
-                                scope.launch {
-                                    try {
-                                        Downloader.download(ctx, "https://api.github.com/repos/$owner/$name/actions/runs/$runId/logs",
-                                            "logs-$runId.zip", Cfg.token, useMirror = false)
-                                        snackbar.showSnackbar("日志已下载")
-                                    } catch (e: Exception) { snackbar.showSnackbar("下载失败：${e.message}") }
-                                }
-                            }) { Icon(Icons.Filled.Download, null, Modifier.size(15.dp)); Text("日志", fontSize = 11.sp) }
-                        }
+                        IconButton({
+                            scope.launch {
+                                try { Api.rerun(owner, name, runId); snackbar.showSnackbar("已重新发起"); delay(1500); load() }
+                                catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
+                            }
+                        }) { Icon(Icons.Filled.PlayArrow, "重跑", Modifier.size(18.dp)) }
+                        IconButton({
+                            scope.launch {
+                                try { Api.cancelRun(owner, name, runId); snackbar.showSnackbar("已取消"); delay(1500); load() }
+                                catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
+                            }
+                        }) { Icon(Icons.Filled.Stop, "取消", Modifier.size(18.dp)) }
+                        IconButton({
+                            val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                            cm?.setPrimaryClip(android.content.ClipData.newPlainText("链接", r.html_url ?: ""))
+                        }) { Icon(Icons.Filled.ContentCopy, "复制链接", Modifier.size(18.dp)) }
+                        IconButton({
+                            Downloader.startDownload(ctx,
+                                "https://api.github.com/repos/$owner/$name/actions/runs/$runId/logs",
+                                "logs-$runId.zip", Cfg.token, useMirror = false,
+                                onDone = { Toast.makeText(ctx, "日志已保存到 下载/GitHubPro/logs-$runId.zip", Toast.LENGTH_LONG).show() },
+                                onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
+                        }) { Icon(Icons.Filled.Download, "下载日志", Modifier.size(18.dp), tint = GH.blue) }
+                        IconButton({
+                            scope.launch {
+                                try { Api.deleteRun(owner, name, runId); snackbar.showSnackbar("已删除运行记录"); nav.popBackStack() }
+                                catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
+                            }
+                        }) { Icon(Icons.Filled.Delete, "删除", Modifier.size(18.dp), tint = GH.red) }
                     }
                     LazyColumn(Modifier.weight(1f)) {
+                        item {
+                            Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
+                                KeyValue("发起人", r.actor?.login ?: r.triggering_actor?.login)
+                                KeyValue("开始时间", fullTime(r.run_started_at ?: r.created_at))
+                                KeyValue("耗时", if (r.status == "in_progress") "已运行 ${durationText(r.run_started_at ?: r.created_at, null)}"
+                                    else "总耗时 ${durationText(r.run_started_at ?: r.created_at, r.updated_at)}")
+                                KeyValue("提交", r.head_sha?.take(7))
+                                KeyValue("提交说明", r.head_commit?.message?.lineSequence()?.firstOrNull())
+                            }
+                            Divider1()
+                        }
                         if (artifacts.isNotEmpty()) {
                             item {
                                 Text("产物（${artifacts.size}）· 官方原地址下载", fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
@@ -255,13 +266,15 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                                         Text(a.name, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         Text("${humanSize(a.size_in_bytes)} · ${timeAgo(a.created_at)} · ${if (a.expired) "已过期" else "有效"}", fontSize = 10.sp, color = GH.muted)
                                     }
+                                    IconButton({
+                                        val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                                        cm?.setPrimaryClip(android.content.ClipData.newPlainText("链接", a.archive_download_url ?: ""))
+                                        scope.launch { snackbar.showSnackbar("已复制产物链接（需登录令牌）") }
+                                    }) { Icon(Icons.Filled.ContentCopy, null, Modifier.size(16.dp), tint = GH.muted) }
                                     IconButton(onClick = {
-                                        scope.launch {
-                                            try {
-                                                Downloader.download(ctx, a.archive_download_url ?: return@launch, "${a.name}.zip", Cfg.token, useMirror = false)
-                                                snackbar.showSnackbar("已下载 ${a.name}")
-                                            } catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
-                                        }
+                                        Downloader.startDownload(ctx, a.archive_download_url ?: return@IconButton, "${a.name}.zip", Cfg.token, useMirror = false,
+                                            onDone = { Toast.makeText(ctx, "产物已保存到 下载/GitHubPro/${a.name}.zip", Toast.LENGTH_LONG).show() },
+                                            onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
                                     }) { Icon(Icons.Filled.Download, null, Modifier.size(18.dp), tint = GH.blue) }
                                     IconButton(onClick = {
                                         scope.launch {
@@ -302,6 +315,25 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                                         }
                                     }
                                     if (job.steps.isNullOrEmpty()) Text("这个任务没有步骤信息", fontSize = 10.sp, color = GH.muted)
+                                    Spacer(Modifier.height(6.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        OutlinedButton(onClick = {
+                                            scope.launch {
+                                                try {
+                                                    Downloader.download(ctx,
+                                                        "https://api.github.com/repos/$owner/$name/actions/jobs/${job.id}/logs",
+                                                        "job-${job.id}-${job.name.take(12)}.zip", Cfg.token, useMirror = false)
+                                                    snackbar.showSnackbar("任务日志已下载")
+                                                } catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
+                                            }
+                                        }) { Icon(Icons.Filled.Download, null, Modifier.size(14.dp)); Text("下载日志", fontSize = 10.sp) }
+                                        OutlinedButton(onClick = {
+                                            val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                                            cm?.setPrimaryClip(android.content.ClipData.newPlainText("日志链接",
+                                                "https://api.github.com/repos/$owner/$name/actions/jobs/${job.id}/logs"))
+                                            scope.launch { snackbar.showSnackbar("已复制任务日志链接（需登录令牌访问）") }
+                                        }) { Icon(Icons.Filled.ContentCopy, null, Modifier.size(14.dp)); Text("复制链接", fontSize = 10.sp) }
+                                    }
                                 }
                             }
                             Divider1()

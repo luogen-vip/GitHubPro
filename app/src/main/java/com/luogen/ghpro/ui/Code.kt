@@ -26,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -213,14 +214,13 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                             IconButton({ editing = true }) { Icon(Icons.Filled.Edit, "编辑") }
                         }
                         IconButton({
-                            scope.launch {
-                                runCatching {
-                                    Downloader.download(ctx,
-                                        "https://raw.githubusercontent.com/$owner/$name/$branch/${path}",
-                                        path.substringAfterLast('/'))
-                                }
-                                snackbar.showSnackbar("已下载")
-                            }
+                            val fileName2 = path.substringAfterLast('/')
+                            Downloader.startDownload(ctx, "https://raw.githubusercontent.com/$owner/$name/$branch/${path}", fileName2,
+                                onDone = {
+                                    val where = Downloader.stateOf(fileName2)?.publicPath ?: "下载/GitHubPro/$fileName2"
+                                    Toast.makeText(ctx, "已保存到 $where", Toast.LENGTH_LONG).show()
+                                },
+                                onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
                         }) { Icon(Icons.Filled.Download, "下载") }
                         if (!isNew && sha != null) {
                             IconButton({ confirmDelete = true }) { Icon(Icons.Filled.Delete, "删除", tint = GH.red) }
@@ -238,12 +238,13 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                     ErrorBox(error)
                     Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.Center) {
                         OutlinedButton(onClick = {
-                            scope.launch {
-                                runCatching {
-                                    Downloader.download(ctx, "https://raw.githubusercontent.com/$owner/$name/$branch/$path", path.substringAfterLast('/'))
-                                }
-                                snackbar.showSnackbar("已下载到本地")
-                            }
+                            val fileName2 = path.substringAfterLast('/')
+                            Downloader.startDownload(ctx, "https://raw.githubusercontent.com/$owner/$name/$branch/$path", fileName2,
+                                onDone = {
+                                    val where = Downloader.stateOf(fileName2)?.publicPath ?: "下载/GitHubPro/$fileName2"
+                                    Toast.makeText(ctx, "已保存到 $where", Toast.LENGTH_LONG).show()
+                                },
+                                onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
                         }) { Text("直接下载文件") }
                     }
                 }

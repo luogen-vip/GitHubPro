@@ -71,6 +71,29 @@ object Api {
         accept: String = "application/vnd.github+json",
         absoluteUrl: String? = null,
         extraHeaders: Map<String, String> = emptyMap()
+    ): Resp {
+        var last: Exception? = null
+        repeat(3) { i ->
+            try {
+                return execOnce(path, method, body, query, accept, absoluteUrl, extraHeaders)
+            } catch (e: ApiException) {
+                throw e
+            } catch (e: Exception) {
+                last = e
+                kotlinx.coroutines.delay(250L * (i + 1))
+            }
+        }
+        throw last ?: java.io.IOException("网络连接失败")
+    }
+
+    private suspend fun execOnce(
+        path: String,
+        method: String,
+        body: String?,
+        query: Map<String, String?>,
+        accept: String,
+        absoluteUrl: String?,
+        extraHeaders: Map<String, String>
     ): Resp = withContext(Dispatchers.IO) {
         val b = Request.Builder()
             .url(absoluteUrl ?: buildUrl(path, query))
@@ -239,6 +262,10 @@ object Api {
         }
         return c.content ?: ""
     }
+
+    /** 读取文件元信息（含 sha，编辑保存时要用）。 */
+    suspend fun fileItem(o: String, r: String, path: String, ref: String?): ContentItem =
+        callObj("/repos/$o/$r/contents/${path.trim('/')}", ContentItem::class.java, mapOf("ref" to ref))
 
     suspend fun putFile(o: String, r: String, path: String, message: String, base64: String, sha: String?, branch: String?): JsonObject {
         val body = JsonObject().apply {
