@@ -61,7 +61,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
                     }
                     OutlinedButton(onClick = {
                         Cfg.clearAll()
-                        nav.navigate("login") { popUpTo(0) { inclusive = true } }
+                        nav.navigate("login") { popUpTo("home") { inclusive = true } }
                     }) { Text("退出") }
                 }
             }

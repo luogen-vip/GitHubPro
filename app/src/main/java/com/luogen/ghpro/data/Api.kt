@@ -579,9 +579,12 @@ object Api {
 
     // ---------------- OAuth 设备流 ----------------
     suspend fun startDeviceFlow(clientId: String): JsonObject {
-        val body = com.google.gson.JsonObject().apply { addProperty("client_id", clientId); addProperty("scope", "repo,workflow,notifications,user,delete_repo,write:discussion") }
+        val form = okhttp3.FormBody.Builder()
+            .add("client_id", clientId)
+            .add("scope", "repo workflow notifications user delete_repo write:discussion")
+            .build()
         val req = Request.Builder().url("https://github.com/login/device/code")
-            .header("Accept", "application/json").post(body.toString().toRequestBody(JSON)).build()
+            .header("Accept", "application/json").post(form).build()
         val txt = withContext(Dispatchers.IO) { http.newCall(req).execute().use { it.body?.string() ?: "" } }
         return JsonParser.parseString(txt).asJsonObject
     }
@@ -591,8 +594,13 @@ object Api {
             addProperty("client_id", clientId); addProperty("device_code", deviceCode)
             addProperty("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
         }
+        val form = okhttp3.FormBody.Builder()
+            .add("client_id", clientId)
+            .add("device_code", deviceCode)
+            .add("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
+            .build()
         val req = Request.Builder().url("https://github.com/login/oauth/access_token")
-            .header("Accept", "application/json").post(body.toString().toRequestBody(JSON)).build()
+            .header("Accept", "application/json").post(form).build()
         val txt = withContext(Dispatchers.IO) { http.newCall(req).execute().use { it.body?.string() ?: "" } }
         return JsonParser.parseString(txt).asJsonObject
     }

@@ -13,7 +13,7 @@ fun NavRoot(onThemeChange: () -> Unit) {
     val nav = rememberNavController()
     NavHost(nav, startDestination = if (Cfg.token.isNullOrBlank()) "login" else "home") {
         composable("login") {
-            LoginScreen { nav.navigate("home") { popUpTo(0) { inclusive = true } } }
+            LoginScreen { nav.navigate("home") { popUpTo("login") { inclusive = true } } }
         }
         composable("home") { HomeScreen(nav) }
         composable("settings") { SettingsScreen(nav, onThemeChange) }
