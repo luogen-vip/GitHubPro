@@ -97,6 +97,17 @@ object Cfg {
         get() = sp.getString("crash_repo", "luogen-vip/GitHubPro") ?: "luogen-vip/GitHubPro"
         set(v) { sp.edit().putString("crash_repo", v).apply() }
 
+
+    var recentRepos: List<String>
+        get() = (sp.getString("recent_repos", "") ?: "").split("|").filter { it.isNotBlank() }
+        set(v) { sp.edit().putString("recent_repos", v.take(20).joinToString("|")).apply() }
+
+    fun touchRepo(full: String) {
+        val cur = recentRepos
+        val next = (listOf(full) + cur.filter { it != full }).take(20)
+        recentRepos = next
+    }
+
     fun clearAll() {
         val keepMirror = sp.getString("mirrors", DEFAULT_MIRRORS)
         val cid = oauthClientId

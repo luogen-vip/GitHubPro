@@ -1,19 +1,30 @@
 package com.luogen.ghpro.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -25,151 +36,337 @@ import com.luogen.ghpro.data.Issue
 import com.luogen.ghpro.data.Repo
 import com.luogen.ghpro.data.User
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 val LANG_OPTIONS = listOf("Kotlin", "Java", "Python", "JavaScript", "TypeScript", "Go", "Rust", "C", "C++", "C#",
     "Swift", "Dart", "PHP", "Ruby", "HTML", "Shell", "Lua", "Scala", "Objective-C", "Vue")
 
-@OptIn(ExperimentalMaterial3Api::class)
+private data class SortChip(val key: String?, val label: String)
+
+private val SORTS = listOf(
+    SortChip(null, "最佳匹配"),
+    SortChip("stars", "Star 最多"),
+    SortChip("updated", "最近更新"),
+    SortChip("forks", "复刻最多")
+)
+
+@Composable
+private fun RoundedSearchField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    hint: String,
+    onClear: () -> Unit
+) {
+    var focused by remember { mutableStateOf(false) }
+    Row(
+        Modifier.fillMaxWidth().height(40.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .background(GH.bg)
+            .border(1.dp, if (focused) GH.blue else GH.border, RoundedCornerShape(20.dp))
+            .padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Icons.Filled.Search, null, Modifier.size(17.dp), tint = if (focused) GH.blue else GH.muted)
+        Spacer(Modifier.width(8.dp))
+        Box(Modifier.weight(1f)) {
+            if (value.isEmpty()) Text(hint, fontSize = 13.sp, color = GH.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp),
+                cursorBrush = SolidColor(GH.blue),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        if (value.isNotEmpty()) {
+            Spacer(Modifier.width(8.dp))
+            Box(Modifier.size(20.dp).clip(CircleShape).clickable { onClear() }, contentAlignment = Alignment.Center) {
+                Icon(Icons.Filled.Close, "清空", Modifier.size(15.dp), tint = GH.muted)
+            }
+        }
+    }
+}
+
 @Composable
 fun SearchScreen(nav: NavController) {
-    val scope = rememberCoroutineScope()
-    var q by remember { mutableStateOf("") }
-    var type by remember { mutableStateOf(0) } // 0 仓库 1 用户 2 代码 3 议题
-    var repos by remember { mutableStateOf<List<Repo>>(emptyList()) }
-    var users by remember { mutableStateOf<List<User>>(emptyList()) }
-    var codes by remember { mutableStateOf<List<CodeItem>>(emptyList()) }
-    var issues by remember { mutableStateOf<List<Issue>>(emptyList()) }
-    var total by remember { mutableStateOf(0) }
+    var q by remember { mutableStateOf(UiCache.searchQuery) }
+    var type by remember { mutableStateOf(UiCache.searchType) }
+    var lang by remember { mutableStateOf(UiCache.searchLang) }
+    var sort by remember { mutableStateOf(UiCache.searchSort) }
+    var repos by remember { mutableStateOf(UiCache.searchRepos) }
+    var users by remember { mutableStateOf(UiCache.searchUsers) }
+    var codes by remember { mutableStateOf(UiCache.searchCodes) }
+    var issues by remember { mutableStateOf(UiCache.searchIssues) }
+    var total by remember { mutableStateOf(UiCache.searchTotal) }
+    var page by remember { mutableStateOf(UiCache.searchPage) }
+    var hasNext by remember { mutableStateOf(UiCache.searchHasNext) }
     var loading by remember { mutableStateOf(false) }
+    var loadingMore by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var lang by remember { mutableStateOf<String?>(null) }
-    var sort by remember { mutableStateOf<String?>(null) }
+    var retryTick by remember { mutableStateOf(0) }
     var browsing by remember { mutableStateOf(false) }
 
-    suspend fun runSearch(text: String) {
-        if (text.isBlank()) { repos = emptyList(); users = emptyList(); codes = emptyList(); issues = emptyList(); total = 0; return }
+    val listState = rememberLazyListState(UiCache.searchIndex, UiCache.searchOffset)
+
+    fun cacheWrite() {
+        UiCache.searchQuery = q
+        UiCache.searchType = type
+        UiCache.searchLang = lang
+        UiCache.searchSort = sort
+        UiCache.searchRepos = repos
+        UiCache.searchUsers = users
+        UiCache.searchCodes = codes
+        UiCache.searchIssues = issues
+        UiCache.searchTotal = total
+        UiCache.searchPage = page
+        UiCache.searchHasNext = hasNext
+        UiCache.searchRan = true
+    }
+
+    fun clearAll() {
+        repos = emptyList(); users = emptyList(); codes = emptyList(); issues = emptyList()
+        total = 0; page = 1; hasNext = false
+    }
+
+    suspend fun runFresh(text: String, resetScroll: Boolean) {
+        if (text.isBlank()) { clearAll(); cacheWrite(); return }
         loading = true
         error = null
-        val fullQ = buildString {
-            append(text)
-            if (type == 0 && !lang.isNullOrBlank()) append(" language:").append(lang!!.replace(" ", "-"))
-        }
         try {
-            when (type) {
-                0 -> { val r = Api.searchRepos(fullQ, 1, sort, if (sort != null) "desc" else null); repos = r.items; total = r.total_count }
-                1 -> { val r = Api.searchUsers(text); users = r.items; total = r.total_count }
-                2 -> { val r = Api.searchCode(text); codes = r.items; total = r.total_count }
-                else -> { val r = Api.searchIssues(text); issues = r.items; total = r.total_count }
+            if (type == 0) {
+                val fullQ = buildString {
+                    append(text)
+                    if (!lang.isNullOrBlank()) append(" language:\"").append(lang).append("\"")
+                }
+                val r = Api.searchRepos(fullQ, 1, sort, if (sort != null) "desc" else null, perPage = 100)
+                repos = r.items; total = r.total_count; hasNext = r.items.size >= 100
+            } else if (type == 1) {
+                val r = Api.searchUsers(text, 1, 100)
+                users = r.items; total = r.total_count; hasNext = r.items.size >= 100
+            } else if (type == 2) {
+                val r = Api.searchCode(text, 1, 100)
+                codes = r.items; total = r.total_count; hasNext = r.items.size >= 100
+            } else {
+                val r = Api.searchIssues(text, 1, 100)
+                issues = r.items; total = r.total_count; hasNext = r.items.size >= 100
             }
-        } catch (e: Exception) { error = e.message }
-        loading = false
+            page = 1
+            if (resetScroll) {
+                listState.scrollToItem(0)
+                UiCache.searchIndex = 0; UiCache.searchOffset = 0
+            }
+            cacheWrite()
+        } catch (e: Exception) {
+            error = e.message
+        } finally {
+            loading = false
+        }
     }
 
-    LaunchedEffect(q, type, lang, sort) {
-        if (q.isBlank()) return@LaunchedEffect
-        delay(420)
-        runSearch(q)
+    suspend fun loadMore() {
+        if (loadingMore || loading || !hasNext || q.isBlank()) return
+        loadingMore = true
+        try {
+            val text = q
+            val next = page + 1
+            if (type == 0) {
+                val fullQ = buildString {
+                    append(text)
+                    if (!lang.isNullOrBlank()) append(" language:\"").append(lang).append("\"")
+                }
+                val r = Api.searchRepos(fullQ, next, sort, if (sort != null) "desc" else null, perPage = 100)
+                repos = repos + r.items; hasNext = r.items.size >= 100
+            } else if (type == 1) {
+                val r = Api.searchUsers(text, next, 100)
+                users = users + r.items; hasNext = r.items.size >= 100
+            } else if (type == 2) {
+                val r = Api.searchCode(text, next, 100)
+                codes = codes + r.items; hasNext = r.items.size >= 100
+            } else {
+                val r = Api.searchIssues(text, next, 100)
+                issues = issues + r.items; hasNext = r.items.size >= 100
+            }
+            page = next
+            cacheWrite()
+        } catch (e: Exception) {
+            error = e.message
+        } finally {
+            loadingMore = false
+        }
     }
 
-    val initialBrowse = remember { mutableStateOf(true) }
+    // 输入 400ms 防抖；切分类 / 语言 / 排序立刻重搜
+    var lastFilterKey by remember { mutableStateOf("$type|$lang|$sort") }
+    LaunchedEffect(q, type, lang, sort, retryTick) {
+        val key = "$type|$lang|$sort"
+        val filtersChanged = key != lastFilterKey
+        lastFilterKey = key
+        if (q.isBlank()) { clearAll(); cacheWrite(); return@LaunchedEffect }
+        delay(if (filtersChanged) 0 else 380)
+        runFresh(q, resetScroll = true)
+    }
+
+    // 首次进入：没有缓存则给一个推荐列表
     LaunchedEffect(Unit) {
-        if (initialBrowse.value && q.isBlank()) {
+        if (!UiCache.searchRan && q.isBlank() && repos.isEmpty()) {
             browsing = true
-            runCatching { Api.searchRepos("stars:>1000", 1, "stars", "desc") }
+            runCatching { Api.searchRepos("stars:>5000", 1, "stars", "desc", 50) }
                 .onSuccess { repos = it.items; total = it.total_count }
             browsing = false
         }
     }
 
+    // 保存滚动位置
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .distinctUntilChanged()
+            .collect { pair -> UiCache.searchIndex = pair.first; UiCache.searchOffset = pair.second }
+    }
+
+    // 滚动到底自动加载更多
+    LaunchedEffect(listState, hasNext) {
+        snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
+            .distinctUntilChanged()
+            .collect { last -> if (hasNext && last >= currentCount(repos, users, codes, issues) - 4) loadMore() }
+    }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                title = {
-                    OutlinedTextField(
-                        value = q, onValueChange = { q = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("实时搜索仓库 / 用户 / 代码 / 议题…", fontSize = 12.sp) },
-                        singleLine = true,
-                        leadingIcon = { Icon(Icons.Filled.Search, null, Modifier.size(18.dp)) },
-                        trailingIcon = {
-                            if (q.isNotBlank()) TextButton(onClick = { q = "" }) { Text("清空", fontSize = 11.sp) }
-                        }
-                    )
-                },
-                navigationIcon = { IconButton({ nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
-            )
+            Column(Modifier.background(MaterialTheme.colorScheme.surface).padding(horizontal = 8.dp, vertical = 6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton({ nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") }
+                    RoundedSearchField(q, { q = it }, "搜索仓库 / 用户 / 代码 / 议题", { q = "" })
+                }
+            }
         }
     ) { pad ->
         Column(Modifier.fillMaxSize().padding(pad)) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
                 listOf("仓库", "用户", "代码", "议题").forEachIndexed { i, t ->
-                    FilterChip(selected = type == i, onClick = { type = i }, label = { Text(t, fontSize = 11.sp) })
+                    FilterChip(selected = type == i, onClick = { type = i }, label = { Text(t, fontSize = 12.sp) })
                 }
             }
             if (type == 0) {
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    FilterChip(selected = lang == null, onClick = { lang = null }, label = { Text("全部语言", fontSize = 10.sp) })
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    FilterChip(selected = lang == null, onClick = { lang = null }, label = { Text("全部语言", fontSize = 11.sp) })
                     LANG_OPTIONS.forEach { l ->
                         FilterChip(selected = lang == l, onClick = { lang = if (lang == l) null else l },
-                            label = { Text(l, fontSize = 10.sp) })
+                            label = { Text(l, fontSize = 11.sp) })
                     }
                 }
-                Row(Modifier.padding(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    FilterChip(selected = sort == null, onClick = { sort = null }, label = { Text("最佳匹配", fontSize = 10.sp) })
-                    FilterChip(selected = sort == "stars", onClick = { sort = "stars" }, label = { Text("Star 最多", fontSize = 10.sp) })
-                    FilterChip(selected = sort == "updated", onClick = { sort = "updated" }, label = { Text("最近更新", fontSize = 10.sp) })
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    SORTS.forEach { s ->
+                        FilterChip(selected = sort == s.key, onClick = { sort = s.key }, label = { Text(s.label, fontSize = 11.sp) })
+                    }
                 }
             }
-            Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp)) {
-                Text(if (loading) "搜索中…" else if (total > 0) "共 $total 条结果" else "输入关键词即可实时搜索",
-                    fontSize = 10.sp, color = GH.muted)
+            Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp)) {
+                Text(
+                    when {
+                        loading -> "搜索中…"
+                        error != null -> "搜索失败"
+                        browsing -> "热门仓库推荐"
+                        total > 0 -> "共 ${compactNumLong(total)} 条结果，已加载 ${currentCount(repos, users, codes, issues)}"
+                        q.isBlank() -> "输入关键词即可实时搜索"
+                        else -> "没有结果"
+                    },
+                    fontSize = 11.sp, color = GH.muted
+                )
             }
             when {
-                error != null -> ErrorBox(error) { scope.launch { runSearch(q) } }
-                else -> LazyColumn(Modifier.fillMaxSize()) {
+                error != null -> ErrorBox(error) { retryTick++ }
+                loading && currentCount(repos, users, codes, issues) == 0 -> LoadingBox("正在搜索…")
+                else -> LazyColumn(Modifier.fillMaxSize(), state = listState) {
                     when (type) {
-                        0 -> items(repos, key = { it.id }) { r ->
+                        0 -> items(repos, key = { "${it.id}-${it.full_name}" }) { r ->
                             RepoRow(r) { nav.navigate("repo/${r.full_name}") }
-                            Divider1()
                         }
                         1 -> items(users, key = { it.id }) { u ->
-                            Row(Modifier.fillMaxWidth().clickable { nav.navigate("user/${u.login}") }.padding(14.dp),
-                                verticalAlignment = Alignment.CenterVertically) {
-                                Avatar(u.avatar_url, 38)
-                                Spacer(Modifier.width(10.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text(u.login, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                    u.bio?.let { Text(it, fontSize = 11.sp, color = GH.muted, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                            Card(
+                                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp)
+                                    .clickable { nav.navigate("user/${u.login}") },
+                                shape = RoundedCornerShape(14.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                            ) {
+                                Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Avatar(u.avatar_url, 38)
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(u.login, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                        u.bio?.let { Text(it, fontSize = 11.sp, color = GH.muted, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                                    }
+                                    Text("${u.public_repos} 仓库", fontSize = 11.sp, color = GH.muted)
                                 }
-                                Text("${u.public_repos} 仓库", fontSize = 10.sp, color = GH.muted)
                             }
-                            Divider1()
                         }
                         2 -> items(codes, key = { (it.sha ?: "") + it.path }) { c ->
-                            Column(Modifier.fillMaxWidth().clickable {
-                                val o = c.repository?.owner?.login ?: ""
-                                nav.navigate("repo/$o/${c.repository?.name}")
-                            }.padding(14.dp)) {
-                                Text(c.name, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                                Text(c.path, fontSize = 10.sp, color = GH.muted)
-                                c.repository?.let { Text(it.full_name, fontSize = 10.sp, color = GH.blue) }
+                            Card(
+                                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp).clickable {
+                                    val o = c.repository?.owner?.login ?: ""
+                                    nav.navigate("repo/$o/${c.repository?.name}")
+                                },
+                                shape = RoundedCornerShape(14.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                            ) {
+                                Column(Modifier.padding(12.dp)) {
+                                    Text(c.name, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                    Text(c.path, fontSize = 11.sp, color = GH.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    c.repository?.let { Text(it.full_name, fontSize = 11.sp, color = GH.blue) }
+                                }
                             }
-                            Divider1()
                         }
                         else -> items(issues, key = { it.id }) { i ->
-                            IssueRow(i) {
-                                val rp = i.repository_url?.substringAfter("/repos/") ?: return@IssueRow
-                                nav.navigate("issue/$rp/${i.number}")
+                            Card(
+                                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                            ) {
+                                IssueRow(i) {
+                                    val rp = i.repository_url?.substringAfter("/repos/") ?: return@IssueRow
+                                    nav.navigate("issue/$rp/${i.number}")
+                                }
                             }
-                            Divider1()
                         }
                     }
+                    if (loadingMore) item { LoadingBox("加载更多…") }
+                    if (!loading && !hasNext && currentCount(repos, users, codes, issues) > 0) item {
+                        Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                            Text("已全部加载（GitHub 搜索最多返回前 1000 条）", fontSize = 11.sp, color = GH.muted)
+                        }
+                    }
+                    item { Spacer(Modifier.height(40.dp)) }
                 }
             }
         }
     }
+}
+
+private fun currentCount(r: List<Repo>, u: List<User>, c: List<CodeItem>, i: List<Issue>): Int = when {
+    r.isNotEmpty() -> r.size
+    u.isNotEmpty() -> u.size
+    c.isNotEmpty() -> c.size
+    else -> i.size
+}
+
+private fun compactNumLong(v: Long): String = when {
+    v >= 100_000_000 -> String.format("%.1f亿", v / 100_000_000.0)
+    v >= 10_000 -> String.format("%.1f万", v / 10_000.0)
+    else -> v.toString()
 }

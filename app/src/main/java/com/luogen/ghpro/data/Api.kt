@@ -486,14 +486,22 @@ object Api {
         val query = mapOf("q" to q, "page" to "$page", "per_page" to "$perPage", "sort" to sort, "order" to order)
         return parse(raw("/search/repositories", query = query), SearchRepos::class.java)
     }
-    suspend fun searchUsers(q: String, page: Int = 1): SearchUsers =
-        parse(raw("/search/users", query = mapOf("q" to q, "page" to "$page", "per_page" to "30")), SearchUsers::class.java)
-    suspend fun searchCode(q: String, page: Int = 1): SearchCode =
-        parse(raw("/search/code", query = mapOf("q" to q, "page" to "$page", "per_page" to "30"), accept = "application/vnd.github.text-match+json"), SearchCode::class.java)
-    suspend fun searchIssues(q: String, page: Int = 1): SearchIssues =
-        parse(raw("/search/issues", query = mapOf("q" to q, "page" to "$page", "per_page" to "30")), SearchIssues::class.java)
+    suspend fun searchUsers(q: String, page: Int = 1, perPage: Int = 30): SearchUsers =
+        parse(raw("/search/users", query = mapOf("q" to q, "page" to "$page", "per_page" to "$perPage")), SearchUsers::class.java)
+    suspend fun searchCode(q: String, page: Int = 1, perPage: Int = 30): SearchCode =
+        parse(raw("/search/code", query = mapOf("q" to q, "page" to "$page", "per_page" to "$perPage"), accept = "application/vnd.github.text-match+json"), SearchCode::class.java)
+    suspend fun searchIssues(q: String, page: Int = 1, perPage: Int = 30): SearchIssues =
+        parse(raw("/search/issues", query = mapOf("q" to q, "page" to "$page", "per_page" to "$perPage")), SearchIssues::class.java)
 
     suspend fun rateLimit(): RateLimitResp = callObj("/rate_limit", RateLimitResp::class.java)
+
+    /** GitHub 官方许可证模板列表（真实接口） */
+    suspend fun licenses(): List<LicenseTpl> = callList<LicenseTpl>("/licenses", mapOf("per_page" to "100")).items
+
+    /** GitHub 官方 .gitignore 模板名列表（真实接口） */
+    suspend fun gitignoreTemplates(): List<String> =
+        runCatching { parseList<String>(raw("/gitignore/templates"), TypeToken.getParameterized(List::class.java, String::class.java)) }
+            .getOrDefault(emptyList())
 
     // ---------------- 讨论区 (GraphQL) ----------------
     suspend fun discussions(o: String, r: String, first: Int = 20): List<Discussion> {

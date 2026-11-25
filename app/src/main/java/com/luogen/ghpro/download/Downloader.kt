@@ -1,8 +1,12 @@
 package com.luogen.ghpro.download
 
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import androidx.core.content.FileProvider
 import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Cfg
@@ -29,7 +33,9 @@ data class DownloadState(
     val path: String? = null,
     val error: String? = null,
     val mirrorUsed: String? = null,
-    val threads: Int = 1
+    val threads: Int = 1,
+    val publicPath: String? = null,
+    val localPath: String? = null
 ) {
     val percent: Int get() = if (total <= 0) 0 else ((done * 100) / total).toInt()
 }
@@ -94,8 +100,10 @@ object Downloader {
                 update(DownloadState(safe, status = "连接中", mirrorUsed = c))
                 fetch(c, outFile, token, threads, safe, notify)
                 if (notify) Notifier.downloadDone(ctx, safe, outFile.absolutePath)
+                val pub = publish(ctx, outFile, safe)
                 update(DownloadState(safe, done = outFile.length(), total = outFile.length(),
-                    status = "已完成", path = outFile.absolutePath, mirrorUsed = c, threads = threads))
+                    status = "已完成", path = pub.first, publicPath = pub.first, localPath = outFile.absolutePath,
+                    mirrorUsed = c, threads = threads))
                 return@withContext outFile
             } catch (e: Exception) {
                 lastError = e
@@ -105,6 +113,50 @@ object Downloader {
         }
         update(DownloadState(safe, status = "失败", error = lastError?.message ?: "下载失败"))
         throw lastError ?: IOException("下载失败")
+    }
+
+    /** 把下载好的文件放进系统「下载」目录，用户在文件管理器里直接能看到。 */
+    fun publish(ctx: Context, src: File, name: String): Pair<String, Uri?> {
+        val mime = mimeOf(name)
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val resolver = ctx.contentResolver
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                    put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/GitHubPro")
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                if (uri != null) {
+                    resolver.openOutputStream(uri)?.use { out -> src.inputStream().use { it.copyTo(out) } }
+                    val doneValues = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
+                    resolver.update(uri, doneValues, null, null)
+                    ("下载/GitHubPro/$name") to uri
+                } else legacyCopy(ctx, src, name)
+            } else legacyCopy(ctx, src, name)
+        } catch (e: Exception) {
+            runCatching { src.absolutePath to null }.getOrDefault(src.absolutePath to null)
+        }
+    }
+
+    private fun legacyCopy(ctx: Context, src: File, name: String): Pair<String, Uri?> {
+        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "GitHubPro")
+        if (!dir.exists()) dir.mkdirs()
+        val dst = File(dir, name)
+        src.copyTo(dst, overwrite = true)
+        return ("下载/GitHubPro/$name") to Uri.fromFile(dst)
+    }
+
+    fun mimeOf(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
+        "apk" -> "application/vnd.android.package-archive"
+        "zip" -> "application/zip"
+        "json" -> "application/json"
+        "txt", "log" -> "text/plain"
+        "png" -> "image/png"
+        "jpg", "jpeg" -> "image/jpeg"
+        "pdf" -> "application/pdf"
+        else -> "application/octet-stream"
     }
 
     private fun fetch(url: String, outFile: File, token: String?, threadsWanted: Int, name: String, notify: Boolean) {

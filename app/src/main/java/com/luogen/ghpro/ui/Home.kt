@@ -18,11 +18,11 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -33,7 +33,6 @@ import com.luogen.ghpro.data.Bus
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Repo
 import com.luogen.ghpro.data.User
-import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -43,21 +42,22 @@ import kotlinx.coroutines.launch
 @Composable
 fun HomeScreen(nav: NavController) {
     val scope = rememberCoroutineScope()
-    var me by remember { mutableStateOf<User?>(null) }
-    var repos by remember { mutableStateOf<List<Repo>>(emptyList()) }
-    var page by remember { mutableStateOf(1) }
-    var hasNext by remember { mutableStateOf(false) }
-    var loading by remember { mutableStateOf(true) }
+    var me by remember { mutableStateOf(UiCache.homeMe) }
+    var repos by remember { mutableStateOf(UiCache.homeRepos) }
+    var page by remember { mutableStateOf(UiCache.homePage) }
+    var hasNext by remember { mutableStateOf(UiCache.homeHasNext) }
+    var loading by remember { mutableStateOf(UiCache.homeRepos.isEmpty()) }
     var loadingMore by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var tab by remember { mutableStateOf(0) }   // 0 我的仓库 1 已 Star
-    var sort by remember { mutableStateOf("updated") }
+    var tab by remember { mutableStateOf(UiCache.homeTab) }   // 0 我的仓库 1 已 Star
+    var sort by remember { mutableStateOf(UiCache.homeSort) }
     var lang by remember { mutableStateOf<String?>(null) }
     var sortMenu by remember { mutableStateOf(false) }
     var langMenu by remember { mutableStateOf(false) }
-    val listState = rememberLazyListState()
+    val listState = rememberLazyListState(UiCache.homeIndex, UiCache.homeOffset)
     val tick by Bus.tick.collectAsState()
     val safeMode = Cfg.safeMode
+    val recent = Cfg.recentRepos
 
     suspend fun load(p: Int, replace: Boolean) {
         if (p == 1) loading = true else loadingMore = true
@@ -67,8 +67,17 @@ fun HomeScreen(nav: NavController) {
             repos = if (replace) pg.items else repos + pg.items
             hasNext = pg.hasNext
             page = p
+            if (replace) {
+                UiCache.homeLoaded = true
+                UiCache.homeRepos = repos
+                UiCache.homeTab = tab
+                UiCache.homeSort = sort
+            }
+            UiCache.homePage = page
+            UiCache.homeHasNext = hasNext
         } catch (e: Exception) {
             error = e.message
+            if (replace) UiCache.homeLoaded = false
         } finally {
             loading = false
             loadingMore = false
@@ -88,31 +97,46 @@ fun HomeScreen(nav: NavController) {
                     p++
                 }
                 repos = all
+                UiCache.homeRepos = all
             } else {
                 val pg = if (tab == 1) Api.starred(1) else Api.myRepos(1, 60, sort)
                 repos = pg.items
                 hasNext = pg.hasNext
+                UiCache.homeRepos = pg.items
+                UiCache.homeHasNext = pg.hasNext
             }
         }
     }
 
-    LaunchedEffect(tab, sort) { load(1, true) }
+    // 已有缓存时直接复用：从详情页返回 / 切回 App 都不会重新加载
+    LaunchedEffect(tab, sort) {
+        val cached = UiCache.homeLoaded && UiCache.homeTab == tab && UiCache.homeSort == sort &&
+                UiCache.homeRepos.isNotEmpty()
+        if (!cached) load(1, true)
+    }
 
     LaunchedEffect(tick) { if (tick > 0 && !safeMode && Cfg.autoRefresh) refreshSilently() }
 
     LaunchedEffect(Unit) {
-        if (me == null) runCatching { Api.me() }.onSuccess { me = it }
+        if (me == null) runCatching { Api.me() }.onSuccess { me = it; UiCache.homeMe = it }
         if (safeMode) return@LaunchedEffect
         while (isActive) {
             delay(30_000L)
             if (Cfg.autoRefresh) {
-                runCatching { if (me == null) me = Api.me() }
+                runCatching { if (me == null) { me = Api.me(); UiCache.homeMe = me } }
                 refreshSilently()
             }
         }
     }
 
-    // 滚动到底部自动加载更多：用 snapshotFlow 读取布局状态，避免在组合阶段读取 layoutInfo
+    // 持续保存滚动位置，返回时还原
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .distinctUntilChanged()
+            .collect { pair -> UiCache.homeIndex = pair.first; UiCache.homeOffset = pair.second }
+    }
+
+    // 滚动到底部自动加载更多
     LaunchedEffect(listState, hasNext, safeMode) {
         if (safeMode) return@LaunchedEffect
         snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
@@ -124,7 +148,10 @@ fun HomeScreen(nav: NavController) {
             }
     }
 
-    val shown = if (lang == null) repos else repos.filter { it.language == lang }
+    val byLang = if (lang == null) repos else repos.filter { it.language == lang }
+    val shown = if (tab == 0) {
+        byLang.sortedBy { r -> recent.indexOf(r.full_name).let { if (it < 0) Int.MAX_VALUE else it } }
+    } else byLang
     val languages = repos.mapNotNull { it.language }.distinct().sorted()
 
     Scaffold(
@@ -143,9 +170,7 @@ fun HomeScreen(nav: NavController) {
                             Text("@" + (me?.login ?: Cfg.login ?: ""), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         IconButton(onClick = { nav.navigate("search") }) { Icon(Icons.Filled.Search, "搜索") }
-                        Box {
-                            IconButton(onClick = { nav.navigate("notifications") }) { Icon(Icons.Filled.Notifications, "通知") }
-                        }
+                        IconButton(onClick = { nav.navigate("notifications") }) { Icon(Icons.Filled.Notifications, "通知") }
                         IconButton(onClick = { nav.navigate("settings") }) { Icon(Icons.Filled.Settings, "设置") }
                     }
                     Row(
@@ -199,22 +224,19 @@ fun HomeScreen(nav: NavController) {
             }
         }
     ) { pad ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(pad),
-            state = listState
-        ) {
+        LazyColumn(modifier = Modifier.fillMaxSize().padding(pad), state = listState) {
             if (safeMode) item {
                 Box(
-                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)
-                        .clip(RoundedCornerShape(10.dp))
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
+                        .clip(RoundedCornerShape(12.dp))
                         .background(GH.yellow.copy(alpha = 0.12f))
-                        .border(1.dp, GH.yellow.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
+                        .border(1.dp, GH.yellow.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
                         .padding(12.dp)
                 ) {
                     Column {
                         Text("安全模式已开启", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = GH.yellow)
                         Spacer(Modifier.height(3.dp))
-                        Text("上次运行出现异常，已自动关闭头像加载与自动刷新。如果一切正常，可去「设置 → 诊断」关闭安全模式。",
+                        Text("已关闭头像加载与自动刷新。一切正常后可去「设置 → 诊断」关闭。",
                             fontSize = 11.sp, color = GH.muted, lineHeight = 16.sp)
                     }
                 }
@@ -222,9 +244,12 @@ fun HomeScreen(nav: NavController) {
             if (loading && repos.isEmpty()) item { LoadingBox("正在加载仓库…") }
             error?.let { e -> item { ErrorBox(e) { scope.launch { load(1, true) } } } }
             items(shown, key = { "${it.id}-${it.full_name}" }) { repo ->
-                if (safeMode) SafeRepoRow(repo) { nav.navigate("repo/${repo.owner?.login ?: Cfg.login}/${repo.name}") }
-                else RepoRow(repo) { nav.navigate("repo/${repo.owner?.login ?: Cfg.login}/${repo.name}") }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+                val isRecent = recent.firstOrNull() == repo.full_name
+                val go = {
+                    Cfg.touchRepo(repo.full_name)
+                    nav.navigate("repo/${repo.owner?.login ?: Cfg.login}/${repo.name}")
+                }
+                if (safeMode) SafeRepoRow(repo, isRecent, go) else RepoRow(repo, isRecent, go)
             }
             if (!loading && shown.isEmpty()) item {
                 EmptyBox(if (tab == 1) "还没有 Star 过的仓库" else "还没有仓库，点右下角新建一个吧")
@@ -235,79 +260,108 @@ fun HomeScreen(nav: NavController) {
                     Text("已经到底了 · 共 ${repos.size} 个", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+            item { Spacer(Modifier.height(70.dp)) }
         }
     }
 }
 
+/** 仓库卡片：一眼分得清"这是一个仓库"。 */
 @Composable
-fun RepoRow(repo: Repo, onClick: () -> Unit) {
-    Column(
-        Modifier.fillMaxWidth().clickable { onClick() }.padding(horizontal = 16.dp, vertical = 12.dp)
+fun RepoRow(repo: Repo, recent: Boolean = false, onClick: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp).clickable { onClick() },
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(repo.full_name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, false))
-            if (repo.isPrivate) {
-                Spacer(Modifier.width(6.dp))
-                TinyTag("私有", GH.yellow)
-            }
-            if (repo.fork) {
-                Spacer(Modifier.width(4.dp))
-                TinyTag("复刻", GH.muted)
-            }
-            if (repo.archived) {
-                Spacer(Modifier.width(4.dp))
-                TinyTag("已归档", GH.muted)
-            }
-            Spacer(Modifier.weight(1f))
-            Icon(Icons.Filled.Star, null, Modifier.size(13.dp), tint = GH.yellow)
-            Spacer(Modifier.width(3.dp))
-            Text(compactNum(repo.stargazers_count), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        repo.description?.takeIf { it.isNotBlank() }?.let {
-            Spacer(Modifier.height(4.dp))
-            Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2, overflow = TextOverflow.Ellipsis)
-        }
-        Spacer(Modifier.height(6.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            repo.language?.let { l ->
-                Box(Modifier.size(9.dp).clip(CircleShape).background(GH.langColor(l)))
-                Spacer(Modifier.width(4.dp))
-                Text(l, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Avatar(repo.owner?.avatar_url, 30)
                 Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (repo.name.isNotBlank()) repo.name else repo.full_name,
+                            fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis)
+                        if (repo.isPrivate) { Spacer(Modifier.width(6.dp)); TinyTag("私有", GH.yellow) }
+                        if (repo.fork) { Spacer(Modifier.width(4.dp)); TinyTag("复刻", GH.muted) }
+                        if (repo.archived) { Spacer(Modifier.width(4.dp)); TinyTag("归档", GH.muted) }
+                        if (recent) { Spacer(Modifier.width(4.dp)); TinyTag("最近", GH.blue) }
+                    }
+                    Text(repo.full_name, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Spacer(Modifier.width(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Star, null, Modifier.size(13.dp), tint = GH.yellow)
+                    Spacer(Modifier.width(3.dp))
+                    Text(compactNum(repo.stargazers_count), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                }
             }
-            Text("⑂ ${repo.forks_count}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.width(10.dp))
-            Text("更新时间 ${timeAgo(repo.updated_at ?: repo.pushed_at)}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (repo.open_issues_count > 0) {
-                Spacer(Modifier.width(10.dp))
-                Text("议题 ${repo.open_issues_count}", fontSize = 11.sp, color = GH.orange)
-            }
-        }
-    }
-}
-
-
-/** 安全模式下的极简行：不加载任何网络图片，只用文字和颜色块。 */
-@Composable
-fun SafeRepoRow(repo: Repo, onClick: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().clickable { onClick() }.padding(horizontal = 16.dp, vertical = 13.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(repo.full_name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
             repo.description?.takeIf { it.isNotBlank() }?.let {
-                Spacer(Modifier.height(3.dp))
+                Spacer(Modifier.height(8.dp))
+                Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 16.sp)
+            }
+            Spacer(Modifier.height(9.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                repo.language?.let { l ->
+                    Box(Modifier.size(9.dp).clip(CircleShape).background(GH.langColor(l)))
+                    Spacer(Modifier.width(5.dp))
+                    Text(l, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.width(10.dp))
+                }
+                Text("⑂ ${compactNum(repo.forks_count)}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.width(10.dp))
+                Text("更新 ${timeAgo(repo.updated_at ?: repo.pushed_at)}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.weight(1f))
+                if (repo.open_issues_count > 0) {
+                    Box(
+                        Modifier.clip(RoundedCornerShape(6.dp))
+                            .background(GH.orange.copy(alpha = 0.14f))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text("${repo.open_issues_count} 议题", fontSize = 10.sp, color = GH.orange)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 安全模式下的卡片：不加载任何网络图片。 */
+@Composable
+fun SafeRepoRow(repo: Repo, recent: Boolean = false, onClick: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp).clickable { onClick() },
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier.size(30.dp).clip(CircleShape).background(GH.blue.copy(alpha = 0.18f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(repo.name.take(1).uppercase().ifBlank { "R" }, fontSize = 13.sp, color = GH.blue, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(if (repo.name.isNotBlank()) repo.name else repo.full_name,
+                        fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(repo.full_name, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Icon(Icons.Filled.Star, null, Modifier.size(13.dp), tint = GH.yellow)
+                Spacer(Modifier.width(3.dp))
+                Text(compactNum(repo.stargazers_count), fontSize = 12.sp)
+            }
+            repo.description?.takeIf { it.isNotBlank() }?.let {
+                Spacer(Modifier.height(6.dp))
                 Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
-        Spacer(Modifier.width(10.dp))
-        Icon(Icons.Filled.Star, null, Modifier.size(13.dp), tint = GH.yellow)
-        Spacer(Modifier.width(3.dp))
-        Text(compactNum(repo.stargazers_count), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

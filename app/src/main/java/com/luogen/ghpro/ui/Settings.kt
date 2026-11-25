@@ -43,7 +43,16 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
     var newMirror by remember { mutableStateOf("") }
     var newWatch by remember { mutableStateOf("") }
     var watching by remember { mutableStateOf(WatchService.running.value) }
-    var rate by remember { mutableStateOf<String?>("") }
+    var rate by remember { mutableStateOf<String?>(null) }
+    var rateLoading by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        rateLoading = true
+        rate = try {
+            val r = Api.rateLimit().resources?.core
+            "核心 ${r?.remaining ?: "-"}/${r?.limit ?: "-"}"
+        } catch (e: Exception) { "读取失败：${e.message}" }
+        rateLoading = false
+    }
     var safe by remember { mutableStateOf(Cfg.safeMode) }
     var crash by remember { mutableStateOf(CrashReporter.lastCrash(ctx)) }
     var crashMsg by remember { mutableStateOf<String?>(null) }
@@ -211,13 +220,15 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
             SectionTitle("API 用量")
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("剩余额度", fontSize = 13.sp, modifier = Modifier.weight(1f))
-                Text(rate ?: "-", fontSize = 12.sp, color = GH.muted)
+                Text(if (rateLoading) "读取中…" else (rate ?: "-"), fontSize = 12.sp, color = GH.muted)
                 IconButton(onClick = {
                     scope.launch {
+                        rateLoading = true
                         rate = try {
                             val r = Api.rateLimit().resources?.core
-                            "核心 ${r?.remaining}/${r?.limit} · 重启 ${r?.reset?.let { fullTime(java.time.Instant.ofEpochSecond(it).toString()) } ?: ""}"
-                        } catch (e: Exception) { e.message }
+                            "核心 ${r?.remaining ?: "-"}/${r?.limit ?: "-"} · 重置 ${r?.reset?.let { fullTime(java.time.Instant.ofEpochSecond(it).toString()) } ?: "-"}"
+                        } catch (e: Exception) { "读取失败：${e.message}" }
+                        rateLoading = false
                     }
                 }) { Icon(Icons.Filled.Refresh, null, Modifier.size(18.dp)) }
             }
@@ -230,7 +241,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
                 SectionTitle("本次下载")
                 dl.values.sortedByDescending { it.done }.take(8).forEach { d ->
                     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable {
-                        d.path?.let { p -> Downloader.installApk(ctx, java.io.File(p)) }
+                        d.localPath?.let { p -> Downloader.installApk(ctx, java.io.File(p)) }
                     }) {
                         Text(d.fileName, fontSize = 12.sp, maxLines = 1)
                         Text("${d.status} · ${humanSize(d.done)}/${if (d.total > 0) humanSize(d.total) else "?"}" +
@@ -241,7 +252,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
                 }
             }
             Spacer(Modifier.height(40.dp))
-            Text("GitHub Pro 1.0.2 · 由 luogen-vip 打造", fontSize = 11.sp, color = GH.muted)
+            Text("GitHub Pro 1.0.3 · 由 罗根 打造", fontSize = 11.sp, color = GH.muted)
             Text("数据全部来自 GitHub 官方 REST / GraphQL API", fontSize = 11.sp, color = GH.muted)
             Spacer(Modifier.height(30.dp))
         }

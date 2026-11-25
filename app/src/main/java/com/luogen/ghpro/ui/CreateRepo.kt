@@ -5,6 +5,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -22,20 +23,37 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CreateRepoScreen(nav: NavController) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("") }
     var desc by remember { mutableStateOf("") }
     var private by remember { mutableStateOf(false) }
     var autoInit by remember { mutableStateOf(true) }
     var homepage by remember { mutableStateOf("") }
+    var topics by remember { mutableStateOf("") }
     var gitignore by remember { mutableStateOf("") }
     var license by remember { mutableStateOf("") }
+    var customLicense by remember { mutableStateOf("") }
+    var showCustomLicense by remember { mutableStateOf(false) }
     var hasIssues by remember { mutableStateOf(true) }
     var hasWiki by remember { mutableStateOf(false) }
     var hasProjects by remember { mutableStateOf(true) }
     var hasDiscussions by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
+    var licMenu by remember { mutableStateOf(false) }
+    var igMenu by remember { mutableStateOf(false) }
+    var licenses by remember { mutableStateOf(listOf<Pair<String, String>>()) }
+    var ignores by remember { mutableStateOf(listOf<String>()) }
     val snackbar = remember { SnackbarHostState() }
+
+    LaunchedEffect(Unit) {
+        runCatching { Api.licenses() }.onSuccess { l ->
+            if (l.isNotEmpty()) licenses = l.map { it.key to it.name }
+        }
+        if (licenses.isEmpty()) licenses = FALLBACK_LICENSES
+        runCatching { Api.gitignoreTemplates() }.onSuccess { g -> if (g.isNotEmpty()) ignores = g }
+        if (ignores.isEmpty()) ignores = FALLBACK_IGNORES
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -50,17 +68,35 @@ fun CreateRepoScreen(nav: NavController) {
                             busy = true
                             try {
                                 val repo = Api.createRepo(name.trim(), desc.trim(), private, autoInit,
-                                    homepage.trim().ifBlank { null }, gitignore.trim().ifBlank { null }, license.trim().ifBlank { null },
+                                    homepage.trim().ifBlank { null }, gitignore.ifBlank { null }, license.ifBlank { null },
                                     hasIssues, hasWiki, hasProjects, hasDiscussions)
-                                Bus.poke()
-                                snackbar.showSnackbar("仓库 ${repo.full_name} 已在 GitHub 上创建")
-                                nav.navigate("repo/${repo.owner?.login ?: Cfg.login}/${repo.name}") {
-                                    popUpTo("home")
+                                // topics 真实写入
+                                val ts = topics.split(",", "，").map { it.trim() }.filter { it.isNotBlank() }
+                                if (ts.isNotEmpty()) runCatching { Api.setTopics(repo.owner?.login ?: "", repo.name, ts) }
+                                // 自定义许可证正文真实提交
+                                if (customLicense.isNotBlank()) {
+                                    val path = "LICENSE"
+                                    runCatching {
+                                        Api.putFile(repo.owner?.login ?: "", repo.name, path, "Add LICENSE",
+                                            android.util.Base64.encodeToString(customLicense.toByteArray(), android.util.Base64.NO_WRAP),
+                                            null, repo.default_branch)
+                                    }
                                 }
-                            } catch (e: Exception) { snackbar.showSnackbar("创建失败：${e.message}") }
+                                Cfg.touchRepo(repo.full_name)
+                                UiCache.invalidateHome()
+                                Bus.poke()
+                                android.widget.Toast.makeText(ctx, "仓库 ${repo.full_name} 创建成功，已在首页置顶", android.widget.Toast.LENGTH_LONG).show()
+                                nav.popBackStack()
+                            } catch (e: Exception) {
+                                snackbar.showSnackbar("创建失败：${e.message}")
+                                android.widget.Toast.makeText(ctx, "创建失败：${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                            }
                             busy = false
                         }
-                    }) { Text("创建") }
+                    }) {
+                        if (busy) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        else Text("创建")
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )
@@ -71,16 +107,72 @@ fun CreateRepoScreen(nav: NavController) {
             Spacer(Modifier.height(10.dp))
             OutlinedTextField(desc, { desc = it }, Modifier.fillMaxWidth(), label = { Text("描述") }, minLines = 2)
             Spacer(Modifier.height(10.dp))
-            SwitchRow("私有仓库（只有你能看到）", private) { private = it }
-            SwitchRow("初始化 README / .gitignore / 许可证", autoInit) { autoInit = it }
-            Spacer(Modifier.height(6.dp))
             OutlinedTextField(homepage, { homepage = it }, Modifier.fillMaxWidth(), label = { Text("主页 URL（可选）") }, singleLine = true)
             Spacer(Modifier.height(10.dp))
-            OutlinedTextField(gitignore, { gitignore = it }, Modifier.fillMaxWidth(),
-                label = { Text("gitignore 模板，如 Android / Java / Kotlin（可选）") }, singleLine = true)
-            Spacer(Modifier.height(10.dp))
-            OutlinedTextField(license, { license = it }, Modifier.fillMaxWidth(),
-                label = { Text("许可证模板，如 mit / apache-2.0（可选）") }, singleLine = true)
+            OutlinedTextField(topics, { topics = it }, Modifier.fillMaxWidth(),
+                label = { Text("Topics 标签（逗号分隔，如 android,kotlin,music）") }, singleLine = true)
+            Spacer(Modifier.height(12.dp))
+            SwitchRow("私有仓库（只有你能看到）", private) { private = it }
+            SwitchRow("初始化 README（建议开启）", autoInit) { autoInit = it }
+
+            Spacer(Modifier.height(12.dp))
+            Text("模板（可选，真实写入仓库）", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(6.dp))
+
+            // 许可证下拉
+            Box {
+                OutlinedCard(
+                    onClick = { licMenu = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("许可证 License", fontSize = 12.sp, color = GH.muted)
+                            Text(license.ifBlank { "不添加" }, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        }
+                        Icon(Icons.Filled.ArrowDropDown, null, tint = GH.muted)
+                    }
+                }
+                DropdownMenu(expanded = licMenu, onDismissRequest = { licMenu = false }) {
+                    DropdownMenuItem(text = { Text("不添加") }, onClick = { license = ""; licMenu = false })
+                    licenses.forEach { (k, v) ->
+                        DropdownMenuItem(text = { Text(v, fontSize = 13.sp) }, onClick = { license = k; licMenu = false })
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+
+            // .gitignore 下拉
+            Box {
+                OutlinedCard(
+                    onClick = { igMenu = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(".gitignore 模板", fontSize = 12.sp, color = GH.muted)
+                            Text(gitignore.ifBlank { "不添加" }, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        }
+                        Icon(Icons.Filled.ArrowDropDown, null, tint = GH.muted)
+                    }
+                }
+                DropdownMenu(expanded = igMenu, onDismissRequest = { igMenu = false }) {
+                    DropdownMenuItem(text = { Text("不添加") }, onClick = { gitignore = ""; igMenu = false })
+                    ignores.forEach { g ->
+                        DropdownMenuItem(text = { Text(g, fontSize = 13.sp) }, onClick = { gitignore = g; igMenu = false })
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+            SwitchRow("自定义许可证正文（手动填写）", showCustomLicense) { showCustomLicense = it }
+            if (showCustomLicense) {
+                OutlinedTextField(customLicense, { customLicense = it }, Modifier.fillMaxWidth(),
+                    label = { Text("粘贴 MIT 等许可证全文，创建后会写成 LICENSE 文件") }, minLines = 4)
+                Spacer(Modifier.height(6.dp))
+                Text("提示：留空就用上面的模板；填写后会以 LICENSE 文件真实提交。", fontSize = 11.sp, color = GH.muted)
+            }
+
             Spacer(Modifier.height(12.dp))
             Text("功能开关", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             SwitchRow("启用议题 Issues", hasIssues) { hasIssues = it }
@@ -88,11 +180,28 @@ fun CreateRepoScreen(nav: NavController) {
             SwitchRow("启用 Projects", hasProjects) { hasProjects = it }
             SwitchRow("启用 Discussions 讨论区", hasDiscussions) { hasDiscussions = it }
             Spacer(Modifier.height(14.dp))
-            Text("创建后可在 GitHub 网页端、手机端和本 App 里立刻看到这个仓库。", fontSize = 11.sp, color = GH.muted)
+            Text("创建成功后会给提示，并回到首页，新仓库会显示在最上面。", fontSize = 11.sp, color = GH.muted)
             Spacer(Modifier.height(40.dp))
         }
     }
 }
+
+val FALLBACK_LICENSES = listOf(
+    "mit" to "MIT License",
+    "apache-2.0" to "Apache License 2.0",
+    "gpl-3.0" to "GNU GPLv3",
+    "agpl-3.0" to "GNU AGPLv3",
+    "lgpl-3.0" to "GNU LGPLv3",
+    "mpl-2.0" to "Mozilla Public License 2.0",
+    "bsd-3-clause" to "BSD 3-Clause",
+    "bsd-2-clause" to "BSD 2-Clause",
+    "unlicense" to "The Unlicense",
+    "cc0-1.0" to "CC0 1.0",
+    "epl-2.0" to "EPL 2.0"
+)
+
+val FALLBACK_IGNORES = listOf("Android", "Kotlin", "Java", "Python", "Node", "JavaScript", "TypeScript",
+    "Go", "Rust", "Swift", "C++", "C", "Gradle", "JetBrains", "VisualStudio", "Xcode", "macOS", "Linux", "Windows")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

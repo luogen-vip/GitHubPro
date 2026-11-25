@@ -175,7 +175,7 @@ data class Comment(
 )
 
 data class Reactions(
-    val total_count: Int = 0,
+    val total_count: Long = 0,
     @SerializedName("+1") val plusOne: Int = 0,
     @SerializedName("-1") val minusOne: Int = 0,
     val laugh: Int = 0,
@@ -370,10 +370,10 @@ data class GhEvent(
     val created_at: String? = null
 )
 
-data class SearchRepos(val total_count: Int = 0, val incomplete_results: Boolean = false, val items: List<Repo> = emptyList())
-data class SearchUsers(val total_count: Int = 0, val incomplete_results: Boolean = false, val items: List<User> = emptyList())
-data class SearchIssues(val total_count: Int = 0, val incomplete_results: Boolean = false, val items: List<Issue> = emptyList())
-data class SearchCode(val total_count: Int = 0, val incomplete_results: Boolean = false, val items: List<CodeItem> = emptyList())
+data class SearchRepos(val total_count: Long = 0, val incomplete_results: Boolean = false, val items: List<Repo> = emptyList())
+data class SearchUsers(val total_count: Long = 0, val incomplete_results: Boolean = false, val items: List<User> = emptyList())
+data class SearchIssues(val total_count: Long = 0, val incomplete_results: Boolean = false, val items: List<Issue> = emptyList())
+data class SearchCode(val total_count: Long = 0, val incomplete_results: Boolean = false, val items: List<CodeItem> = emptyList())
 
 data class CodeItem(
     val name: String = "",
@@ -416,4 +416,12 @@ data class LatestCommit(
     val date: String? = null,
     val author: String? = null,
     val avatar: String? = null
+)
+
+
+data class LicenseTpl(
+    val key: String = "",
+    val name: String = "",
+    val spdx_id: String? = null,
+    val url: String? = null
 )

@@ -3,6 +3,7 @@ package com.luogen.ghpro.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -33,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.widget.Toast
 import androidx.navigation.NavController
 import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Bus
@@ -49,13 +51,15 @@ import kotlinx.coroutines.launch
 fun RepoScreen(nav: NavController, owner: String, name: String) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    var repo by remember { mutableStateOf<Repo?>(null) }
-    var languages by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
-    var starred by remember { mutableStateOf(false) }
-    var watching by remember { mutableStateOf(false) }
-    var loading by remember { mutableStateOf(true) }
+    val key = "$owner/$name"
+    var repo by remember { mutableStateOf(UiCache.repoData[key]) }
+    var languages by remember { mutableStateOf(UiCache.repoLangs[key] ?: emptyMap()) }
+    var starred by remember { mutableStateOf(UiCache.repoStarred[key] ?: false) }
+    var watching by remember { mutableStateOf(UiCache.repoWatching[key] ?: false) }
+    var loading by remember { mutableStateOf(UiCache.repoData[key] == null) }
     var error by remember { mutableStateOf<String?>(null) }
-    var tab by remember { mutableStateOf(0) }
+    var tab by remember { mutableStateOf(UiCache.repoTab[key] ?: 0) }
+    var downloading by remember { mutableStateOf<String?>(null) }
     var showMenu by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     var peopleDialog by remember { mutableStateOf<Int?>(null) }  // 0 star 1 fork 2 watch 3 contributors
@@ -67,17 +71,42 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
         try {
             val r = Api.repo(owner, name)
             repo = r
+            UiCache.repoData[key] = r
+            Cfg.touchRepo(r.full_name)
             error = null
             Cfg.watchRepos.let { s -> if (!s.contains(r.full_name)) { s.add(r.full_name); Cfg.watchRepos = s } }
-            runCatching { starred = Api.isStarred(owner, name) }
-            runCatching { watching = Api.isWatching(owner, name) }
-            runCatching { languages = Api.languages(owner, name) }
+            runCatching { starred = Api.isStarred(owner, name); UiCache.repoStarred[key] = starred }
+            runCatching { watching = Api.isWatching(owner, name); UiCache.repoWatching[key] = watching }
+            runCatching { languages = Api.languages(owner, name); UiCache.repoLangs[key] = languages }
         } catch (e: Exception) {
             error = e.message
         } finally { loading = false }
     }
 
-    LaunchedEffect(owner, name) { load() }
+    // 有缓存就先用缓存渲染，再静默刷新
+    LaunchedEffect(owner, name) {
+        if (UiCache.repoData[key] == null) load() else runCatching { load() }
+    }
+    LaunchedEffect(tab) { UiCache.repoTab[key] = tab }
+
+    fun startZipDownload() {
+        val r = repo ?: return
+        val branch = r.default_branch ?: "main"
+        val fname = "${r.name}-$branch.zip"
+        downloading = fname
+        scope.launch {
+            val res = runCatching {
+                Downloader.download(ctx, "https://github.com/${r.full_name}/archive/refs/heads/$branch.zip", fname)
+            }
+            res.onSuccess {
+                val where = Downloader.stateOf(fname)?.publicPath ?: "下载/GitHubPro/$fname"
+                Toast.makeText(ctx, "已保存到 $where", Toast.LENGTH_LONG).show()
+            }.onFailure {
+                Toast.makeText(ctx, "下载失败：${it.message}", Toast.LENGTH_LONG).show()
+            }
+            downloading = null
+        }
+    }
     LaunchedEffect(tick) { if (tick > 0) runCatching { repo = Api.repo(owner, name) } }
     LaunchedEffect(Unit) {
         while (isActive) {
@@ -113,15 +142,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                             })
                             DropdownMenuItem(text = { Text("下载源码 ZIP") }, leadingIcon = { Icon(Icons.Filled.Download, null) }, onClick = {
                                 showMenu = false
-                                val r = repo ?: return@DropdownMenuItem
-                                scope.launch {
-                                    runCatching {
-                                        Downloader.download(ctx,
-                                            "https://github.com/${r.full_name}/archive/refs/heads/${r.default_branch ?: "main"}.zip",
-                                            "${r.name}-${r.default_branch ?: "main"}.zip")
-                                    }.onSuccess { msg = "已下载到 ${it.name}" }.onFailure { msg = "下载失败：${it.message}" }
-                                    msg?.let { snackbar.showSnackbar(it) }
-                                }
+                                startZipDownload()
                             })
                             DropdownMenuItem(text = { Text("复刻 Fork 到我的账号") }, onClick = {
                                 showMenu = false
@@ -153,7 +174,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
             error?.let { e -> ErrorBox(e) { scope.launch { load() } }; return@Column }
             val r = repo ?: return@Column
 
-            Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(14.dp)) {
+            if (tab == 0) Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(14.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(r.full_name, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                     if (r.isPrivate) TinyTag("私有", GH.yellow)
@@ -165,23 +186,41 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     AssistChip(
-                        onClick = { scope.launch {
+                        onClick = {
                             val target = !starred
-                            runCatching { Api.star(owner, name, target) }
-                                .onSuccess { starred = target; repo = Api.repo(owner, name) }
-                                .onFailure { snackbar.showSnackbar("操作失败：${it.message}") }
-                        } },
+                            val base = repo ?: r
+                            starred = target
+                            UiCache.repoStarred[key] = target
+                            repo = base.copy(stargazers_count = (base.stargazers_count + if (target) 1 else -1).coerceAtLeast(0))
+                            scope.launch {
+                                runCatching { Api.star(owner, name, target) }
+                                    .onSuccess { runCatching { repo = Api.repo(owner, name)?.also { UiCache.repoData[key] = it } } }
+                                    .onFailure {
+                                        starred = !target
+                                        UiCache.repoStarred[key] = !target
+                                        repo = base
+                                        snackbar.showSnackbar("操作失败：${it.message}")
+                                    }
+                            }
+                        },
                         label = { Text(if (starred) "已 Star ${compactNum(r.stargazers_count)}" else "Star ${compactNum(r.stargazers_count)}", fontSize = 12.sp) },
                         leadingIcon = { Icon(if (starred) Icons.Filled.Star else Icons.Filled.StarBorder, null, Modifier.size(15.dp), tint = GH.yellow) }
                     )
                     Spacer(Modifier.width(6.dp))
                     AssistChip(
-                        onClick = { scope.launch {
+                        onClick = {
                             val target = !watching
-                            runCatching { Api.watch(owner, name, target) }
-                                .onSuccess { watching = target }
-                                .onFailure { snackbar.showSnackbar("操作失败：${it.message}") }
-                        } },
+                            watching = target
+                            UiCache.repoWatching[key] = target
+                            scope.launch {
+                                runCatching { Api.watch(owner, name, target) }
+                                    .onFailure {
+                                        watching = !target
+                                        UiCache.repoWatching[key] = !target
+                                        snackbar.showSnackbar("操作失败：${it.message}")
+                                    }
+                            }
+                        },
                         label = { Text(if (watching) "已关注" else "关注", fontSize = 12.sp) }
                     )
                     Spacer(Modifier.width(6.dp))
@@ -200,6 +239,24 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                 }
             }
 
+            if (tab != 0) {
+                Row(
+                    Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)
+                        .padding(horizontal = 14.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(r.full_name, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(if (starred) Icons.Filled.Star else Icons.Filled.StarBorder, null,
+                            Modifier.size(14.dp), tint = GH.yellow)
+                        Spacer(Modifier.width(3.dp))
+                        Text(compactNum(r.stargazers_count), fontSize = 11.sp, color = GH.muted)
+                    }
+                    TextButton(onClick = { tab = 0 }) { Text("概览", fontSize = 11.sp) }
+                }
+            }
+
             ScrollableTabRow(
                 selectedTabIndex = tab,
                 containerColor = MaterialTheme.colorScheme.surface,
@@ -211,6 +268,8 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                     Tab(selected = tab == i, onClick = { tab = i }, text = { Text(t, fontSize = 12.sp) })
                 }
             }
+
+            ActiveDownloadStrip()
 
             Box(Modifier.weight(1f)) {
                 when (tab) {
@@ -236,7 +295,20 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
             text = {
                 Column {
                     Text("这会从 GitHub 服务器上真正删除 ${owner}/${name}，不可恢复。请输入仓库名确认：", fontSize = 13.sp)
-                    OutlinedTextField(input, { input = it }, label = { Text(name) }, singleLine = true)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(input, { input = it }, label = { Text(name) }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        isError = input.isNotBlank() && input != name)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = {
+                            val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                            val txt = cm?.primaryClip?.getItemAt(0)?.text?.toString()?.trim().orEmpty()
+                            if (txt.isNotEmpty()) input = txt
+                        }) { Text("粘贴仓库名", fontSize = 12.sp) }
+                        if (input.isNotBlank() && input != name) {
+                            Text("名称不一致，无法删除", fontSize = 11.sp, color = GH.red)
+                        }
+                    }
                 }
             },
             confirmButton = {
@@ -245,8 +317,10 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                         runCatching { Api.deleteRepo(owner, name) }
                             .onSuccess {
                                 confirmDelete = false
+                                UiCache.invalidateHome()
+                                UiCache.invalidateRepo("$owner/$name")
                                 Bus.poke()
-                                snackbar.showSnackbar("已删除")
+                                Toast.makeText(ctx, "仓库 $owner/$name 已删除", Toast.LENGTH_LONG).show()
                                 nav.popBackStack()
                             }
                             .onFailure { snackbar.showSnackbar("删除失败：${it.message}") }
@@ -281,12 +355,16 @@ fun LanguageBar(languages: Map<String, Long>) {
             }
         }
         Spacer(Modifier.height(5.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
             entries.forEach { (k, v) ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(7.dp).clip(RoundedCornerShape(4.dp)).background(GH.langColor(k)))
                     Spacer(Modifier.width(3.dp))
-                    Text("$k ${String.format("%.1f", v * 100.0 / total)}%", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("$k ${String.format("%.1f", v * 100.0 / total)}%", fontSize = 10.sp, maxLines = 1,
+                        softWrap = false, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -328,10 +406,13 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo) {
                 nav.navigate("user/${r.owner?.login}")
             }) { Text("作者主页", fontSize = 12.sp) }
             OutlinedButton(onClick = { kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                val branch = r.default_branch ?: "main"
+                val fname = "${r.name}-$branch.zip"
                 runCatching {
-                    Downloader.download(ctx, "https://github.com/${r.full_name}/archive/refs/heads/${r.default_branch ?: "main"}.zip",
-                        "${r.name}-${r.default_branch ?: "main"}.zip")
-                }
+                    Downloader.download(ctx, "https://github.com/${r.full_name}/archive/refs/heads/$branch.zip", fname)
+                }.onSuccess {
+                    Toast.makeText(ctx, "已保存到 " + (Downloader.stateOf(fname)?.publicPath ?: "下载/GitHubPro/$fname"), Toast.LENGTH_LONG).show()
+                }.onFailure { Toast.makeText(ctx, "下载失败：${it.message}", Toast.LENGTH_LONG).show() }
             } }) { Text("下载源码", fontSize = 12.sp) }
             OutlinedButton(onClick = { openUrl(ctx, r.html_url) }) { Text("浏览器", fontSize = 12.sp) }
         }
@@ -485,4 +566,27 @@ fun PeopleDialog(nav: NavController, owner: String, name: String, kind: Int, onC
         },
         confirmButton = { TextButton(onClick = onClose) { Text("关闭") } }
     )
+}
+
+
+@Composable
+fun ActiveDownloadStrip() {
+    val map by Downloader.state.collectAsState()
+    val active = map.values.filter { it.status != "已完成" && it.status != "失败" && it.status.isNotBlank() }
+    if (active.isEmpty()) return
+    Column(
+        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        active.take(2).forEach { d ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(d.fileName, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Text(if (d.total > 0) "${d.percent}%" else d.status, fontSize = 11.sp, color = GH.blue)
+            }
+            LinearProgressIndicator(
+                progress = { if (d.total > 0) d.percent / 100f else 0f },
+                modifier = Modifier.fillMaxWidth().padding(top = 3.dp)
+            )
+        }
+    }
 }
