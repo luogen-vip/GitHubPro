@@ -1,6 +1,8 @@
 package com.luogen.ghpro.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,6 +23,7 @@ import androidx.navigation.NavController
 import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.download.Downloader
+import com.luogen.ghpro.sync.CrashReporter
 import com.luogen.ghpro.sync.WatchService
 import kotlinx.coroutines.launch
 
@@ -41,6 +44,11 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
     var newWatch by remember { mutableStateOf("") }
     var watching by remember { mutableStateOf(WatchService.running.value) }
     var rate by remember { mutableStateOf<String?>("") }
+    var safe by remember { mutableStateOf(Cfg.safeMode) }
+    var crash by remember { mutableStateOf(CrashReporter.lastCrash(ctx)) }
+    var crashMsg by remember { mutableStateOf<String?>(null) }
+    var uploading by remember { mutableStateOf(false) }
+    var showCrash by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { watching = WatchService.running.value }
 
@@ -138,6 +146,58 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
         }
 
         item {
+            SectionTitle("诊断")
+            SwitchRow("安全模式（简化界面）", safe) {
+                safe = it; Cfg.safeMode = it
+                crashMsg = if (it) "已开启，重进首页后生效" else "已关闭，重进首页后恢复完整界面"
+            }
+            Text("掉帧、被杀、进首页后异常退出时，安全模式会关掉头像加载与自动刷新，用来判断问题是否出在图片或轮询上。",
+                fontSize = 11.sp, color = GH.muted, modifier = Modifier.padding(vertical = 4.dp))
+            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("历史异常次数", fontSize = 13.sp, modifier = Modifier.weight(1f))
+                Text("${Cfg.crashCount}", fontSize = 12.sp, color = if (Cfg.crashCount > 0) GH.red else GH.muted)
+            }
+            if (crash == null) {
+                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("上次崩溃日志", fontSize = 13.sp, modifier = Modifier.weight(1f))
+                    Text("无", fontSize = 12.sp, color = GH.muted)
+                }
+            } else {
+                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("上次崩溃日志", fontSize = 13.sp, modifier = Modifier.weight(1f))
+                    Text(if (uploading) "上传中…" else "有（${crash!!.length} 字符）",
+                        fontSize = 12.sp, color = GH.yellow,
+                        modifier = Modifier.clickable { showCrash = true })
+                }
+                Row {
+                    TextButton(onClick = {
+                        scope.launch {
+                            uploading = true; crashMsg = null
+                            try {
+                                val repo = Cfg.crashRepo
+                                val parts = repo.split("/")
+                                if (parts.size != 2) throw Exception("上报仓库格式应为 owner/repo")
+                                val t = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.CHINA).format(java.util.Date())
+                                Api.createIssue(parts[0], parts[1], "崩溃日志 $t",
+                                    "### 手动上报的崩溃日志\n\n\u0060\u0060\u0060\n" + crash!!.take(15000) + "\n\u0060\u0060\u0060\n",
+                                    listOf("bug"), null)
+                                CrashReporter.clear(ctx)
+                                crash = null
+                                crashMsg = "已上传到 $repo 的 Issues"
+                            } catch (e: Exception) { crashMsg = "上传失败：" + e.message }
+                            finally { uploading = false }
+                        }
+                    }) { Text("上传到 GitHub Issues") }
+                    TextButton(onClick = {
+                        CrashReporter.clear(ctx); crash = null; crashMsg = "已清除"
+                    }) { Text("清除", color = GH.muted) }
+                }
+            }
+            crashMsg?.let { Text(it, fontSize = 11.sp, color = GH.green, modifier = Modifier.padding(vertical = 2.dp)) }
+            Spacer(Modifier.height(14.dp))
+        }
+
+        item {
             SectionTitle("外观")
             Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(0 to "跟随系统", 1 to "深色", 2 to "浅色").forEach { (k, v) ->
@@ -181,11 +241,27 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
                 }
             }
             Spacer(Modifier.height(40.dp))
-            Text("GitHub Pro 1.0.0 · 由 luogen-vip 打造", fontSize = 11.sp, color = GH.muted)
+            Text("GitHub Pro 1.0.1 · 由 luogen-vip 打造", fontSize = 11.sp, color = GH.muted)
             Text("数据全部来自 GitHub 官方 REST / GraphQL API", fontSize = 11.sp, color = GH.muted)
             Spacer(Modifier.height(30.dp))
         }
     }
+    if (showCrash && crash != null) CrashDialog(crash!!) { showCrash = false }
+}
+
+@Composable
+fun CrashDialog(text: String, onClose: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onClose,
+        confirmButton = { TextButton(onClick = onClose) { Text("关闭") } },
+        title = { Text("崩溃日志", fontSize = 15.sp) },
+        text = {
+            Column(Modifier.heightIn(max = 380.dp)) {
+                Text(text, fontSize = 10.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    color = GH.muted, modifier = Modifier.verticalScroll(rememberScrollState()))
+            }
+        }
+    )
 }
 
 @Composable

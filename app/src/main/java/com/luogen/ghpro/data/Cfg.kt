@@ -84,6 +84,19 @@ object Cfg {
         get() = sp.getStringSet("watch_repos", emptySet())?.toMutableSet() ?: mutableSetOf()
         set(v) { sp.edit().putStringSet("watch_repos", v.toSet()).apply() }
 
+
+    var crashCount: Int
+        get() = sp.getInt("crash_count", 0)
+        set(v) { sp.edit().putInt("crash_count", v).apply() }
+
+    var safeMode: Boolean
+        get() = sp.getBoolean("safe_mode", false)
+        set(v) { sp.edit().putBoolean("safe_mode", v).apply() }
+
+    var crashRepo: String
+        get() = sp.getString("crash_repo", "luogen-vip/GitHubPro") ?: "luogen-vip/GitHubPro"
+        set(v) { sp.edit().putString("crash_repo", v).apply() }
+
     fun clearAll() {
         val keepMirror = sp.getString("mirrors", DEFAULT_MIRRORS)
         val cid = oauthClientId

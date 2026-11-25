@@ -33,7 +33,10 @@ import com.luogen.ghpro.data.Bus
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Repo
 import com.luogen.ghpro.data.User
+import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -54,6 +57,7 @@ fun HomeScreen(nav: NavController) {
     var langMenu by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val tick by Bus.tick.collectAsState()
+    val safeMode = Cfg.safeMode
 
     suspend fun load(p: Int, replace: Boolean) {
         if (p == 1) loading = true else loadingMore = true
@@ -93,13 +97,14 @@ fun HomeScreen(nav: NavController) {
     }
 
     LaunchedEffect(tab, sort) { load(1, true) }
-    LaunchedEffect(tick) { if (tick > 0 && Cfg.autoRefresh) refreshSilently() }
+
+    LaunchedEffect(tick) { if (tick > 0 && !safeMode && Cfg.autoRefresh) refreshSilently() }
+
     LaunchedEffect(Unit) {
-        if (me == null) {
-            runCatching { Api.me() }.onSuccess { me = it }
-        }
+        if (me == null) runCatching { Api.me() }.onSuccess { me = it }
+        if (safeMode) return@LaunchedEffect
         while (isActive) {
-            delay(20_000L)
+            delay(30_000L)
             if (Cfg.autoRefresh) {
                 runCatching { if (me == null) me = Api.me() }
                 refreshSilently()
@@ -107,12 +112,16 @@ fun HomeScreen(nav: NavController) {
         }
     }
 
-    // 滚动到底部自动加载更多
-    LaunchedEffect(listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index, repos.size, hasNext) {
-        val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-        if (hasNext && !loadingMore && !loading && last >= repos.size - 4) {
-            load(page + 1, false)
-        }
+    // 滚动到底部自动加载更多：用 snapshotFlow 读取布局状态，避免在组合阶段读取 layoutInfo
+    LaunchedEffect(listState, hasNext, safeMode) {
+        if (safeMode) return@LaunchedEffect
+        snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
+            .distinctUntilChanged()
+            .collect { last ->
+                if (hasNext && !loadingMore && !loading && last >= repos.size - 4) {
+                    load(page + 1, false)
+                }
+            }
     }
 
     val shown = if (lang == null) repos else repos.filter { it.language == lang }
@@ -194,10 +203,27 @@ fun HomeScreen(nav: NavController) {
             modifier = Modifier.fillMaxSize().padding(pad),
             state = listState
         ) {
+            if (safeMode) item {
+                Box(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(GH.yellow.copy(alpha = 0.12f))
+                        .border(1.dp, GH.yellow.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
+                        .padding(12.dp)
+                ) {
+                    Column {
+                        Text("安全模式已开启", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = GH.yellow)
+                        Spacer(Modifier.height(3.dp))
+                        Text("上次运行出现异常，已自动关闭头像加载与自动刷新。如果一切正常，可去「设置 → 诊断」关闭安全模式。",
+                            fontSize = 11.sp, color = GH.muted, lineHeight = 16.sp)
+                    }
+                }
+            }
             if (loading && repos.isEmpty()) item { LoadingBox("正在加载仓库…") }
             error?.let { e -> item { ErrorBox(e) { scope.launch { load(1, true) } } } }
-            items(shown, key = { it.id }) { repo ->
-                RepoRow(repo) { nav.navigate("repo/${repo.owner?.login ?: Cfg.login}/${repo.name}") }
+            items(shown, key = { "${it.id}-${it.full_name}" }) { repo ->
+                if (safeMode) SafeRepoRow(repo) { nav.navigate("repo/${repo.owner?.login ?: Cfg.login}/${repo.name}") }
+                else RepoRow(repo) { nav.navigate("repo/${repo.owner?.login ?: Cfg.login}/${repo.name}") }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
             }
             if (!loading && shown.isEmpty()) item {
@@ -259,5 +285,29 @@ fun RepoRow(repo: Repo, onClick: () -> Unit) {
                 Text("议题 ${repo.open_issues_count}", fontSize = 11.sp, color = GH.orange)
             }
         }
+    }
+}
+
+
+/** 安全模式下的极简行：不加载任何网络图片，只用文字和颜色块。 */
+@Composable
+fun SafeRepoRow(repo: Repo, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable { onClick() }.padding(horizontal = 16.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(repo.full_name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            repo.description?.takeIf { it.isNotBlank() }?.let {
+                Spacer(Modifier.height(3.dp))
+                Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        Icon(Icons.Filled.Star, null, Modifier.size(13.dp), tint = GH.yellow)
+        Spacer(Modifier.width(3.dp))
+        Text(compactNum(repo.stargazers_count), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
