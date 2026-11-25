@@ -468,7 +468,7 @@ fun LoginScreen(onLoggedIn: (User) -> Unit) {
                 )
             }
             Spacer(Modifier.height(8.dp))
-            Text("v1.0.1 · 让 GitHub 尽在掌握", fontSize = 10.sp, color = GH.border)
+            Text("v1.0.2 · 让 GitHub 尽在掌握", fontSize = 10.sp, color = GH.border)
             Spacer(Modifier.height(36.dp))
         }
     }

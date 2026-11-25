@@ -11,8 +11,8 @@ android {
         applicationId = "com.luogen.ghpro"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 3
+        versionName = "1.0.2"
         vectorDrawables { useSupportLibrary = true }
     }
 
@@ -30,6 +30,13 @@ android {
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
+    testOptions {
+        unitTests.all {
+            it.systemProperty("javax.net.ssl.trustStore", "/etc/ssl/certs/java/cacerts")
+            it.systemProperty("javax.net.ssl.trustStorePassword", "changeit")
+            it.testLogging { events("standardOut", "standardError", "passed", "failed") }
+        }
+    }
     packaging {
         resources.excludes += setOf("/META-INF/{AL2.0,LGPL2.1}", "/META-INF/*.kotlin_module")
     }
@@ -54,4 +61,5 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.6.0")
     implementation("io.coil-kt:coil-svg:2.6.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
+    testImplementation("junit:junit:4.13.2")
 }

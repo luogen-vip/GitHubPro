@@ -147,7 +147,7 @@ object Api {
         val list: List<T> = if (r.body.isBlank()) emptyList() else {
             val el = JsonParser.parseString(r.body)
             if (!el.isJsonArray) emptyList()
-            else gson.fromJson(el, Array<T>::class.java).toList()
+            else el.asJsonArray.map { e -> gson.fromJson(e, T::class.java) }
         }
         return Page(list, hasNext(r.headers))
     }
@@ -155,7 +155,9 @@ object Api {
 
     inline fun <reified T> arr(el: JsonElement?): List<T> {
         if (el == null || !el.isJsonArray) return emptyList()
-        return try { gson.fromJson(el, Array<T>::class.java)?.toList() ?: emptyList() } catch (e: Exception) { emptyList() }
+        return try {
+            el.asJsonArray.map { e -> gson.fromJson(e, T::class.java) }
+        } catch (e: Exception) { emptyList() }
     }
 
     suspend fun graphql(query: String, variables: JsonObject = JsonObject()): JsonObject {
@@ -178,8 +180,18 @@ object Api {
         callList("/user/repos", mapOf("page" to "$page", "per_page" to "$perPage", "sort" to sort, "affiliation" to "owner,collaborator,organization_member", "type" to type))
     suspend fun userRepos(login: String, page: Int, perPage: Int = 60, sort: String = "updated"): Page<Repo> =
         callList("/users/$login/repos", mapOf("page" to "$page", "per_page" to "$perPage", "sort" to sort))
-    suspend fun starred(page: Int): Page<Repo> =
-        callList("/user/starred", mapOf("page" to "$page", "per_page" to "60"), accept = "application/vnd.github.star+json")
+    suspend fun starred(page: Int): Page<Repo> {
+        val r = exec("/user/starred", "GET", null, mapOf("page" to "$page", "per_page" to "60"),
+            accept = "application/vnd.github.star+json")
+        val list: List<Repo> = try {
+            val el = JsonParser.parseString(r.body)
+            if (!el.isJsonArray) emptyList() else el.asJsonArray.map { e ->
+                if (e.isJsonObject && e.asJsonObject.has("repo")) gson.fromJson(e.asJsonObject.get("repo"), Repo::class.java)
+                else gson.fromJson(e, Repo::class.java)
+            }
+        } catch (e: Exception) { emptyList() }
+        return Page(list, hasNext(r.headers))
+    }
     suspend fun followers(login: String, page: Int): Page<User> = callList("/users/$login/followers", mapOf("page" to "$page", "per_page" to "60"))
     suspend fun following(login: String, page: Int): Page<User> = callList("/users/$login/following", mapOf("page" to "$page", "per_page" to "60"))
     suspend fun isFollowing(login: String): Boolean = try {
