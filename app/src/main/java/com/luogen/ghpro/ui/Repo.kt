@@ -11,6 +11,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
@@ -184,7 +185,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                         label = { Text(if (watching) "已关注" else "关注", fontSize = 12.sp) }
                     )
                     Spacer(Modifier.width(6.dp))
-                    AssistChip(onClick = { peopleDialog = 0 }, label = { Text("贡献者", fontSize = 12.sp) })
+                    AssistChip(onClick = { peopleDialog = 3 }, label = { Text("贡献者", fontSize = 12.sp) })
                 }
                 Spacer(Modifier.height(6.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
@@ -206,7 +207,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                 edgePadding = 4.dp,
                 divider = { Divider1() }
             ) {
-                listOf("概览", "代码", "议题", "拉取", "工作流", "发行版", "讨论", "贡献").forEachIndexed { i, t ->
+                listOf("概览", "代码", "议题", "拉取", "工作流", "发行版", "提交", "讨论", "贡献").forEachIndexed { i, t ->
                     Tab(selected = tab == i, onClick = { tab = i }, text = { Text(t, fontSize = 12.sp) })
                 }
             }
@@ -219,8 +220,9 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                     3 -> PullListTab(nav, owner, name)
                     4 -> ActionsTab(nav, owner, name, r)
                     5 -> ReleasesTab(nav, owner, name, r)
-                    6 -> DiscussionsTab(nav, owner, name, r)
-                    7 -> ContributorsTab(nav, owner, name)
+                    6 -> CommitsTab(nav, owner, name, r)
+                    7 -> DiscussionsTab(nav, owner, name, r)
+                    8 -> ContributorsTab(nav, owner, name)
                 }
             }
         }
@@ -345,6 +347,75 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo) {
                 color = MaterialTheme.colorScheme.onSurface, lineHeight = 17.sp)
         }
         Spacer(Modifier.height(30.dp))
+    }
+}
+
+
+@Composable
+fun CommitsTab(nav: NavController, owner: String, name: String, repo: Repo) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var list by remember { mutableStateOf<List<com.luogen.ghpro.data.GitCommit>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var page by remember { mutableStateOf(1) }
+    var hasNext by remember { mutableStateOf(false) }
+    var branch by remember { mutableStateOf(repo.default_branch ?: "main") }
+    var branches by remember { mutableStateOf(listOf(repo.default_branch ?: "main")) }
+    var menu by remember { mutableStateOf(false) }
+
+    suspend fun load(p: Int, replace: Boolean) {
+        if (p == 1) loading = true
+        try {
+            val pg = Api.commits(owner, name, branch, p)
+            list = if (replace) pg.items else list + pg.items
+            hasNext = pg.hasNext; page = p; error = null
+        } catch (e: Exception) { error = e.message }
+        loading = false
+    }
+    LaunchedEffect(branch) { load(1, true) }
+    LaunchedEffect(Unit) {
+        runCatching { Api.branches(owner, name).map { it.name } }.onSuccess { if (it.isNotEmpty()) branches = it }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().background(GH.surface2).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box {
+                TextButton(onClick = { menu = true }) {
+                    Text(branch, fontSize = 12.sp); Icon(Icons.Filled.ArrowDropDown, null, Modifier.size(16.dp))
+                }
+                DropdownMenu(menu, { menu = false }) {
+                    branches.forEach { b -> DropdownMenuItem(text = { Text(b, fontSize = 12.sp) }, onClick = { branch = b; menu = false }) }
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            Text("${list.size} 条提交", fontSize = 10.sp, color = GH.muted)
+        }
+        when {
+            loading && list.isEmpty() -> LoadingBox()
+            error != null -> ErrorBox(error) { scope.launch { load(1, true) } }
+            list.isEmpty() -> EmptyBox("没有提交记录")
+            else -> LazyColumn(Modifier.fillMaxSize()) {
+                items(list, key = { it.sha }) { c ->
+                    Row(Modifier.fillMaxWidth().clickable {
+                        openUrl(ctx, c.html_url)
+                    }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Avatar(c.author?.avatar_url ?: c.committer?.avatar_url, 26)
+                        Spacer(Modifier.width(9.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(c.commit?.message?.lineSequence()?.firstOrNull() ?: "(无提交说明)",
+                                fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text("${c.author?.login ?: c.commit?.author?.name ?: ""} · ${timeAgo(c.commit?.author?.date)} · ${c.sha.take(7)}",
+                                fontSize = 10.sp, color = GH.muted)
+                        }
+                    }
+                    Divider1()
+                }
+                if (hasNext) item {
+                    TextButton(onClick = { scope.launch { load(page + 1, false) } }, modifier = Modifier.fillMaxWidth()) { Text("加载更多", fontSize = 12.sp) }
+                }
+            }
+        }
     }
 }
 

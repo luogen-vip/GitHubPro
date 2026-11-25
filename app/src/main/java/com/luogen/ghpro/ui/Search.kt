@@ -133,7 +133,7 @@ fun SearchScreen(nav: NavController) {
                 else -> LazyColumn(Modifier.fillMaxSize()) {
                     when (type) {
                         0 -> items(repos, key = { it.id }) { r ->
-                            RepoRow(r) { nav.navigate("repo/${r.owner?.login}/${r.name}") }
+                            RepoRow(r) { nav.navigate("repo/${r.full_name}") }
                             Divider1()
                         }
                         1 -> items(users, key = { it.id }) { u ->
@@ -149,7 +149,7 @@ fun SearchScreen(nav: NavController) {
                             }
                             Divider1()
                         }
-                        2 -> items(codes, key = { it.sha + it.path }) { c ->
+                        2 -> items(codes, key = { (it.sha ?: "") + it.path }) { c ->
                             Column(Modifier.fillMaxWidth().clickable {
                                 val o = c.repository?.owner?.login ?: ""
                                 nav.navigate("repo/$o/${c.repository?.name}")
