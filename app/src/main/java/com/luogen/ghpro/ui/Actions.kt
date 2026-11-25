@@ -1,0 +1,315 @@
+package com.luogen.ghpro.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Cancel
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.navigation.NavController
+import com.luogen.ghpro.data.Api
+import com.luogen.ghpro.data.Artifact
+import com.luogen.ghpro.data.Cfg
+import com.luogen.ghpro.data.Job
+import com.luogen.ghpro.data.Repo
+import com.luogen.ghpro.data.Run
+import com.luogen.ghpro.data.Workflow
+import com.luogen.ghpro.download.Downloader
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+
+@Composable
+fun ActionsTab(nav: NavController, owner: String, name: String, repo: Repo) {
+    val scope = rememberCoroutineScope()
+    var workflows by remember { mutableStateOf<List<Workflow>>(emptyList()) }
+    var runs by remember { mutableStateOf<List<Run>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var lastSync by remember { mutableStateOf(0L) }
+    var autoOn by remember { mutableStateOf(Cfg.autoRefresh) }
+    var showWf by remember { mutableStateOf(false) }
+
+    suspend fun load(silent: Boolean = false) {
+        if (!silent) loading = true
+        try {
+            runs = Api.runs(owner, name, 1).first
+            if (workflows.isEmpty()) workflows = runCatching { Api.workflows(owner, name) }.getOrDefault(emptyList())
+            error = null
+            lastSync = System.currentTimeMillis()
+        } catch (e: Exception) { if (!silent) error = e.message }
+        loading = false
+    }
+
+    LaunchedEffect(owner, name) { load() }
+    LaunchedEffect(autoOn) {
+        while (isActive && autoOn) {
+            delay((Cfg.pollSeconds.coerceIn(8, 300)) * 1000L)
+            load(true)
+        }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().background(GH.surface2).padding(horizontal = 10.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton({ scope.launch { load() } }) { Icon(Icons.Filled.Refresh, null, Modifier.size(18.dp)) }
+            Text(if (lastSync == 0L) "同步中" else "${(System.currentTimeMillis() - lastSync) / 1000} 秒前同步 · 每 ${Cfg.pollSeconds} 秒自动",
+                fontSize = 10.sp, color = GH.muted, modifier = Modifier.weight(1f))
+            Text("自动", fontSize = 10.sp, color = GH.muted)
+            Switch(checked = autoOn, onCheckedChange = { autoOn = it }, modifier = Modifier.height(28.dp))
+            IconButton({ showWf = !showWf }) { Text("工作流", fontSize = 10.sp, color = GH.blue) }
+        }
+
+        if (showWf && workflows.isNotEmpty()) {
+            Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(10.dp)) {
+                workflows.take(8).forEach { w ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(w.name, fontSize = 11.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        TinyTag(w.state, if (w.state == "active") GH.green else GH.muted)
+                        Spacer(Modifier.width(6.dp))
+                        TextButton(onClick = {
+                            scope.launch {
+                                try { Api.dispatch(owner, name, w.id, repo.default_branch ?: "main"); load() }
+                                catch (e: Exception) { }
+                            }
+                        }) { Text("运行", fontSize = 10.sp) }
+                    }
+                }
+            }
+        }
+
+        when {
+            loading && runs.isEmpty() -> LoadingBox()
+            error != null -> ErrorBox(error) { scope.launch { load() } }
+            runs.isEmpty() -> EmptyBox("这个仓库还没有工作流运行记录")
+            else -> LazyColumn(Modifier.fillMaxSize()) {
+                items(runs, key = { it.id }) { run ->
+                    RunRow(run) { nav.navigate("run/$owner/$name/${run.id}") }
+                    Divider1()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun RunRow(run: Run, onClick: () -> Unit) {
+    Column(Modifier.fillMaxWidth().clickable { onClick() }.padding(horizontal = 14.dp, vertical = 10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(9.dp).clip(RoundedCornerShape(5.dp)).background(GH.statusColor(run.status, run.conclusion)))
+            Spacer(Modifier.width(7.dp))
+            Text(run.display_title ?: run.name ?: "运行 #${run.run_number}",
+                fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f))
+            Text("#${run.run_number}", fontSize = 10.sp, color = GH.muted)
+        }
+        Spacer(Modifier.height(4.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StateChip(null, run.status, run.conclusion)
+            Spacer(Modifier.width(8.dp))
+            Text("${run.event ?: ""} · ${run.head_branch ?: ""}", fontSize = 10.sp, color = GH.muted)
+            Spacer(Modifier.width(8.dp))
+            Text("耗时 ${durationText(run.run_started_at ?: run.created_at, run.updated_at)}", fontSize = 10.sp, color = GH.muted)
+        }
+        Spacer(Modifier.height(3.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            run.actor?.let {
+                Avatar(it.avatar_url, 12); Spacer(Modifier.width(3.dp))
+                Text(it.login, fontSize = 9.sp, color = GH.muted)
+            }
+            Spacer(Modifier.weight(1f))
+            Text("${timeAgo(run.created_at)} · 第 ${run.run_attempt ?: 1} 次", fontSize = 9.sp, color = GH.muted)
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var run by remember { mutableStateOf<Run?>(null) }
+    var jobs by remember { mutableStateOf<List<Job>>(emptyList()) }
+    var artifacts by remember { mutableStateOf<List<Artifact>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var auto by remember { mutableStateOf(true) }
+    var expanded by remember { mutableStateOf<Long?>(null) }
+    val snackbar = remember { SnackbarHostState() }
+
+    suspend fun load() {
+        try {
+            run = Api.run(owner, name, runId)
+            jobs = Api.runJobs(owner, name, runId)
+            artifacts = Api.runArtifacts(owner, name, runId)
+            error = null
+        } catch (e: Exception) { error = e.message }
+        loading = false
+    }
+    LaunchedEffect(runId) { load() }
+    LaunchedEffect(auto, run?.status) {
+        while (isActive && auto) {
+            val st = run?.status
+            if (st != "in_progress" && st != "queued" && st != "pending") break
+            delay((Cfg.pollSeconds.coerceIn(8, 300)) * 1000L)
+            load()
+        }
+    }
+
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        snackbarHost = { SnackbarHost(snackbar) },
+        topBar = {
+            TopAppBar(
+                title = { Text("工作流运行 #${run?.run_number ?: runId}", fontSize = 15.sp) },
+                navigationIcon = { IconButton({ nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
+                actions = { IconButton({ scope.launch { load() } }) { Icon(Icons.Filled.Refresh, "刷新") } },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
+            )
+        }
+    ) { pad ->
+        Column(Modifier.fillMaxSize().padding(pad)) {
+            when {
+                loading && run == null -> LoadingBox()
+                error != null -> ErrorBox(error) { scope.launch { load() } }
+                run != null -> {
+                    val r = run!!
+                    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(14.dp)) {
+                        Text(r.display_title ?: r.name ?: "工作流", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(6.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            StateChip(null, r.status, r.conclusion)
+                            Spacer(Modifier.width(8.dp))
+                            Text("${r.event ?: ""} · 分支 ${r.head_branch ?: "-"}", fontSize = 10.sp, color = GH.muted)
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        KeyValue("发起人", r.actor?.login ?: r.triggering_actor?.login)
+                        KeyValue("开始时间", fullTime(r.run_started_at ?: r.created_at))
+                        KeyValue("本步耗时", if (r.status == "in_progress") "已运行 ${durationText(r.run_started_at ?: r.created_at, null)}"
+                            else "总耗时 ${durationText(r.run_started_at ?: r.created_at, r.updated_at)}")
+                        KeyValue("提交", r.head_sha?.take(7))
+                        KeyValue("提交说明", r.head_commit?.message?.lineSequence()?.firstOrNull())
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            OutlinedButton(onClick = {
+                                scope.launch {
+                                    try { Api.rerun(owner, name, runId); snackbar.showSnackbar("已重新发起"); delay(1500); load() }
+                                    catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
+                                }
+                            }) { Icon(Icons.Filled.PlayArrow, null, Modifier.size(15.dp)); Text("重跑", fontSize = 11.sp) }
+                            OutlinedButton(onClick = {
+                                scope.launch {
+                                    try { Api.cancelRun(owner, name, runId); snackbar.showSnackbar("已取消"); delay(1500); load() }
+                                    catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
+                                }
+                            }) { Icon(Icons.Filled.Stop, null, Modifier.size(15.dp)); Text("取消", fontSize = 11.sp) }
+                            OutlinedButton(onClick = {
+                                scope.launch {
+                                    try { Api.deleteRun(owner, name, runId); snackbar.showSnackbar("已删除运行记录"); nav.popBackStack() }
+                                    catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
+                                }
+                            }) { Icon(Icons.Filled.Delete, null, Modifier.size(15.dp), tint = GH.red); Text("删除", fontSize = 11.sp) }
+                            OutlinedButton(onClick = {
+                                scope.launch {
+                                    try {
+                                        Downloader.download(ctx, "https://api.github.com/repos/$owner/$name/actions/runs/$runId/logs",
+                                            "logs-$runId.zip", Cfg.token, useMirror = false)
+                                        snackbar.showSnackbar("日志已下载")
+                                    } catch (e: Exception) { snackbar.showSnackbar("下载失败：${e.message}") }
+                                }
+                            }) { Icon(Icons.Filled.Download, null, Modifier.size(15.dp)); Text("日志", fontSize = 11.sp) }
+                        }
+                    }
+                    LazyColumn(Modifier.weight(1f)) {
+                        if (artifacts.isNotEmpty()) {
+                            item {
+                                Text("产物（${artifacts.size}）· 官方原地址下载", fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.padding(14.dp, 8.dp))
+                            }
+                            items(artifacts, key = { it.id }) { a ->
+                                Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(a.name, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text("${humanSize(a.size_in_bytes)} · ${timeAgo(a.created_at)} · ${if (a.expired) "已过期" else "有效"}", fontSize = 10.sp, color = GH.muted)
+                                    }
+                                    IconButton(onClick = {
+                                        scope.launch {
+                                            try {
+                                                Downloader.download(ctx, a.archive_download_url ?: return@launch, "${a.name}.zip", Cfg.token, useMirror = false)
+                                                snackbar.showSnackbar("已下载 ${a.name}")
+                                            } catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
+                                        }
+                                    }) { Icon(Icons.Filled.Download, null, Modifier.size(18.dp), tint = GH.blue) }
+                                    IconButton(onClick = {
+                                        scope.launch {
+                                            try { Api.deleteArtifact(owner, name, a.id); load() }
+                                            catch (e: Exception) { snackbar.showSnackbar("删除失败：${e.message}") }
+                                        }
+                                    }) { Icon(Icons.Filled.Delete, null, Modifier.size(16.dp), tint = GH.red) }
+                                }
+                                Divider1()
+                            }
+                        }
+                        item {
+                            Text("任务（${jobs.size}）", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(14.dp, 8.dp))
+                        }
+                        items(jobs, key = { it.id }) { job ->
+                            Column(Modifier.fillMaxWidth().clickable { expanded = if (expanded == job.id) null else job.id }.padding(14.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(Modifier.size(9.dp).clip(RoundedCornerShape(5.dp)).background(GH.statusColor(job.status, job.conclusion)))
+                                    Spacer(Modifier.width(7.dp))
+                                    Text(job.name, fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f),
+                                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    Text(if (job.status == "in_progress") "已运行 ${durationText(job.started_at, null)}" else durationText(job.started_at, job.completed_at),
+                                        fontSize = 10.sp, color = if (job.status == "in_progress") GH.yellow else GH.muted)
+                                }
+                                Spacer(Modifier.height(3.dp))
+                                Text("${job.status}${job.conclusion?.let { " · $it" } ?: ""} · ${job.runner_name ?: ""}",
+                                    fontSize = 10.sp, color = GH.muted)
+                                if (expanded == job.id) {
+                                    Spacer(Modifier.height(8.dp))
+                                    job.steps?.forEach { s ->
+                                        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Box(Modifier.size(7.dp).clip(RoundedCornerShape(4.dp))
+                                                .background(GH.statusColor(s.status, s.conclusion)))
+                                            Spacer(Modifier.width(6.dp))
+                                            Text("${s.number}. ${s.name}", fontSize = 11.sp, modifier = Modifier.weight(1f),
+                                                maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                            Text(durationText(s.started_at, s.completed_at), fontSize = 9.sp, color = GH.muted)
+                                        }
+                                    }
+                                    if (job.steps.isNullOrEmpty()) Text("这个任务没有步骤信息", fontSize = 10.sp, color = GH.muted)
+                                }
+                            }
+                            Divider1()
+                        }
+                        item { Spacer(Modifier.height(30.dp)) }
+                    }
+                }
+            }
+        }
+    }
+}

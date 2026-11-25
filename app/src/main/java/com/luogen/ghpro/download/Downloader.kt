@@ -1,0 +1,282 @@
+package com.luogen.ghpro.download
+
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import androidx.core.content.FileProvider
+import com.luogen.ghpro.data.Api
+import com.luogen.ghpro.data.Cfg
+import com.luogen.ghpro.sync.Notifier
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.io.File
+import java.io.IOException
+import java.io.RandomAccessFile
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.max
+import kotlin.math.min
+
+data class DownloadState(
+    val fileName: String,
+    val done: Long = 0,
+    val total: Long = 0,
+    val speed: Long = 0,
+    val status: String = "准备中",
+    val path: String? = null,
+    val error: String? = null,
+    val mirrorUsed: String? = null,
+    val threads: Int = 1
+) {
+    val percent: Int get() = if (total <= 0) 0 else ((done * 100) / total).toInt()
+}
+
+object Downloader {
+
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .build()
+
+    val state = MutableStateFlow<Map<String, DownloadState>>(emptyMap())
+
+    fun stateOf(name: String): DownloadState? = state.value[name]
+
+    private fun update(s: DownloadState) {
+        state.value = state.value + (s.fileName to s)
+    }
+
+    private fun dir(ctx: Context): File {
+        val d = File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, "downloads")
+        if (!d.exists()) d.mkdirs()
+        return d
+    }
+
+    fun sanitize(name: String): String =
+        name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().ifBlank { "download.bin" }.take(150)
+
+    fun candidates(rawUrl: String, useMirror: Boolean): List<String> {
+        val out = ArrayList<String>()
+        val isApi = rawUrl.contains("api.github.com") || rawUrl.contains("uploads.github.com") || rawUrl.contains("objects.githubusercontent.com")
+        if (useMirror && !isApi) {
+            val normalized = when {
+                rawUrl.startsWith("https://github.com/") -> rawUrl
+                rawUrl.startsWith("https://codeload.github.com/") -> rawUrl
+                rawUrl.startsWith("https://raw.githubusercontent.com/") -> rawUrl
+                else -> rawUrl
+            }
+            Cfg.mirrorOf(normalized).forEach { out.add(it) }
+        }
+        out.add(rawUrl)
+        return out
+    }
+
+    suspend fun download(
+        ctx: Context,
+        rawUrl: String,
+        fileName: String,
+        token: String? = null,
+        useMirror: Boolean = true,
+        threads: Int = Cfg.downThreads,
+        notify: Boolean = true
+    ): File = withContext(Dispatchers.IO) {
+        val safe = sanitize(fileName)
+        val outFile = File(dir(ctx), safe)
+        val cands = candidates(rawUrl, useMirror)
+        var lastError: Exception? = null
+        for (c in cands) {
+            try {
+                update(DownloadState(safe, status = "连接中", mirrorUsed = c))
+                fetch(c, outFile, token, threads, safe, notify)
+                if (notify) Notifier.downloadDone(ctx, safe, outFile.absolutePath)
+                update(DownloadState(safe, done = outFile.length(), total = outFile.length(),
+                    status = "已完成", path = outFile.absolutePath, mirrorUsed = c, threads = threads))
+                return@withContext outFile
+            } catch (e: Exception) {
+                lastError = e
+                outFile.delete()
+                update(DownloadState(safe, status = "重试中", error = e.message, mirrorUsed = c))
+            }
+        }
+        update(DownloadState(safe, status = "失败", error = lastError?.message ?: "下载失败"))
+        throw lastError ?: IOException("下载失败")
+    }
+
+    private fun fetch(url: String, outFile: File, token: String?, threadsWanted: Int, name: String, notify: Boolean) {
+        val host = runCatching { java.net.URI(url).host ?: "" }.getOrDefault("")
+        val sendAuth = token != null && (host.contains("github.com") || host.contains("githubusercontent.com"))
+        val head = Request.Builder().url(url)
+            .header("User-Agent", "GitHubPro/1.0")
+            .apply { if (sendAuth) header("Authorization", "Bearer $token") }
+            .head().build()
+        var total = -1L
+        var acceptRanges = false
+        try {
+            client.newCall(head).execute().use { r ->
+                if (r.isSuccessful) {
+                    total = r.header("Content-Length")?.toLongOrNull() ?: -1
+                    acceptRanges = r.header("Accept-Ranges")?.contains("bytes", true) == true
+                }
+            }
+        } catch (e: Exception) { }
+
+        val useMulti = Cfg.multiThread && threadsWanted > 1 && total > 1024 * 1024 && acceptRanges
+        if (useMulti) {
+            multiThread(url, outFile, token, sendAuth, total, threadsWanted, name, notify)
+        } else {
+            single(url, outFile, token, sendAuth, total, name, notify)
+        }
+    }
+
+    private fun single(url: String, outFile: File, token: String?, sendAuth: Boolean, totalHint: Long, name: String, notify: Boolean) {
+        val req = Request.Builder().url(url)
+            .header("User-Agent", "GitHubPro/1.0")
+            .apply { if (sendAuth) header("Authorization", "Bearer $token") }
+            .get().build()
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
+            val total = resp.body?.contentLength()?.takeIf { it > 0 } ?: totalHint
+            val out = outFile.outputStream()
+            val buf = ByteArray(64 * 1024)
+            var done = 0L
+            var last = System.currentTimeMillis()
+            var lastBytes = 0L
+            resp.body?.byteStream()?.use { input ->
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    out.write(buf, 0, n)
+                    done += n
+                    val now = System.currentTimeMillis()
+                    if (now - last > 400) {
+                        val speed = (done - lastBytes) * 1000 / max(1, now - last)
+                        update(DownloadState(name, done = done, total = total, speed = speed,
+                            status = if (total > 0) "下载中 ${done * 100 / total}%" else "下载中 ${done / 1024}KB",
+                            threads = 1))
+                        if (notify && total > 0) Notifier.downloadProgress(
+                            com.luogen.ghpro.AppCtx.get(), name, (done * 100 / total).toInt()
+                        )
+                        last = now
+                        lastBytes = done
+                    }
+                }
+            }
+            out.flush(); out.close()
+        }
+    }
+
+    private fun multiThread(
+        url: String, outFile: File, token: String?, sendAuth: Boolean,
+        total: Long, threads: Int, name: String, notify: Boolean
+    ) {
+        RandomAccessFile(outFile, "rw").use { raf ->
+            raf.setLength(total)
+        }
+        val done = AtomicLong(0)
+        val chunk = (total + threads - 1) / threads
+        val errors = java.util.Collections.synchronizedList(ArrayList<Exception>())
+        val progress = Thread {
+            var last = System.currentTimeMillis()
+            var lastBytes = 0L
+            while (true) {
+                Thread.sleep(400)
+                val d = done.get()
+                if (d >= total) break
+                val now = System.currentTimeMillis()
+                val speed = (d - lastBytes) * 1000 / max(1, now - last)
+                update(DownloadState(name, done = d, total = total, speed = speed,
+                    status = "多线程下载 ${d * 100 / total}%", threads = threads))
+                if (notify) Notifier.downloadProgress(com.luogen.ghpro.AppCtx.get(), name, (d * 100 / total).toInt())
+                last = now
+                lastBytes = d
+            }
+        }
+        progress.isDaemon = true
+        progress.start()
+
+        val workers = ArrayList<Thread>()
+        for (i in 0 until threads) {
+            val start = i * chunk
+            val end = min(total - 1, start + chunk - 1)
+            if (start > end) continue
+            val t = Thread {
+                try {
+                    val req = Request.Builder().url(url)
+                        .header("User-Agent", "GitHubPro/1.0")
+                        .header("Range", "bytes=$start-$end")
+                        .apply { if (sendAuth) header("Authorization", "Bearer $token") }
+                        .get().build()
+                    client.newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful && resp.code != 206) throw IOException("HTTP ${resp.code}")
+                        resp.body?.byteStream()?.use { input ->
+                            RandomAccessFile(outFile, "rw").use { raf ->
+                                raf.seek(start)
+                                val buf = ByteArray(32 * 1024)
+                                var pos = start
+                                while (pos <= end) {
+                                    val n = input.read(buf, 0, min(buf.size.toLong(), end - pos + 1).toInt())
+                                    if (n < 0) break
+                                    raf.write(buf, 0, n)
+                                    pos += n
+                                    done.addAndGet(n.toLong())
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    errors.add(e)
+                }
+            }
+            t.isDaemon = true
+            t.start()
+            workers.add(t)
+        }
+        workers.forEach { it.join() }
+        if (errors.isNotEmpty()) throw IOException("分片下载失败：${errors.first().message}")
+        if (outFile.length() != total) throw IOException("文件大小不符")
+    }
+
+    // 安装 / 分享
+    fun installApk(ctx: Context, file: File) {
+        try {
+            val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)
+            val i = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            ctx.startActivity(i)
+        } catch (e: Exception) {
+            share(ctx, file)
+        }
+    }
+
+    fun share(ctx: Context, file: File) {
+        try {
+            val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)
+            val i = Intent(Intent.ACTION_SEND).apply {
+                type = guessMime(file.name)
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            ctx.startActivity(Intent.createChooser(i, "分享文件").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (e: Exception) { }
+    }
+
+    fun guessMime(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
+        "apk" -> "application/vnd.android.package-archive"
+        "zip" -> "application/zip"
+        "png" -> "image/png"
+        "jpg", "jpeg" -> "image/jpeg"
+        "mp4" -> "video/mp4"
+        "pdf" -> "application/pdf"
+        "txt", "md", "kt", "java", "json", "xml" -> "text/plain"
+        else -> "*/*"
+    }
+
+    fun buildApiUrl(path: String): String = "https://api.github.com$path"
+}
