@@ -134,8 +134,13 @@ fun DownloadsScreen(nav: NavController) {
                                     Text(d.fileName, fontSize = 13.sp, fontWeight = FontWeight.Medium,
                                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                                     Text(if (d.total > 0) "${d.percent}%" else d.status, fontSize = 11.sp, color = GH.blue)
-                                    TextButton({ Downloader.cancelDownload(d.fileName) }, contentPadding = PaddingValues(horizontal = 6.dp)) {
-                                        Text("取消", fontSize = 11.sp, color = GH.red)
+                                    TextButton({
+                                        val ok = Downloader.cancelAndDelete(ctx, d.fileName)
+                                        Toast.makeText(ctx,
+                                            if (ok) "已取消并删除记录和本地文件" else "已取消并删除记录（本地文件没找到）",
+                                            Toast.LENGTH_SHORT).show()
+                                    }, contentPadding = PaddingValues(horizontal = 6.dp)) {
+                                        Text("取消并删除", fontSize = 11.sp, color = GH.red)
                                     }
                                 }
                                 LinearProgressIndicator(
@@ -198,12 +203,17 @@ fun DownloadsScreen(nav: NavController) {
                             }
                             FlowRow(Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                TextButton({ Downloader.removeRecord(ctx, r.id, false) }, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                                TextButton({
+                                    Downloader.removeRecord(ctx, r.id, false)
+                                    Toast.makeText(ctx, "已删除记录（本地文件保留）", Toast.LENGTH_SHORT).show()
+                                }, contentPadding = PaddingValues(horizontal = 8.dp)) {
                                     Text("删除记录", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 TextButton({
-                                    Downloader.removeRecord(ctx, r.id, true)
-                                    Toast.makeText(ctx, "已删除记录和本地文件", Toast.LENGTH_SHORT).show()
+                                    val ok = Downloader.removeRecord(ctx, r.id, true)
+                                    Toast.makeText(ctx,
+                                        if (ok) "已删除记录、本地缓存和系统下载文件" else "记录已删除，但本地文件没找到或删不掉",
+                                        Toast.LENGTH_SHORT).show()
                                 }, contentPadding = PaddingValues(horizontal = 8.dp)) {
                                     Icon(Icons.Filled.Delete, null, Modifier.size(14.dp), tint = GH.red)
                                     Text("连文件删除", fontSize = 11.sp, color = GH.red)

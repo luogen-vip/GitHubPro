@@ -84,6 +84,7 @@ object Downloader {
     private fun isCancelled(name: String): Boolean = cancelFlags[name] == true
 
     fun repoOf(name: String): String? = repoMap[sanitize(name)]
+    private fun routeOf(name: String): String = repoMap[sanitize(name)]?.let { "repo/$it" } ?: "downloads"
     private fun newEpoch(name: String): Long {
         val e = System.nanoTime()
         epochs[name] = e
@@ -214,17 +215,88 @@ object Downloader {
         historyVersion.value++
     }
 
-    fun removeRecord(ctx: Context, id: String, deleteFile: Boolean) {
-        val list = history(ctx).toMutableList()
-        val target = list.firstOrNull { it.id == id }
-        if (deleteFile && target?.localPath != null) runCatching { File(target.localPath!!).delete() }
-        list.removeAll { it.id == id }
-        save(ctx, list)
+    /** 真正删掉本地缓存文件 + 系统“下载/GitHubPro”里发布出去的那一份。 */
+    private fun deletePublished(ctx: Context, name: String): Boolean {
+        var deleted = false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching {
+                val resolver = ctx.contentResolver
+                val sel = "${MediaStore.MediaColumns.DISPLAY_NAME}=? AND ${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
+                val args = arrayOf(name, Environment.DIRECTORY_DOWNLOADS + "/GitHubPro%")
+                val rows = resolver.delete(MediaStore.Downloads.EXTERNAL_CONTENT_URI, sel, args)
+                if (rows > 0) deleted = true
+            }.onFailure {
+                // 部分 ROM 需要先查 uri 再删；查不到就当不存在
+                runCatching {
+                    val resolver = ctx.contentResolver
+                    resolver.query(
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                        arrayOf(MediaStore.MediaColumns._ID),
+                        "${MediaStore.MediaColumns.DISPLAY_NAME}=?",
+                        arrayOf(name), null
+                    )?.use { c ->
+                        if (c.moveToFirst()) {
+                            val id = c.getLong(0)
+                            val uri = android.content.ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id)
+                            if (resolver.delete(uri, null, null) > 0) deleted = true
+                        }
+                    }
+                }
+            }
+        } else {
+            runCatching {
+                val f = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "GitHubPro/$name")
+                if (f.exists() && f.delete()) deleted = true
+            }
+        }
+        return deleted
     }
 
-    fun clearRecords(ctx: Context, deleteFiles: Boolean) {
-        if (deleteFiles) history(ctx).forEach { r -> r.localPath?.let { runCatching { File(it).delete() } } }
+    private fun deleteRecordFiles(ctx: Context, r: DlRecord): Boolean {
+        var deleted = false
+        val local = r.localPath?.let { File(it) } ?: File(dir(ctx), sanitize(r.name))
+        runCatching { if (local.exists() && local.delete()) deleted = true }
+        if (deletePublished(ctx, r.name)) deleted = true
+        if (sanitize(r.name) != r.name && deletePublished(ctx, sanitize(r.name))) deleted = true
+        return deleted
+    }
+
+    /** 返回 true 表示至少真实删掉了一个本地文件；false 表示记录删了但磁盘上没找到/删不掉。 */
+    fun removeRecord(ctx: Context, id: String, deleteFile: Boolean): Boolean {
+        val list = history(ctx).toMutableList()
+        val target = list.firstOrNull { it.id == id }
+        val removed = if (deleteFile && target != null) deleteRecordFiles(ctx, target) else false
+        list.removeAll { it.id == id }
+        save(ctx, list)
+        return removed
+    }
+
+    fun clearRecords(ctx: Context, deleteFiles: Boolean): Boolean {
+        var removed = false
+        if (deleteFiles) history(ctx).forEach { r -> if (deleteRecordFiles(ctx, r)) removed = true }
         save(ctx, emptyList())
+        return removed
+    }
+
+    /** 正在下载/失败的条目：取消任务，删缓存残留 + 已发布文件 + 同名历史记录，最后清掉状态。 */
+    fun cancelAndDelete(ctx: Context, name: String): Boolean {
+        val safe = sanitize(name)
+        cancelDownload(name)
+        var removed = false
+        runCatching {
+            val f = File(dir(ctx), safe)
+            if (f.exists() && f.delete()) removed = true
+        }
+        if (deletePublished(ctx, name)) removed = true
+        if (deletePublished(ctx, safe)) removed = true
+        val list = history(ctx).toMutableList()
+        list.filter { it.name == name || it.name == safe }.forEach { r ->
+            if (deleteRecordFiles(ctx, r)) removed = true
+        }
+        list.removeAll { it.name == name || it.name == safe }
+        save(ctx, list)
+        state.value = state.value - safe
+        return removed
     }
 
     /** 进程重启后把上次没下完的条目改成「已中断」，不再卡在某个百分比。 */
@@ -312,7 +384,7 @@ object Downloader {
                 updateE(DownloadState(safe, status = phase, mirrorUsed = c, url = rawUrl, useMirror = useMirror,
                     done = outFile.takeIf { it.exists() }?.length() ?: 0,
                     total = expectedTotal.takeIf { it > 0 } ?: 0), candEpoch)
-                if (notify) Notifier.downloadStatus(ctx, safe, phase)
+                if (notify) Notifier.downloadStatus(ctx, safe, phase, routeOf(safe))
                 fetch(c, outFile, token, threads, safe, notify, candEpoch, expectedTotal)
                 if (isCancelled(safe)) throw kotlinx.coroutines.CancellationException("已取消")
                 val len = outFile.length()
@@ -320,7 +392,7 @@ object Downloader {
                 // 关键：先把进度明确推到 100%，再花时间写入系统下载目录，避免条子永远差一点
                 updateE(DownloadState(safe, done = len, total = len, status = "已下载 100% · 正在保存…",
                     mirrorUsed = c, threads = threads), candEpoch)
-                if (notify) Notifier.downloadProgress(ctx, safe, 100, "已下载 100% · 正在保存…", len, len)
+                if (notify) Notifier.downloadProgress(ctx, safe, 100, "已下载 100% · 正在保存…", len, len, routeOf(safe))
                 val pub = publish(ctx, outFile, safe)
                 val doneState = DownloadState(safe, done = len, total = len,
                     status = "已完成", path = pub.first, publicPath = pub.first, localPath = outFile.absolutePath,
@@ -524,7 +596,7 @@ object Downloader {
                         if (notify) Notifier.downloadProgress(
                             com.luogen.ghpro.AppCtx.get(), name,
                             if (total > 0) (done * 100 / total).toInt().coerceIn(0, 99) else 0,
-                            "单线程下载", done, total
+                            "单线程下载", done, total, routeOf(name)
                         )
                         last = now
                         lastBytes = done
@@ -561,7 +633,7 @@ object Downloader {
                 val speed = (d - lastBytes) * 1000 / max(1, now - last)
                 updateE(DownloadState(name, done = d, total = total, speed = speed,
                     status = "多线程下载 ${d * 100 / total}%", threads = threads), epoch)
-                if (notify) Notifier.downloadProgress(com.luogen.ghpro.AppCtx.get(), name, (d * 100 / total).toInt(), "多线程 $threads 线程", d, total)
+                if (notify) Notifier.downloadProgress(com.luogen.ghpro.AppCtx.get(), name, (d * 100 / total).toInt(), "多线程 $threads 线程", d, total, routeOf(name))
                 last = now
                 lastBytes = d
             }

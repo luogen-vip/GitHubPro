@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.luogen.ghpro.data.Api
+import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Notification
 import kotlinx.coroutines.launch
 
@@ -46,10 +47,13 @@ fun NotificationsScreen(nav: NavController) {
         if (showLoading) loading = true
         try {
             val data = Api.notifications(all)
-            list = data
+            // 本地已读掩码：服务端还没同步时也不让已读通知回到“未读”
+            val read = Cfg.notifReadIds
+            val masked = data.map { if (it.id in read) it.copy(unread = false) else it }
+            list = if (all) masked else masked.filter { it.unread }
             error = null
             UiCache.notifAll = all
-            UiCache.notifSnaps[all] = NotifSnap(data, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset)
+            UiCache.notifSnaps[all] = NotifSnap(list, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset)
         } catch (e: Exception) { error = e.message }
         loading = false
     }
@@ -89,7 +93,9 @@ fun NotificationsScreen(nav: NavController) {
                         scope.launch {
                             try {
                                 Api.markAllRead()
-                                list = list.map { it.copy(unread = false) }
+                                Cfg.notifReadIds = Cfg.notifReadIds + list.map { it.id }
+                                // 未读页签里“全部已读”后必须立刻清空，不能留在列表里装未读
+                                list = if (all) list.map { it.copy(unread = false) } else emptyList()
                                 savePos()
                                 snackbar.showSnackbar("已全部标记为已读")
                             } catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
@@ -122,20 +128,21 @@ fun NotificationsScreen(nav: NavController) {
                                     // 先把当前位置存下来，再从“全部”点进某条：返回后仍是全部页签 + 原位置
                                     savePos()
                                     val clicked = n
-                                    list = list.map { if (it.id == clicked.id) it.copy(unread = false) else it }
+                                    Cfg.notifReadIds = Cfg.notifReadIds + clicked.id
+                                    if (all) {
+                                        list = list.map { if (it.id == clicked.id) it.copy(unread = false) else it }
+                                    } else {
+                                        // 未读页签：点过就立即从“未读”列表消失，返回时也不会又冒出来
+                                        list = list.filter { it.id != clicked.id }
+                                    }
+                                    UiCache.notifSnaps[all] = NotifSnap(list, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset)
                                     scope.launch { runCatching { Api.markThreadRead(clicked.id) } }
                                     val url = n.subject?.url ?: ""
                                     val repo = n.repository?.full_name ?: ""
-                                    val m = Regex("repos/(.+?)/(.+?)/(issues|pulls)/").find(url)
-                                    if (m != null) {
-                                        val (o, r, kind) = m.destructured
-                                        val num = url.substringAfterLast('/').toIntOrNull()
-                                        if (num != null) nav.navigate(if (kind == "issues") "issue/$o/$r/$num" else "pr/$o/$r/$num")
-                                    } else if (repo.isNotBlank()) {
-                                        nav.navigate("repo/$repo")
-                                    } else {
-                                        openUrl(ctx, n.subject?.url)
-                                    }
+                                    val target = notificationTarget(n)
+                                    if (target != null) nav.navigate(target)
+                                    else if (repo.isNotBlank()) nav.navigate("repo/$repo")
+                                    else openUrl(ctx, url)
                                 }.padding(14.dp)
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -165,4 +172,28 @@ fun NotificationsScreen(nav: NavController) {
             }
         }
     }
+}
+
+/** 通知列表点击：发行版/提交/工作流/讨论/议题/PR 都直接到详情，不再只回仓库首页。 */
+private fun notificationTarget(n: Notification): String? {
+    val repo = n.repository?.full_name ?: return null
+    val url = n.subject?.url ?: return "repo/$repo"
+    Regex("/repos/([^/]+)/([^/]+)/(issues|pulls|discussions)/(\\d+)").find(url)?.let { m ->
+        val (o, r, kind, num) = m.destructured
+        val routeKind = when (kind) { "issues" -> "issue"; "pulls" -> "pr"; else -> "discussion" }
+        return "$routeKind/$o/$r/$num"
+    }
+    Regex("/repos/([^/]+)/([^/]+)/releases/(\\d+)").find(url)?.let { m ->
+        val (o, r, id) = m.destructured
+        return "release/$o/$r/$id"
+    }
+    Regex("/repos/([^/]+)/([^/]+)/commits/([0-9a-fA-F]+)").find(url)?.let { m ->
+        val (o, r, sha) = m.destructured
+        return "commit/$o/$r/$sha"
+    }
+    Regex("/repos/([^/]+)/([^/]+)/actions/runs/(\\d+)").find(url)?.let { m ->
+        val (o, r, id) = m.destructured
+        return "run/$o/$r/$id"
+    }
+    return "repo/$repo"
 }

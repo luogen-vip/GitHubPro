@@ -20,26 +20,71 @@ import com.luogen.ghpro.ui.GHTheme
 import com.luogen.ghpro.ui.NavRoot
 import com.luogen.ghpro.ui.FilePreviewDialog
 import com.luogen.ghpro.ui.PreviewBus
+import com.luogen.ghpro.ui.DeepLinkBus
 
 class MainActivity : ComponentActivity() {
     private val notifPerm = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
-    private fun openDownloadedFile(intent: Intent?) {
-        val p = intent?.getStringExtra("open_file") ?: return
-        val f = File(p)
-        if (f.exists()) PreviewBus.open(this, f)
-        intent?.removeExtra("open_file")
+    private fun openRouteFromRepo(repo: String?): String? {
+        if (!repo.isNullOrBlank()) return "repo/${repo.trim('/')}"
+        return null
+    }
+
+    private fun routeFromUrl(url: String?): String? {
+        val u = url ?: return null
+        val run = Regex("github\\.com/([^/]+)/([^/]+)/actions/runs/(\\d+)").find(u)
+        if (run != null) {
+            val (o, r, id) = run.destructured
+            return "run/$o/$r/$id"
+        }
+        val commit = Regex("github\\.com/([^/]+)/([^/]+)/commit/([0-9a-fA-F]+)").find(u)
+        if (commit != null) {
+            val (o, r, sha) = commit.destructured
+            return "commit/$o/$r/$sha"
+        }
+        val release = Regex("github\\.com/([^/]+)/([^/]+)/releases/tag/([^/?#]+)").find(u)
+        if (release != null) {
+            val (o, r, tag) = release.destructured
+            return "releaseTag/$o/$r/$tag"
+        }
+        val issue = Regex("github\\.com/([^/]+)/([^/]+)/(issues|pull)/(\\d+)").find(u)
+        if (issue != null) {
+            val (o, r, kind, n) = issue.destructured
+            return "${if (kind == "issues") "issue" else "pr"}/$o/$r/$n"
+        }
+        return null
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        if (intent == null) return
+        val file = intent.getStringExtra("open_file")
+        if (!file.isNullOrBlank()) {
+            val f = File(file)
+            if (f.exists()) PreviewBus.open(this, f)
+            intent.removeExtra("open_file")
+            return
+        }
+        val explicit = intent.getStringExtra("open_route")
+        val route = when {
+            !explicit.isNullOrBlank() -> explicit
+            else -> routeFromUrl(intent.getStringExtra("open_url"))
+                ?: openRouteFromRepo(intent.getStringExtra("open_repo"))
+        }
+        if (!route.isNullOrBlank()) DeepLinkBus.open(route)
+        intent.removeExtra("open_route")
+        intent.removeExtra("open_url")
+        intent.removeExtra("open_repo")
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        openDownloadedFile(intent)
+        handleIntent(intent)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        openDownloadedFile(intent)
+        handleIntent(intent)
         if (Build.VERSION.SDK_INT >= 33) {
             try { notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS) } catch (e: Exception) { }
         }

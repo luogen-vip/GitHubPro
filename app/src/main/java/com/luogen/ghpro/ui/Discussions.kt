@@ -50,41 +50,25 @@ fun DiscussionsTab(nav: NavController, owner: String, name: String, repo: Repo) 
         }
     }
 
-    suspend fun load() {
-        loading = true
+    suspend fun load(showLoading: Boolean = true) {
+        if (showLoading) loading = true
         try {
-            list = Api.discussions(owner, name)
-            UiCache.repoDiscussions[dk] = list
+            val page = Api.discussions(owner, name)
+            canDiscuss = page.enabled
+            list = page.items
+            if (page.enabled) UiCache.repoDiscussions[dk] = list else UiCache.repoDiscussions.remove(dk)
             error = null
-            msg = null
-            canDiscuss = true
+            msg = if (!page.enabled) "GitHub 返回：这个仓库还没有开启 Discussions" else null
         } catch (e: Exception) {
-            val notEnabled = e.message?.contains("discussions", true) == true || e.message?.contains("Could not resolve", true) == true
-            if (notEnabled) {
-                // 新仓库刚开启、GitHub 的讨论区可能还在初始化：真实复查仓库开关，
-                // 开了就显示“已开启但这次没读到”，不要误报成“没开启”。
-                val fresh = runCatching { Api.repo(owner, name) }.getOrNull()
-                if (fresh != null) UiCache.repoData[dk] = fresh
-                if (fresh?.has_discussions == true) {
-                    canDiscuss = true
-                    list = emptyList()
-                    error = null
-                    msg = "讨论区已开启，但这次没有读到列表；点“刷新讨论”再试一次"
-                } else {
-                    canDiscuss = false
-                    list = emptyList()
-                    error = null
-                    msg = "GitHub 返回：这个仓库还没有开启 Discussions"
-                }
-            } else {
-                error = e.message
-                msg = null
-            }
+            // 网络/权限错误就如实显示错误，绝不再把“没读到”推断成“已开启”
+            error = e.message
+            msg = null
         }
         loading = false
     }
     LaunchedEffect(owner, name, repo.has_discussions) {
-        if (repo.has_discussions && list.isEmpty()) load() else loading = false
+        // 有缓存也静默复查服务端开关；缓存先展示，但绝不把“没开”缓存成“已开启”
+        if (repo.has_discussions) load(showLoading = list.isEmpty()) else loading = false
     }
 
     when {

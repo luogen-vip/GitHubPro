@@ -26,6 +26,38 @@ object SyncEngine {
 
     data class Change(val title: String, val body: String, val kind: String)
 
+    private fun repoRoute(full: String): String = "repo/${full.trim('/')}"
+
+    private suspend fun commitRoute(full: String, branch: String?): String {
+        val parts = full.split("/")
+        if (parts.size != 2) return repoRoute(full)
+        val sha = runCatching { Api.commits(parts[0], parts[1], branch, 1).items.firstOrNull()?.sha }.getOrNull()
+        return if (!sha.isNullOrBlank()) "commit/$full/$sha" else repoRoute(full)
+    }
+
+    private fun notificationRoute(n: com.luogen.ghpro.data.Notification): String? {
+        val full = n.repository?.full_name ?: return null
+        val url = n.subject?.url ?: return repoRoute(full)
+        Regex("/repos/([^/]+)/([^/]+)/(issues|pulls|discussions)/(\\d+)").find(url)?.let { m ->
+            val (o, r, kind, num) = m.destructured
+            val routeKind = when (kind) { "issues" -> "issue"; "pulls" -> "pr"; else -> "discussion" }
+            return "$routeKind/$o/$r/$num"
+        }
+        Regex("/repos/([^/]+)/([^/]+)/releases/(\\d+)").find(url)?.let { m ->
+            val (o, r, id) = m.destructured
+            return "release/$o/$r/$id"
+        }
+        Regex("/repos/([^/]+)/([^/]+)/commits/([0-9a-fA-F]+)").find(url)?.let { m ->
+            val (o, r, sha) = m.destructured
+            return "commit/$o/$r/$sha"
+        }
+        Regex("/repos/([^/]+)/([^/]+)/actions/runs/(\\d+)").find(url)?.let { m ->
+            val (o, r, id) = m.destructured
+            return "run/$o/$r/$id"
+        }
+        return repoRoute(full)
+    }
+
     private fun snapRoot(): JsonObject {
         val s = Cfg.snapshots
         return try {
@@ -73,7 +105,7 @@ object SyncEngine {
                     }
                     val repo = n.repository?.full_name ?: ""
                     val body = "${n.subject?.title ?: ""}\n$repo  ·  ${com.luogen.ghpro.ui.reasonCn(n.reason)}"
-                    Notifier.generic(ctx, title, body)
+                    Notifier.generic(ctx, title, body, notificationRoute(n))
                     changes.add(Change(title, body, "notification"))
                 }
             }
@@ -93,7 +125,7 @@ object SyncEngine {
                             val fresh = still.getOrNull()
                             if (fresh?.full_name != null && fresh.full_name != gone) {
                                 val body = "$gone 已改名为 ${fresh.full_name}"
-                                if (notify) Notifier.generic(ctx, "仓库改名了", body)
+                                if (notify) Notifier.generic(ctx, "仓库改名了", body, repoRoute(fresh?.full_name ?: gone))
                                 changes.add(Change("仓库改名了", body, "repo_rename"))
                             }
                         } else if (e != null && (e.message?.contains("404") == true || e.message?.contains("Not Found", true) == true)) {
@@ -118,13 +150,13 @@ object SyncEngine {
                     val oldStars = old.get("stars")?.asInt ?: 0
                     if (r.stargazers_count > oldStars) {
                         val body = "${r.full_name} 收到新的 Star，现在共 ${r.stargazers_count} 个"
-                        if (notify) Notifier.generic(ctx, "⭐ 新增 ${r.stargazers_count - oldStars} 个 Star", body)
+                        if (notify) Notifier.generic(ctx, "⭐ 新增 ${r.stargazers_count - oldStars} 个 Star", body, repoRoute(r.full_name))
                         changes.add(Change("⭐ 新增 Star", body, "star"))
                     }
                     val oldPushed = old.get("pushed")?.asString
                     if (oldPushed != null && r.pushed_at != null && oldPushed != r.pushed_at) {
                         val body = "${r.full_name} 有新提交推送到 ${r.default_branch ?: "main"}"
-                        if (notify) Notifier.generic(ctx, "仓库有更新", body)
+                        if (notify) Notifier.generic(ctx, "仓库有更新", body, commitRoute(r.full_name, r.default_branch))
                         changes.add(Change("仓库有更新", body, "push"))
                     }
                 }
@@ -139,8 +171,9 @@ object SyncEngine {
 
         // 3. 关注仓库的工作流运行状态
         try {
-            val watch = Cfg.watchRepos
-            watch.take(10).forEach { full ->
+            // 关注的仓库 + 已 Star 的仓库都要收到新发行版/新提交提醒
+            val watch = (Cfg.watchRepos + Cfg.starredSnapshot).take(20)
+            watch.forEach { full ->
                 val parts = full.split("/")
                 if (parts.size != 2) return@forEach
                 val (o, r) = parts
@@ -153,15 +186,40 @@ object SyncEngine {
                         val oldPushed = oldRepo.get("pushed")?.asString
                         if (oldPushed != null && repo.pushed_at != null && oldPushed != repo.pushed_at) {
                             val body = "$full 有新的代码推送到 ${repo.default_branch ?: "main"}"
-                            Notifier.generic(ctx, "仓库代码有更新", body)
+                            Notifier.generic(ctx, "仓库代码有更新", body, commitRoute(full, repo.default_branch))
                             changes.add(Change("仓库代码有更新", body, "push"))
                         }
                         val oldTag = oldRepo.get("release")?.asString
                         val newTag = rel?.tag_name ?: ""
+                        val assets = rel?.assets?.mapNotNull { it.name?.takeIf { n -> n.isNotBlank() } } ?: emptyList()
                         if (oldTag != null && oldTag != newTag && newTag.isNotBlank()) {
-                            val body = "$full 发布了新发行版 $newTag"
-                            Notifier.generic(ctx, "新发行版 $newTag", body)
+                            val apk = assets.firstOrNull { it.endsWith(".apk", true) }
+                            val fileLine = when {
+                                apk != null -> "\nAPK 文件：$apk" + if (assets.size > 1) " 等 ${assets.size} 个文件" else ""
+                                assets.isNotEmpty() -> "\n文件：" + assets.take(4).joinToString("、")
+                                else -> ""
+                            }
+                            val body = "$full 发布了新发行版 $newTag$fileLine"
+                            val route = rel?.id?.takeIf { it > 0 }?.let { "release/$full/$it" } ?: repoRoute(full)
+                            Notifier.generic(ctx, "新发行版 $newTag", body, route)
                             changes.add(Change("新发行版", body, "release"))
+                        } else {
+                            // 同一个发行版后来又传附件：也要提醒，并点名新增文件
+                            val hadAssets = oldRepo.has("assets")
+                            val oldAssets = oldRepo.get("assets")?.asString ?: ""
+                            val newAssets = assets.joinToString("|")
+                            if (oldTag != null && hadAssets && newTag.isNotBlank() && oldAssets != newAssets) {
+                                val oldList = oldAssets.split("|").filter { it.isNotBlank() }
+                                val added = assets.filter { it !in oldList }
+                                val body = if (added.isEmpty()) {
+                                    "$full 的发行版 $newTag 附件有变化"
+                                } else {
+                                    "$full 的发行版 $newTag 新增文件：" + added.take(5).joinToString("、")
+                                }
+                                val route = rel?.id?.takeIf { it > 0 }?.let { "release/$full/$it" } ?: repoRoute(full)
+                                Notifier.generic(ctx, "发行版附件更新", body, route)
+                                changes.add(Change("发行版附件更新", body, "release_asset"))
+                            }
                         }
                     }
                     if (repo != null) {
@@ -170,6 +228,7 @@ object SyncEngine {
                             addProperty("pushed", repo.pushed_at ?: "")
                             addProperty("updated", repo.updated_at ?: "")
                             addProperty("release", rel?.tag_name ?: "")
+                            addProperty("assets", rel?.assets?.mapNotNull { it.name }?.joinToString("|") ?: "")
                         }
                         repoSnap.add(full, o3)
                     }
@@ -184,13 +243,13 @@ object SyncEngine {
                         val ok = run.conclusion == "success"
                         val title = if (ok) "✅ 工作流成功" else "❌ 工作流${cnConclusion(run.conclusion)}"
                         val body = "${o}/${r} · ${run.display_title ?: run.name ?: ""}\n分支 ${run.head_branch ?: "-"} · 耗时 ${com.luogen.ghpro.ui.durationText(run.run_started_at, run.updated_at)}"
-                        if (notify && !muted) Notifier.actionDone(ctx, title, body, "$o/$r", run.html_url)
+                        if (notify && !muted) Notifier.actionDone(ctx, title, body, "$o/$r", run.html_url, "run/$o/$r/${run.id}")
                         changes.add(Change(title, body, "run"))
                     } else if (old == null) {
                         if (run.status == "in_progress" || run.status == "queued") {
                             val body = "${o}/${r} · ${run.display_title ?: run.name ?: ""} 已开始运行"
                             changes.add(Change("工作流开始", body, "run_start"))
-                            if (notify && !muted) Notifier.generic(ctx, "🚀 工作流已开始", body)
+                            if (notify && !muted) Notifier.generic(ctx, "🚀 工作流已开始", body, "run/$full/${run.id}")
                         }
                     }
                     val o2 = JsonObject().apply {

@@ -142,21 +142,20 @@ fun Avatar(url: String?, size: Int = 32, modifier: Modifier = Modifier, name: St
     ) {
         // GitHub 头像偶尔会 404 / 无头像 / 网络瞬断：底下永远有一层字母兜底，绝不会出现空白圆圈
         Text(letter, fontSize = (size * 0.42f).sp, color = GH.blue, fontWeight = FontWeight.Bold)
-        SubcomposeAsyncImage(
+        // 不用 Subcompose 的“成功才组合内容”：AsyncImage 一进入组合就发请求，
+        // 头像只要服务器有就立刻加载，不需要等用户滑动触发重组。
+        AsyncImage(
             model = ImageRequest.Builder(LocalContext.current)
                 .data(url)
-                .crossfade(true)
+                .crossfade(false)
                 .memoryCacheKey(url)
                 .diskCachePolicy(coil.request.CachePolicy.ENABLED)
+                .networkCachePolicy(coil.request.CachePolicy.ENABLED)
                 .build(),
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize(),
-        ) {
-            if (painter.state is AsyncImagePainter.State.Success) {
-                SubcomposeAsyncImageContent()
-            }
-        }
+        )
     }
 }
 

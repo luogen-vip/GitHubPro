@@ -332,35 +332,84 @@ object Api {
         deletePaths(o, r, listOf(path), branch)
 
     suspend fun deletePaths(o: String, r: String, paths: List<String>, branch: String?): Int {
-        val files = LinkedHashSet<String>()
-        paths.forEach { p -> files.addAll(collectFiles(o, r, p, branch)) }
-        if (files.isEmpty()) return 0
-        val ref = exec("/repos/$o/$r/git/ref/heads/${branch ?: "main"}").body.let { JsonParser.parseString(it).asJsonObject }
+        val wanted = paths.map { it.trim('/') }.filter { it.isNotBlank() }.distinct()
+        if (wanted.isEmpty()) return 0
+        val branchName = branch ?: "main"
+        val ref = exec("/repos/$o/$r/git/ref/heads/${enc(branchName)}").body.let { JsonParser.parseString(it).asJsonObject }
         val commitSha = ref.getAsJsonObject("object").get("sha").asString
         val commit = exec("/repos/$o/$r/git/commits/$commitSha").body.let { JsonParser.parseString(it).asJsonObject }
         val baseTree = commit.getAsJsonObject("tree").get("sha").asString
-        val entries = JsonArray()
-        files.forEach { f ->
-            entries.add(JsonObject().apply {
-                addProperty("path", f)
-                addProperty("mode", "100644")
-                addProperty("type", "blob")
-                add("sha", com.google.gson.JsonNull.INSTANCE)
-            })
+
+        // 一次递归读整棵树，按路径前缀精确匹配；不再对每个选中项反复打 contents。
+        // 这样多选文件/文件夹时不会因为某一次目录请求失败就全删失败。
+        val treeObj = runCatching {
+            JsonParser.parseString(exec("/repos/$o/$r/git/trees/$baseTree", query = mapOf("recursive" to "1")).body).asJsonObject
+        }.getOrNull()
+        val matched = ArrayList<JsonObject>()
+        treeObj?.getAsJsonArray("tree")?.forEach { el ->
+            val e = el.asJsonObject
+            if (e.get("type")?.asString != "blob") return@forEach
+            val path = e.get("path")?.asString ?: return@forEach
+            if (wanted.any { w -> path == w || path.startsWith("$w/") }) matched.add(e)
         }
-        val treeBody = JsonObject().apply { addProperty("base_tree", baseTree); add("tree", entries) }
-        val newTree = JsonParser.parseString(exec("/repos/$o/$r/git/trees", "POST", treeBody.toString()).body)
-            .asJsonObject.get("sha").asString
-        val commitBody = JsonObject().apply {
-            addProperty("message", "delete ${files.size} file(s)")
-            addProperty("tree", newTree)
-            add("parents", JsonArray().apply { add(commitSha) })
+        // 大树被 GitHub 截断 / 递归树读取失败时，退回逐目录 collectFiles；
+        // 绝不把“树没读到”当成“没有文件”静默返回 0。
+        if (matched.isEmpty() || treeObj?.get("truncated")?.asBoolean == true) {
+            matched.clear()
+            wanted.forEach { p ->
+                runCatching { collectFiles(o, r, p, branchName) }.getOrDefault(emptyList()).forEach { f ->
+                    matched.add(JsonObject().apply {
+                        addProperty("path", f)
+                        addProperty("mode", "100644")
+                        addProperty("type", "blob")
+                    })
+                }
+            }
         }
-        val newCommit = JsonParser.parseString(exec("/repos/$o/$r/git/commits", "POST", commitBody.toString()).body)
-            .asJsonObject.get("sha").asString
-        val patch = JsonObject().apply { addProperty("sha", newCommit) }
-        exec("/repos/$o/$r/git/refs/heads/${branch ?: "main"}", "PATCH", patch.toString())
-        return files.size
+        val files = matched.mapNotNull { it.get("path")?.asString }.distinct()
+
+        suspend fun makeTree(): String {
+            val entries = JsonArray()
+            matched.forEach { e ->
+                entries.add(JsonObject().apply {
+                    addProperty("path", e.get("path").asString)
+                    addProperty("mode", e.get("mode")?.asString ?: "100644")
+                    addProperty("type", "blob")
+                    add("sha", com.google.gson.JsonNull.INSTANCE)
+                })
+            }
+            val treeBody = JsonObject().apply { addProperty("base_tree", baseTree); add("tree", entries) }
+            return JsonParser.parseString(exec("/repos/$o/$r/git/trees", "POST", treeBody.toString()).body)
+                .asJsonObject.get("sha").asString
+        }
+
+        if (files.isEmpty()) return 0
+        try {
+            val newTree = makeTree()
+            val commitBody = JsonObject().apply {
+                addProperty("message", "delete ${files.size} file(s)")
+                addProperty("tree", newTree)
+                add("parents", JsonArray().apply { add(commitSha) })
+            }
+            val newCommit = JsonParser.parseString(exec("/repos/$o/$r/git/commits", "POST", commitBody.toString()).body)
+                .asJsonObject.get("sha").asString
+            val patch = JsonObject().apply { addProperty("sha", newCommit) }
+            exec("/repos/$o/$r/git/refs/heads/${enc(branchName)}", "PATCH", patch.toString())
+            return files.size
+        } catch (treeError: Exception) {
+            // 极端仓库（子模块/特殊 mode/受保护规则）一次树提交可能被拒：
+            // 逐个文件走 Contents API 兜底，能删一个算一个，不再“一个都没删”。
+            var deleted = 0
+            files.forEach { f ->
+                val item = runCatching { fileItem(o, r, f, branchName) }.getOrNull() ?: return@forEach
+                runCatching {
+                    deleteFile(o, r, f, "delete $f", item.sha, branchName)
+                    deleted++
+                }
+            }
+            if (deleted == 0) throw treeError
+            return deleted
+        }
     }
 
     suspend fun deleteFile(o: String, r: String, path: String, message: String, sha: String, branch: String?): JsonObject {
@@ -852,7 +901,11 @@ object Api {
                 .header("Accept", "application/vnd.github+json")
                 .header("User-Agent", "GitHubPro/1.0")
                 .post(body).build()
-            val txt = uploadHttp.newCall(req).execute().use { it.body?.string() ?: "" }
+            val txt = uploadHttp.newCall(req).execute().use { resp ->
+                val t = resp.body?.string() ?: ""
+                if (!resp.isSuccessful) throw ApiException(resp.code, if (resp.code == 422) "同名附件已存在或文件名不合法" else "上传失败 HTTP ${resp.code}", t)
+                t
+            }
             JsonParser.parseString(txt).asJsonObject
         }
 
@@ -908,10 +961,11 @@ object Api {
     }
 
     // ---------------- 讨论区 (GraphQL) ----------------
-    suspend fun discussions(o: String, r: String, first: Int = 20): List<Discussion> {
+    suspend fun discussions(o: String, r: String, first: Int = 20): DiscussionsPage {
         val q = """
             query(${'$'}owner:String!,${'$'}name:String!,${'$'}first:Int!){
               repository(owner:${'$'}owner,name:${'$'}name){
+                hasDiscussionsEnabled
                 discussions(first:${'$'}first,orderBy:{field:UPDATED_AT,direction:DESC}){
                   nodes{
                     number title body createdAt updatedAt url answerChosenAt
@@ -927,8 +981,12 @@ object Api {
             addProperty("owner", o); addProperty("name", r); addProperty("first", first)
         }
         val data = graphql(q, vars)
-        val nodes = data.getAsJsonObject("repository")?.getAsJsonObject("discussions")?.getAsJsonArray("nodes") ?: return emptyList()
-        return arr<Discussion>(nodes)
+        val repoObj = data.getAsJsonObject("repository") ?: return DiscussionsPage(false, emptyList())
+        // 以 GitHub 服务端返回的开关为唯一权威：没开启就是 false，绝不靠“列表为空”猜成已开启
+        val enabled = repoObj.get("hasDiscussionsEnabled")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+        if (!enabled) return DiscussionsPage(false, emptyList())
+        val nodes = repoObj.getAsJsonObject("discussions")?.getAsJsonArray("nodes") ?: return DiscussionsPage(true, emptyList())
+        return DiscussionsPage(true, arr<Discussion>(nodes))
     }
 
     suspend fun discussionDetail(o: String, r: String, number: Int): Discussion? {

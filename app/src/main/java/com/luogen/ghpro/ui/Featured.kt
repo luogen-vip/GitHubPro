@@ -38,12 +38,14 @@ private val FEATURED_SORTS = listOf(
 fun FeaturedScreen(nav: NavController) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    var sort by rememberSaveable { mutableStateOf("stars") }
-    var list by remember { mutableStateOf<List<Repo>>(emptyList()) }
-    var total by remember { mutableStateOf(0L) }
-    var loading by remember { mutableStateOf(true) }
+    var sort by rememberSaveable { mutableStateOf(UiCache.featuredSort) }
+    val initialSnap = remember { UiCache.featuredSnaps[UiCache.featuredSort] }
+    var list by remember { mutableStateOf<List<Repo>>(initialSnap?.list ?: emptyList()) }
+    var total by remember { mutableStateOf(initialSnap?.total ?: 0L) }
+    var loading by remember { mutableStateOf(initialSnap == null) }
     var error by remember { mutableStateOf<String?>(null) }
-    var lastSync by remember { mutableStateOf(0L) }
+    var lastSync by remember { mutableStateOf(initialSnap?.lastSync ?: 0L) }
+    UiCache.featuredSort = sort
 
     suspend fun load(silent: Boolean = false) {
         if (!silent) loading = true
@@ -64,8 +66,41 @@ fun FeaturedScreen(nav: NavController) {
         loading = false
     }
 
-    LaunchedEffect(sort) { load() }
+    val listState = rememberLazyListState(initialSnap?.index ?: 0, initialSnap?.offset ?: 0)
+
+    fun saveFeatured() {
+        UiCache.featuredSort = sort
+        UiCache.featuredSnaps[sort] = FeaturedSnap(
+            list, total, lastSync, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset
+        )
+    }
+
+    LaunchedEffect(sort) {
+        UiCache.featuredSort = sort
+        val snap = UiCache.featuredSnaps[sort]
+        if (snap != null) {
+            // 从详情页/其他 App 回来：先原样恢复，绝不闪“正在加载”，也不跳回顶部
+            list = snap.list; total = snap.total; lastSync = snap.lastSync
+            loading = false; error = null
+            if (listState.firstVisibleItemIndex != snap.index || listState.firstVisibleItemScrollOffset != snap.offset) {
+                listState.scrollToItem(snap.index, snap.offset)
+            }
+            // 静默校准最新内容；位置保持不动
+            runCatching { load(true) }
+        } else {
+            list = emptyList(); total = 0; lastSync = 0; loading = true; error = null
+            listState.scrollToItem(0)
+            load()
+        }
+    }
     LaunchedEffect(list) { if (list.isNotEmpty()) IssueCounts.loadBatch(list) }
+    LaunchedEffect(listState, sort) {
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .collect { (index, offset) ->
+                UiCache.featuredSnaps[sort] = FeaturedSnap(list, total, lastSync, index, offset)
+            }
+    }
+    DisposableEffect(sort) { onDispose { saveFeatured() } }
 
     // 每 40 秒自动刷新，排名变化自己更新
     LaunchedEffect(sort) {
@@ -75,7 +110,6 @@ fun FeaturedScreen(nav: NavController) {
         }
     }
 
-    val listState = rememberLazyListState()
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         floatingActionButton = {

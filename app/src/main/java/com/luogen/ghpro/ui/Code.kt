@@ -7,6 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -76,6 +77,8 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
     var selecting by remember { mutableStateOf(false) }
     val selected = remember { mutableStateListOf<String>() }
     var confirmBulk by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf(false) }
+    val deleteKey = "$owner/$name|$branch"
     val uploadPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
             var name = "file.bin"
@@ -91,6 +94,8 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
     }
 
     suspend fun load(silent: Boolean = false) {
+        // 删除提交进行中：自动刷新先停，避免旧目录把刚删掉的文件又“闪现”回来
+        if (deleteKey in UiCache.deletingCode) { loading = false; return }
         if (!silent) loading = true
         error = null
         try {
@@ -114,7 +119,7 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
     LaunchedEffect(branch, path) {
         while (isActive) {
             delay(3_000L)
-            if (!selecting && !uploading) runCatching { load(silent = true) }
+            if (!selecting && !uploading && !deleting && deleteKey !in UiCache.deletingCode) runCatching { load(silent = true) }
         }
     }
     LaunchedEffect(Unit) {
@@ -291,20 +296,30 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
                     val snapshot = listing
                     val paths = targets.map { it.path }
                     if (paths.isEmpty()) return@TextButton
-                    // 先本地移除，界面立即消失；随后真实提交删除
+                    deleting = true
+                    UiCache.deletingCode.add(deleteKey)
+                    // 先本地移除，界面立即消失；后台真实提交期间禁止自动刷新回填
                     listing = snapshot?.copy(items = snapshot.items.filter { it.path !in paths })
                     selecting = false
                     selected.clear()
                     Bus.actions.launch {
                         try {
                             val deleted = Api.deletePaths(owner, name, paths, branch)
+                            if (deleted <= 0) throw java.io.IOException("没有找到要删除的文件，可能已经被删除")
                             Cfg.touchRepo("$owner/$name")
                             UiCache.codeListing.keys.filter { it.startsWith("$owner/$name|") }.forEach { UiCache.codeListing.remove(it) }
+                            // 已经真实提交成功：保持本地移除，不再显示旧列表；再用静默请求校准一次
+                            UiCache.deletingCode.remove(deleteKey)
+                            deleting = false
                             Toast.makeText(ctx, "已真实删除 $deleted 个文件", Toast.LENGTH_LONG).show()
-                            load(true)
+                            // 不再立刻请求旧缓存列表：删除成功后保持本地已移除的状态
+                            // 下次进入目录/手动刷新自然会从服务器取到最新结果
                         } catch (e: Exception) {
-                            Toast.makeText(ctx, "删除失败：${e.message}", Toast.LENGTH_LONG).show()
-                            load(true)
+                            // 只有真的失败才恢复原列表，并明确提示文件还在
+                            listing = snapshot
+                            UiCache.deletingCode.remove(deleteKey)
+                            deleting = false
+                            Toast.makeText(ctx, "删除失败：${e.message}（文件仍在）", Toast.LENGTH_LONG).show()
                         }
                     }
                 }) { Text("确认删除", color = GH.red) }
@@ -333,6 +348,14 @@ private fun looksBinary(bytes: ByteArray): Boolean {
         if (b == 0 || (b < 9) || (b in 14..31)) bad++
     }
     return bad * 100 > n * 5
+}
+
+private fun safePreview(text: String, limit: Int): String {
+    if (text.length <= limit) return text
+    var end = limit
+    // 不在 UTF-16 代理对中间切断，避免把 emoji 截成乱码
+    if (end > 0 && Character.isHighSurrogate(text[end - 1])) end -= 1
+    return text.substring(0, end)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -451,7 +474,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
     LaunchedEffect(path) {
         if (!isNew) while (isActive) {
             delay(3_000L)
-            if (previewKind == "text" && !editing && !loading) runCatching { load(true) }
+            if (previewKind == "text" && !editing && !loading && "$owner/$name|$branch" !in UiCache.deletingCode) runCatching { load(true) }
         }
     }
 
@@ -575,14 +598,21 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                                 Text("文件较大，下面只预览前 20 万字符；点右上角下载可查看完整文件。",
                                     fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
                             }
-                            Row {
+                            val display = safePreview(content.replace("\r\n", "\n").replace('\r', '\n'), 200_000)
+                            val lineCount = display.count { it == '\n' } + 1
+                            Row(Modifier.fillMaxWidth()) {
                                 Column(Modifier.padding(end = 8.dp)) {
-                                    val lines = content.count { it == '\n' } + 1
-                                    Text((1..minOf(lines, 5000)).joinToString("\n") { "$it" },
-                                        fontFamily = FontFamily.Monospace, fontSize = 11.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 17.sp)
+                                    // 按真实显示内容算行数，不截到 5000；与内容同一字号/行高、禁止软换行，
+                                    // 左右两列永远逐行对齐。超长行改为横向滑动，不再把行号挤错位。
+                                    Text((1..lineCount).joinToString("\n") { "$it" },
+                                        fontFamily = FontFamily.Monospace, fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 17.sp,
+                                        softWrap = false)
                                 }
-                                Text(content.take(200_000), fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 17.sp)
+                                Box(Modifier.weight(1f).horizontalScroll(rememberScrollState())) {
+                                    Text(display, fontFamily = FontFamily.Monospace, fontSize = 12.sp,
+                                        lineHeight = 17.sp, softWrap = false)
+                                }
                             }
                         }
                     }
@@ -606,12 +636,14 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
             confirmButton = {
                 TextButton(onClick = {
                     confirmDelete = false
+                    val delKey = "$owner/$name|$branch"
                     // 先把界面和缓存里的文件移除并返回列表，真实删除在后台继续，不让用户等网络
                     UiCache.fileContent.remove(fileKey)
                     UiCache.codeListing.keys.filter { it.startsWith("$owner/$name|") }.forEach { k ->
                         val d = UiCache.codeListing[k] ?: return@forEach
                         UiCache.codeListing[k] = d.copy(items = d.items.filter { it.path != path })
                     }
+                    UiCache.deletingCode.add(delKey)
                     nav.popBackStack()
                     val appCtx = ctx.applicationContext
                     kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO).launch {
@@ -626,6 +658,8 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                             withContext(Dispatchers.Main) {
                                 Toast.makeText(appCtx, "删除失败：${e.message}（文件仍在）", Toast.LENGTH_LONG).show()
                             }
+                        } finally {
+                            UiCache.deletingCode.remove(delKey)
                         }
                     }
                 }) { Text("确认删除", color = GH.red) }

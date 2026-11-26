@@ -397,6 +397,8 @@ data class DiscussionComment(
     val isAnswer: Boolean = false
 )
 data class DiscussionComments(val totalCount: Int = 0, val nodes: List<DiscussionComment> = emptyList())
+data class DiscussionsPage(val enabled: Boolean = false, val items: List<Discussion> = emptyList())
+
 data class Discussion(
     val number: Int = 0,
     val title: String = "",

@@ -21,12 +21,21 @@ import com.luogen.ghpro.data.Notification
 data class HomeSnap(val repos: List<Repo>, val page: Int, val hasNext: Boolean)
 
 data class NotifSnap(val list: List<Notification>, val index: Int, val offset: Int)
+data class FeaturedSnap(val list: List<Repo>, val total: Long, val lastSync: Long, val index: Int, val offset: Int)
 
 object UiCache {
 
     // ---------------- 通知 ----------------
     var notifAll = false
     val notifSnaps = HashMap<Boolean, NotifSnap>()
+
+    // ---------------- 精选仓库 ----------------
+    var featuredSort = "stars"
+    val featuredSnaps = HashMap<String, FeaturedSnap>()
+
+    // ---------------- 正在删除 ----------------
+    /** "owner/name|branch" -> 正在提交删除；自动刷新先让路，避免旧列表把文件“闪回来” */
+    val deletingCode = HashSet<String>()
 
     // ---------------- 首页 ----------------
     var homeLoaded = false
@@ -87,6 +96,8 @@ object UiCache {
     val repoReleases = HashMap<String, List<Release>>()
     val repoContributors = HashMap<String, List<User>>()
     val repoDiscussions = HashMap<String, List<Discussion>>()
+    var pendingRelease: Long? = null
+    var pendingReleaseTag: String? = null
     val repoCommits = HashMap<String, List<GitCommit>>()
     val repoIndex = HashMap<String, Int>()   // "tab|repo" -> 滚动位置
 

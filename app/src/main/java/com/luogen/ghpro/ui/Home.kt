@@ -228,6 +228,7 @@ fun HomeScreen(nav: NavController) {
     }
     val shown = sorted
     val languages = repos.mapNotNull { it.language }.distinct().sorted()
+    val showTop by remember { derivedStateOf { listState.firstVisibleItemIndex > 3 || listState.firstVisibleItemScrollOffset > 600 } }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -347,8 +348,13 @@ fun HomeScreen(nav: NavController) {
             }
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = { nav.navigate("create") }, containerColor = GH.blue, contentColor = Color.White) {
-                Icon(Icons.Filled.Add, "新建仓库")
+            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (showTop) {
+                    SmallFab { scope.launch { listState.animateScrollToItem(0) } }
+                }
+                FloatingActionButton(onClick = { nav.navigate("create") }, containerColor = GH.blue, contentColor = Color.White) {
+                    Icon(Icons.Filled.Add, "新建仓库")
+                }
             }
         }
     ) { pad ->

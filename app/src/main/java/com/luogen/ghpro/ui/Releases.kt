@@ -3,6 +3,7 @@ package com.luogen.ghpro.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -82,6 +83,18 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
         if (cached != null && cached.isNotEmpty()) { list = cached; loading = false; load(1, true, silent = true) }
         else load(1, true)
     }
+    // 从通知点进来：自动展开对应的发行版，直接看到附件/下载按钮
+    LaunchedEffect(list) {
+        val pid = UiCache.pendingRelease
+        val ptag = UiCache.pendingReleaseTag
+        if (pid != null && pid > 0) {
+            if (list.any { it.id == pid }) { expanded = pid; UiCache.pendingRelease = null }
+        } else if (!ptag.isNullOrBlank()) {
+            val hit = list.firstOrNull { it.tag_name == ptag }
+            if (hit != null) { expanded = hit.id; UiCache.pendingReleaseTag = null }
+        }
+    }
+
     // 发行版/APK 实时刷新：别人刚上传也能在几秒内出现
     LaunchedEffect(Unit) {
         while (isActive) {
@@ -103,7 +116,13 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
         scope.launch {
             try {
                 val f = File(ctx.cacheDir, "upload.tmp")
-                val n = uri.lastPathSegment?.substringAfterLast('/') ?: "asset.bin"
+                var n = uri.lastPathSegment?.substringAfterLast('/') ?: "asset.bin"
+                runCatching {
+                    ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                        val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (idx >= 0 && c.moveToFirst()) c.getString(idx)?.takeIf { it.isNotBlank() }?.let { n = it }
+                    }
+                }
                 ctx.contentResolver.openInputStream(uri)?.use { input -> f.outputStream().use { input.copyTo(it) } }
                 snackbar.showSnackbar("正在上传 $n …")
                 val ret = Api.uploadReleaseAsset(owner, name, rel.id, f, n)

@@ -128,6 +128,11 @@ object Cfg {
         get() = sp.getInt("theme", 0)
         set(v) { sp.edit().putInt("theme", v).apply() }
 
+    /** 本地已读的通知 id：即使刷新时服务端还没来得及更新，也不会再冒到“未读”里。 */
+    var notifReadIds: Set<String>
+        get() = sp.getStringSet("notif_read_ids", emptySet())?.toSet() ?: emptySet()
+        set(v) { sp.edit().putStringSet("notif_read_ids", v.toList().takeLast(800).toSet()).apply() }
+
     var lastSeenNotificationIds: Set<String>
         get() = sp.getStringSet("seen_notif", emptySet())?.toSet() ?: emptySet()
         set(v) { sp.edit().putStringSet("seen_notif", v.toSet()).apply() }

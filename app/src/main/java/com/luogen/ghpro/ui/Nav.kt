@@ -1,6 +1,9 @@
 package com.luogen.ghpro.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -11,6 +14,13 @@ import com.luogen.ghpro.data.Cfg
 @Composable
 fun NavRoot(onThemeChange: () -> Unit) {
     val nav = rememberNavController()
+    val pendingRoute by DeepLinkBus.target.collectAsState()
+    LaunchedEffect(pendingRoute) {
+        val route = pendingRoute ?: return@LaunchedEffect
+        DeepLinkBus.target.value = null
+        // 通知点击统一在这里跳：仓库/提交/发行版/工作流/议题/PR；不重置已有返回栈
+        runCatching { nav.navigate(route) { launchSingleTop = true } }
+    }
     NavHost(nav, startDestination = if (Cfg.token.isNullOrBlank()) "login" else "home") {
         composable("login") {
             LoginScreen { nav.navigate("home") { popUpTo("login") { inclusive = true } } }
@@ -24,6 +34,21 @@ fun NavRoot(onThemeChange: () -> Unit) {
         composable("create") { CreateRepoScreen(nav) }
         composable("repo/{owner}/{repo}") { e ->
             RepoScreen(nav, e.arguments?.getString("owner") ?: "", e.arguments?.getString("repo") ?: "")
+        }
+        composable("release/{owner}/{repo}/{id}") { e ->
+            val o = e.arguments?.getString("owner") ?: ""
+            val r = e.arguments?.getString("repo") ?: ""
+            val id = e.arguments?.getString("id")?.toLongOrNull() ?: 0L
+            if (id > 0) UiCache.pendingRelease = id
+            UiCache.repoTab["$o/$r"] = 5
+            RepoScreen(nav, o, r)
+        }
+        composable("releaseTag/{owner}/{repo}/{tag}") { e ->
+            val o = e.arguments?.getString("owner") ?: ""
+            val r = e.arguments?.getString("repo") ?: ""
+            UiCache.pendingReleaseTag = e.arguments?.getString("tag")
+            UiCache.repoTab["$o/$r"] = 5
+            RepoScreen(nav, o, r)
         }
         composable("edit/{owner}/{repo}") { e ->
             EditRepoScreen(nav, e.arguments?.getString("owner") ?: "", e.arguments?.getString("repo") ?: "")
