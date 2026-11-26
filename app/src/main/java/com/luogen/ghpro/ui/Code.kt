@@ -598,20 +598,27 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                                 Text("文件较大，下面只预览前 20 万字符；点右上角下载可查看完整文件。",
                                     fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
                             }
+                            // 末尾换行在编辑器里会多出一个空行，但 Compose 的 Text 不会把它画出来，
+                            // 于是行号会比代码多 1~2 个。这里按“真正能看见的代码行”统一两边。
                             val display = safePreview(content.replace("\r\n", "\n").replace('\r', '\n'), 200_000)
-                            val lineCount = display.count { it == '\n' } + 1
+                                .trimEnd('\n')
+                            val shown = display.ifEmpty { " " }
+                            val lineCount = shown.count { it == '\n' } + 1
+                            val codeStyle = androidx.compose.ui.text.TextStyle(
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp
+                            )
                             Row(Modifier.fillMaxWidth()) {
                                 Column(Modifier.padding(end = 8.dp)) {
-                                    // 按真实显示内容算行数，不截到 5000；与内容同一字号/行高、禁止软换行，
-                                    // 左右两列永远逐行对齐。超长行改为横向滑动，不再把行号挤错位。
+                                    // 行号列和代码列使用同一 TextStyle、同一行高，行数也只按 shown 算。
                                     Text((1..lineCount).joinToString("\n") { "$it" },
-                                        fontFamily = FontFamily.Monospace, fontSize = 12.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 17.sp,
+                                        style = codeStyle,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         softWrap = false)
                                 }
                                 Box(Modifier.weight(1f).horizontalScroll(rememberScrollState())) {
-                                    Text(display, fontFamily = FontFamily.Monospace, fontSize = 12.sp,
-                                        lineHeight = 17.sp, softWrap = false)
+                                    Text(shown, style = codeStyle, softWrap = false)
                                 }
                             }
                         }

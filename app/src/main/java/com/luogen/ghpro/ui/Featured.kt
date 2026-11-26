@@ -39,54 +39,76 @@ fun FeaturedScreen(nav: NavController) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var sort by rememberSaveable { mutableStateOf(UiCache.featuredSort) }
-    val initialSnap = remember { UiCache.featuredSnaps[UiCache.featuredSort] }
+    val initialSnap = remember {
+        UiCache.featuredSnaps[UiCache.featuredSort]?.takeIf { it.list.isNotEmpty() }
+    }
     var list by remember { mutableStateOf<List<Repo>>(initialSnap?.list ?: emptyList()) }
     var total by remember { mutableStateOf(initialSnap?.total ?: 0L) }
     var loading by remember { mutableStateOf(initialSnap == null) }
     var error by remember { mutableStateOf<String?>(null) }
     var lastSync by remember { mutableStateOf(initialSnap?.lastSync ?: 0L) }
+    var switchedSort by remember { mutableStateOf(false) }
+    var loadGen by remember { mutableStateOf(0) }
     UiCache.featuredSort = sort
 
     suspend fun load(silent: Boolean = false) {
+        if (silent && loading) return
+        val gen = ++loadGen
+        val s = sort
         if (!silent) loading = true
         try {
-            val q = if (sort == "updated") "stars:>500 pushed:>2020-01-01" else "stars:>1000"
-            val r = Api.searchRepos(q, 1, sort, "desc", perPage = 60)
-            list = when (sort) {
+            val q = if (s == "updated") "stars:>500 pushed:>2020-01-01" else "stars:>1000"
+            val r = Api.searchRepos(q, 1, s, "desc", perPage = 60)
+            if (gen != loadGen || s != sort) return
+            val items = when (s) {
                 "updated" -> r.items.sortedByDescending { it.pushed_at ?: it.updated_at ?: "" }
                 "forks" -> r.items.sortedByDescending { it.forks_count }
                 else -> r.items.sortedByDescending { it.stargazers_count }
             }
+            if (items.isEmpty()) {
+                if (!silent && list.isEmpty()) error = "这次没有取到仓库，点“重新加载”再试一次"
+                return
+            }
+            list = items
             total = r.total_count
             error = null
             lastSync = System.currentTimeMillis()
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
-        } catch (e: Exception) { if (!silent) error = e.message }
-        loading = false
+        } catch (e: Exception) {
+            if (gen == loadGen && s == sort && !silent) error = e.message ?: "网络请求失败"
+        } finally {
+            if (gen == loadGen && s == sort) loading = false
+        }
     }
 
     val listState = rememberLazyListState(initialSnap?.index ?: 0, initialSnap?.offset ?: 0)
 
     fun saveFeatured() {
         UiCache.featuredSort = sort
-        UiCache.featuredSnaps[sort] = FeaturedSnap(
-            list, total, lastSync, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset
-        )
+        if (list.isNotEmpty()) {
+            UiCache.featuredSnaps[sort] = FeaturedSnap(
+                list, total, lastSync, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset
+            )
+        }
     }
 
     LaunchedEffect(sort) {
         UiCache.featuredSort = sort
-        val snap = UiCache.featuredSnaps[sort]
+        val snap = UiCache.featuredSnaps[sort]?.takeIf { it.list.isNotEmpty() }
+        val fromSwitch = switchedSort
+        switchedSort = false
         if (snap != null) {
-            // 从详情页/其他 App 回来：先原样恢复，绝不闪“正在加载”，也不跳回顶部
+            // 从详情页/其他 App 回来：原样恢复列表和位置；切换排序时则强制回顶部。
             list = snap.list; total = snap.total; lastSync = snap.lastSync
             loading = false; error = null
-            if (listState.firstVisibleItemIndex != snap.index || listState.firstVisibleItemScrollOffset != snap.offset) {
+            if (fromSwitch) {
+                listState.scrollToItem(0)
+            } else if (listState.firstVisibleItemIndex != snap.index || listState.firstVisibleItemScrollOffset != snap.offset) {
                 listState.scrollToItem(snap.index, snap.offset)
             }
-            // 静默校准最新内容；位置保持不动
-            runCatching { load(true) }
+            // 刚切换排序、或缓存超过 40 秒才静默校准；不遮挡、不跳位置。
+            if (fromSwitch || System.currentTimeMillis() - lastSync >= 40_000L) runCatching { load(true) }
         } else {
             list = emptyList(); total = 0; lastSync = 0; loading = true; error = null
             listState.scrollToItem(0)
@@ -106,7 +128,7 @@ fun FeaturedScreen(nav: NavController) {
     LaunchedEffect(sort) {
         while (isActive) {
             delay(40_000L)
-            runCatching { load(true) }
+            if (list.isNotEmpty() && System.currentTimeMillis() - lastSync >= 40_000L) runCatching { load(true) }
         }
     }
 
@@ -135,13 +157,18 @@ fun FeaturedScreen(nav: NavController) {
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 FEATURED_SORTS.forEach { s ->
-                    FilterChip(selected = sort == s.key, onClick = { sort = s.key }, label = { Text(s.label, fontSize = 12.sp) })
+                    FilterChip(selected = sort == s.key, onClick = {
+                        if (sort != s.key) { switchedSort = true; sort = s.key }
+                    }, label = { Text(s.label, fontSize = 12.sp) })
                 }
             }
             when {
                 loading && list.isEmpty() -> LoadingBox("正在挑选高质量仓库…")
                 error != null && list.isEmpty() -> ErrorBox(error) { scope.launch { load() } }
-                list.isEmpty() -> EmptyBox("暂时没有取到精选仓库")
+                list.isEmpty() -> Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    EmptyBox("暂时没有取到精选仓库")
+                    TextButton({ scope.launch { load() } }) { Text("重新加载", fontSize = 12.sp) }
+                }
                 else -> LazyColumn(Modifier.fillMaxSize(), state = listState) {
                     items(list, key = { "${it.id}-${it.full_name}" }) { r ->
                         RepoRow(r) { nav.navigate("repo/${r.full_name}") }

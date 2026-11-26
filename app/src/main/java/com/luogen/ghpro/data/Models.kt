@@ -360,6 +360,16 @@ data class Notification(
     val url: String? = null
 )
 
+/** App 内本地动态：工作流、PR、发行版等 GitHub 通知接口不一定推送的变化，也要能在“通知”页看到。 */
+data class LocalNotice(
+    val id: String = "",
+    val title: String = "",
+    val body: String = "",
+    val route: String? = null,
+    val kind: String = "",
+    val time: Long = 0L
+)
+
 data class GhEvent(
     val id: String = "",
     val type: String? = null,

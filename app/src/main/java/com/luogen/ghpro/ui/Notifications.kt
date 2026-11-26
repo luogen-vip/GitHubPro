@@ -23,7 +23,37 @@ import androidx.navigation.NavController
 import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Notification
+import com.luogen.ghpro.data.NotificationSubject
+import com.luogen.ghpro.data.Repo
+import com.luogen.ghpro.data.LocalNotice
 import kotlinx.coroutines.launch
+
+/** 把 App 自己记录的工作流/PR/发行版动态转换成通知列表项，旧的 GitHub 通知接口没有这些也要能看到。 */
+private fun LocalNotice.asNotification(): Notification {
+    val seg = (route ?: "").split("/")
+    val full = if (seg.size >= 3) "${seg[1]}/${seg[2]}" else ""
+    val type = when (kind) {
+        "run", "run_start" -> "WorkflowRun"
+        "pull", "pull_merge", "pull_state" -> "PullRequest"
+        "release", "release_asset" -> "Release"
+        "push" -> "Commit"
+        else -> "Notification"
+    }
+    val reason = when (kind) {
+        "run", "run_start" -> "ci_activity"
+        "pull" -> "review_requested"
+        "pull_merge", "pull_state" -> "state_change"
+        else -> kind
+    }
+    return Notification(
+        id = id,
+        unread = id !in Cfg.notifReadIds,
+        reason = reason,
+        updated_at = try { java.time.Instant.ofEpochMilli(time).toString() } catch (e: Exception) { null },
+        subject = NotificationSubject(title = title, url = route?.let { "ghpro://route/$it" }, type = type),
+        repository = Repo(name = full.substringAfterLast('/'), full_name = full)
+    )
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,6 +67,10 @@ fun NotificationsScreen(nav: NavController) {
     var error by remember { mutableStateOf<String?>(null) }
     val snackbar = remember { SnackbarHostState() }
     val listState = rememberLazyListState(firstSnap?.index ?: 0, firstSnap?.offset ?: 0)
+    val tick by com.luogen.ghpro.data.Bus.tick.collectAsState()
+
+    fun localAsNotifications(includeRead: Boolean = false): List<Notification> =
+        Cfg.localNotices.map { it.asNotification() }.filter { includeRead || it.unread }
 
     fun savePos() {
         UiCache.notifAll = all
@@ -50,11 +84,16 @@ fun NotificationsScreen(nav: NavController) {
             // 本地已读掩码：服务端还没同步时也不让已读通知回到“未读”
             val read = Cfg.notifReadIds
             val masked = data.map { if (it.id in read) it.copy(unread = false) else it }
-            list = if (all) masked else masked.filter { it.unread }
+            val locals = localAsNotifications(all)
+            list = if (all) locals + masked else locals + masked.filter { it.unread }
             error = null
             UiCache.notifAll = all
             UiCache.notifSnaps[all] = NotifSnap(list, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset)
-        } catch (e: Exception) { error = e.message }
+        } catch (e: Exception) {
+            val locals = localAsNotifications(all)
+            if (list.isEmpty()) list = locals
+            error = if (locals.isEmpty()) e.message else null
+        }
         loading = false
     }
 
@@ -63,7 +102,11 @@ fun NotificationsScreen(nav: NavController) {
         UiCache.notifAll = all
         val snap = UiCache.notifSnaps[all]
         if (snap != null) {
-            list = snap.list
+            // 快照里可能还没有刚产生的本地动态，先合并再显示，避免“后台通知了但通知页没有”。
+            val locals = localAsNotifications(all)
+            val remote = snap.list.filter { !it.id.startsWith("local:") }
+            val merged = locals + remote
+            list = if (all) merged else merged.filter { it.unread }
             error = null
             loading = false
             if (snap.index > 0 || snap.offset > 0) listState.scrollToItem(snap.index, snap.offset)
@@ -78,6 +121,13 @@ fun NotificationsScreen(nav: NavController) {
             // 必须用离开时的 tab 保存；不能用可变状态 all，否则切页时会把旧列表存进新页签
             UiCache.notifSnaps[tab] = NotifSnap(list, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset)
         }
+    }
+    LaunchedEffect(tick) {
+        if (tick <= 0) return@LaunchedEffect
+        val locals = localAsNotifications(all)
+        val remote = list.filter { !it.id.startsWith("local:") }
+        val merged = locals + remote
+        list = if (all) merged else merged.filter { it.unread }
     }
 
     Scaffold(
@@ -136,7 +186,9 @@ fun NotificationsScreen(nav: NavController) {
                                         list = list.filter { it.id != clicked.id }
                                     }
                                     UiCache.notifSnaps[all] = NotifSnap(list, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset)
-                                    scope.launch { runCatching { Api.markThreadRead(clicked.id) } }
+                                    if (!clicked.id.startsWith("local:")) {
+                                        scope.launch { runCatching { Api.markThreadRead(clicked.id) } }
+                                    }
                                     val url = n.subject?.url ?: ""
                                     val repo = n.repository?.full_name ?: ""
                                     val target = notificationTarget(n)
@@ -153,6 +205,7 @@ fun NotificationsScreen(nav: NavController) {
                                         "Discussion" -> "讨论"
                                         "Release" -> "发行版"
                                         "WorkflowRun" -> "工作流"
+                                        "Commit" -> "提交"
                                         else -> n.subject?.type ?: "通知"
                                     },
                                     color = if (n.unread) GH.blue else MaterialTheme.colorScheme.onSurfaceVariant
@@ -178,6 +231,7 @@ fun NotificationsScreen(nav: NavController) {
 private fun notificationTarget(n: Notification): String? {
     val repo = n.repository?.full_name ?: return null
     val url = n.subject?.url ?: return "repo/$repo"
+    if (url.startsWith("ghpro://route/")) return url.removePrefix("ghpro://route/")
     Regex("/repos/([^/]+)/([^/]+)/(issues|pulls|discussions)/(\\d+)").find(url)?.let { m ->
         val (o, r, kind, num) = m.destructured
         val routeKind = when (kind) { "issues" -> "issue"; "pulls" -> "pr"; else -> "discussion" }

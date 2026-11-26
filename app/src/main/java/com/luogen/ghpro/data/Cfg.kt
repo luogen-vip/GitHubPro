@@ -2,6 +2,7 @@ package com.luogen.ghpro.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.google.gson.Gson
 
 object Cfg {
     private const val NAME = "ghpro_cfg"
@@ -136,6 +137,19 @@ object Cfg {
     var lastSeenNotificationIds: Set<String>
         get() = sp.getStringSet("seen_notif", emptySet())?.toSet() ?: emptySet()
         set(v) { sp.edit().putStringSet("seen_notif", v.toSet()).apply() }
+
+    /** 本地动态持久化：GitHub 的 notifications 接口不包含所有 Actions/合并事件，App 自己记录一份。 */
+    private val localGson = Gson()
+    var localNotices: List<LocalNotice>
+        get() = try {
+            localGson.fromJson(sp.getString("local_notices", "[]"), Array<LocalNotice>::class.java)?.toList() ?: emptyList()
+        } catch (e: Exception) { emptyList() }
+        set(v) { sp.edit().putString("local_notices", localGson.toJson(v.take(120))).apply() }
+
+    fun addLocalNotice(n: LocalNotice) {
+        if (n.id.isBlank()) return
+        localNotices = (listOf(n) + localNotices.filter { it.id != n.id }).take(120)
+    }
 
     var snapshots: String
         get() = sp.getString("snapshots", "{}") ?: "{}"

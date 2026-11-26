@@ -37,9 +37,10 @@ object Api {
 
     val http: OkHttpClient by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(45, TimeUnit.SECONDS)
-            .writeTimeout(45, TimeUnit.SECONDS)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .callTimeout(40, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
             .build()
     }
@@ -49,6 +50,7 @@ object Api {
         http.newBuilder()
             .writeTimeout(30, TimeUnit.MINUTES)
             .readTimeout(30, TimeUnit.MINUTES)
+            .callTimeout(30, TimeUnit.MINUTES)
             .build()
     }
 
@@ -86,10 +88,12 @@ object Api {
         extraHeaders: Map<String, String> = emptyMap()
     ): Resp {
         var last: Exception? = null
-        repeat(3) { i ->
+        repeat(2) { i ->
             try {
                 return execOnce(path, method, body, query, accept, absoluteUrl, extraHeaders)
             } catch (e: ApiException) {
+                throw e
+            } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 last = e

@@ -120,6 +120,10 @@ fun reasonCn(r: String?): String = when (r) {
     "manual" -> "手动关注"
     "security_alert" -> "安全提醒"
     "ci_activity" -> "工作流动态"
+    "push" -> "代码提交"
+    "star" -> "新增 Star"
+    "run" -> "工作流动态"
+    "run_start" -> "工作流开始"
     else -> r ?: ""
 }
 
