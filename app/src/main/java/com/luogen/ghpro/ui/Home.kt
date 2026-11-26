@@ -266,10 +266,10 @@ fun HomeScreen(nav: NavController) {
                                 tab = 0
                                 val snap = UiCache.homeSnaps["0|$sort"]
                                 if (snap != null) {
-                                    repos = snap.repos; page = snap.page; hasNext = snap.hasNext; loading = false
+                                    repos = snap.repos; page = snap.page; hasNext = snap.hasNext; loading = false; loadingMore = false
                                     UiCache.homeLoaded = true; UiCache.homeTab = 0; UiCache.homeSort = sort
                                     UiCache.homeRepos = snap.repos; UiCache.homePage = snap.page; UiCache.homeHasNext = snap.hasNext
-                                } else { repos = emptyList(); loading = true; UiCache.homeLoaded = false }
+                                } else { repos = emptyList(); loading = true; loadingMore = false; UiCache.homeLoaded = false }
                                 kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
                                     listState.scrollToItem(0); UiCache.homeIndex = 0; UiCache.homeOffset = 0
                                 }
@@ -282,10 +282,10 @@ fun HomeScreen(nav: NavController) {
                                 tab = 1
                                 val snap = UiCache.homeSnaps["1|$sort"]
                                 if (snap != null) {
-                                    repos = snap.repos; page = snap.page; hasNext = snap.hasNext; loading = false
+                                    repos = snap.repos; page = snap.page; hasNext = snap.hasNext; loading = false; loadingMore = false
                                     UiCache.homeLoaded = true; UiCache.homeTab = 1; UiCache.homeSort = sort
                                     UiCache.homeRepos = snap.repos; UiCache.homePage = snap.page; UiCache.homeHasNext = snap.hasNext
-                                } else { repos = emptyList(); loading = true; UiCache.homeLoaded = false }
+                                } else { repos = emptyList(); loading = true; loadingMore = false; UiCache.homeLoaded = false }
                                 kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
                                     listState.scrollToItem(0); UiCache.homeIndex = 0; UiCache.homeOffset = 0
                                 }
