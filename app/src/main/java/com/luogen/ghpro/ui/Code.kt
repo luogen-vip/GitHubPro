@@ -223,7 +223,7 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
             title = { Text("上传文件", fontSize = 15.sp) },
             text = {
                 Column {
-                    Text("文件会直接提交到当前分支 $branch。路径可手动修改，留空则默认放在根目录。\n30MB 以内走普通提交；超过 30MB 自动走 Git LFS（单文件最大 2GB，受账号 LFS 配额限制）。", fontSize = 11.sp,
+                    Text("文件会直接提交到当前分支 $branch。路径可手动修改，留空则默认放在根目录。\n单文件最大 2GB：30MB 以内走普通提交，超过 30MB 自动走 Git LFS（受账号 LFS 配额限制）。", fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(uploadTarget, { uploadTarget = it }, label = { Text("完整路径（含文件名）") },
@@ -311,6 +311,15 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
 
 }
 
+private data class LfsRef(val oid: String, val size: Long)
+
+private fun parseLfsPointer(text: String): LfsRef? {
+    if (!text.startsWith("version https://git-lfs.github.com/spec/v1")) return null
+    val oid = Regex("(?m)^oid sha256:([0-9a-f]{64})$").find(text)?.groupValues?.getOrNull(1) ?: return null
+    val size = Regex("(?m)^size (\\d+)$").find(text)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: 0L
+    return LfsRef(oid, size)
+}
+
 private fun looksBinary(bytes: ByteArray): Boolean {
     val n = minOf(bytes.size, 4096)
     if (n == 0) return false
@@ -338,6 +347,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
     var message by remember { mutableStateOf("") }
     var confirmDelete by remember { mutableStateOf(false) }
     var isFile by remember { mutableStateOf(true) }
+    var lfsRef by remember { mutableStateOf<LfsRef?>(null) }
     val snackbar = remember { SnackbarHostState() }
 
     fun load(silent: Boolean = false) {
@@ -359,6 +369,16 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                     } else {
                         throw java.io.IOException("文件较大（${f.size / 1024 / 1024} MB），不自动加载，请点“直接下载文件”")
                     }
+                    val ptr = parseLfsPointer(text)
+                    if (ptr != null) {
+                        lfsRef = ptr
+                        error = "这是 Git LFS 大文件（${ptr.size / 1024 / 1024} MB），不能当源码显示，请点“直接下载文件”"
+                        loading = false
+                        return@launch
+                    }
+                    lfsRef = null
+                    error = null
+                    isFile = true
                     content = text
                     original = text
                     UiCache.fileContent[fileKey] = text
@@ -380,6 +400,33 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
             delay(3_000L)
             if (!editing && !loading) runCatching { load(true) }
         }
+    }
+
+    fun downloadFile(fileName: String) {
+        val ref = lfsRef
+        if (ref != null) {
+            Toast.makeText(ctx, "正在解析 Git LFS 大文件地址…", Toast.LENGTH_SHORT).show()
+            scope.launch {
+                try {
+                    val href = Api.lfsDownloadHref(owner, name, ref.oid, ref.size)
+                    Downloader.startDownload(ctx, href, fileName, source = "仓库文件", repo = "$owner/$name",
+                        onDone = {
+                            val where = Downloader.stateOf(fileName)?.publicPath ?: "下载/GitHubPro/$fileName"
+                            Toast.makeText(ctx, "已保存到 $where", Toast.LENGTH_LONG).show()
+                        },
+                        onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
+                } catch (e: Exception) { Toast.makeText(ctx, "下载失败：${e.message}", Toast.LENGTH_LONG).show() }
+            }
+            return
+        }
+        Toast.makeText(ctx, "开始下载 $fileName…", Toast.LENGTH_SHORT).show()
+        Downloader.startDownload(ctx, "https://raw.githubusercontent.com/$owner/$name/$branch/${Api.encPath(path)}", fileName,
+            source = "仓库文件", repo = "$owner/$name",
+            onDone = {
+                val where = Downloader.stateOf(fileName)?.publicPath ?: "下载/GitHubPro/$fileName"
+                Toast.makeText(ctx, "已保存到 $where", Toast.LENGTH_LONG).show()
+            },
+            onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
     }
 
     Scaffold(
@@ -415,17 +462,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                         } else {
                             IconButton({ editing = true }) { Icon(Icons.Filled.Edit, "编辑") }
                         }
-                        IconButton({
-                            val fileName2 = path.substringAfterLast('/')
-                            Toast.makeText(ctx, "开始下载 $fileName2…", Toast.LENGTH_SHORT).show()
-                            Downloader.startDownload(ctx, "https://raw.githubusercontent.com/$owner/$name/$branch/${Api.encPath(path)}", fileName2,
-                                source = "仓库文件", repo = "$owner/$name",
-                                onDone = {
-                                    val where = Downloader.stateOf(fileName2)?.publicPath ?: "下载/GitHubPro/$fileName2"
-                                    Toast.makeText(ctx, "已保存到 $where", Toast.LENGTH_LONG).show()
-                                },
-                                onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
-                        }) { Icon(Icons.Filled.Download, "下载") }
+                        IconButton({ downloadFile(path.substringAfterLast('/')) }) { Icon(Icons.Filled.Download, "下载") }
                         if (!isNew) {
                             IconButton({ confirmDelete = true }) { Icon(Icons.Filled.Delete, "删除", tint = GH.red) }
                         }
@@ -441,17 +478,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                 error != null -> Column {
                     ErrorBox(error)
                     Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.Center) {
-                        OutlinedButton(onClick = {
-                            val fileName2 = path.substringAfterLast('/')
-                            Toast.makeText(ctx, "开始下载 $fileName2…", Toast.LENGTH_SHORT).show()
-                            Downloader.startDownload(ctx, "https://raw.githubusercontent.com/$owner/$name/$branch/$path", fileName2,
-                                source = "仓库文件", repo = "$owner/$name",
-                                onDone = {
-                                    val where = Downloader.stateOf(fileName2)?.publicPath ?: "下载/GitHubPro/$fileName2"
-                                    Toast.makeText(ctx, "已保存到 $where", Toast.LENGTH_LONG).show()
-                                },
-                                onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
-                        }) { Text("直接下载文件") }
+                        OutlinedButton(onClick = { downloadFile(path.substringAfterLast('/')) }) { Text("直接下载文件") }
                     }
                 }
                 else -> {

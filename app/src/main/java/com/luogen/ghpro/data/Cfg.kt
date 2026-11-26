@@ -15,6 +15,11 @@ object Cfg {
         if (!sp.getBoolean("mirrors_seeded", false)) {
             sp.edit().putString("mirrors", DEFAULT_MIRRORS).putBoolean("mirrors_seeded", true).apply()
         }
+        // v1.0.9 及更早版本把“纯浏览”也记成最近使用；升级到 1.0.11 清一次旧活动时间，
+        // 之后只有新建/跑任务/发版/上传/Star/关注/议题等真实操作才会排到最上面。
+        if (!sp.getBoolean("activity_clean_v11", false)) {
+            sp.edit().remove("repo_activity").putBoolean("activity_clean_v11", true).apply()
+        }
     }
 
     var token: String?

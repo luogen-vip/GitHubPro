@@ -112,6 +112,10 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
             repo = UiCache.repoData[key]; loading = false
             // 缓存可能不是最新：进页面时把 Star / 关注状态重新核对一遍（失败就继续用缓存，不挡页面）
             scope.launch {
+                runCatching { Api.repo(owner, name) }.onSuccess { fresh ->
+                    // 缓存只负责秒开；进页面后立刻用服务端统计覆盖，Star/关注/复刻/议题数都是真值
+                    if (statPending == 0) { repo = fresh; UiCache.repoData[key] = fresh }
+                }
                 runCatching { Api.isStarred(owner, name) }.onSuccess {
                     starred = it; starReady = true; UiCache.repoStarred[key] = it; Cfg.setStarredCached(key, it)
                 }

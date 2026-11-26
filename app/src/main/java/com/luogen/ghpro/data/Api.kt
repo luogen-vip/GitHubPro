@@ -713,6 +713,35 @@ object Api {
         }
     }
 
+    /** 取 LFS 大文件下载地址（S3 预签名，不需要再带 token）。 */
+    suspend fun lfsDownloadHref(o: String, r: String, oid: String, size: Long): String = withContext(Dispatchers.IO) {
+        val body = JsonObject().apply {
+            addProperty("operation", "download")
+            add("transfers", JsonArray().apply { add("basic") })
+            add("objects", JsonArray().apply {
+                add(JsonObject().apply { addProperty("oid", oid); addProperty("size", size) })
+            })
+            addProperty("hash_algo", "sha256")
+        }
+        val req = Request.Builder()
+            .url("https://github.com/$o/$r.git/info/lfs/objects/batch")
+            .header("Accept", "application/vnd.git-lfs+json")
+            .header("Content-Type", "application/vnd.git-lfs+json")
+            .header("Authorization", basicAuth())
+            .header("User-Agent", "GitHubPro/1.0")
+            .post(body.toString().toRequestBody("application/vnd.git-lfs+json".toMediaType()))
+            .build()
+        http.newCall(req).execute().use { resp ->
+            val txt = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) throw IOException("LFS 下载地址失败（HTTP ${resp.code}）：${txt.take(300)}")
+            val obj = JsonParser.parseString(txt).asJsonObject.getAsJsonArray("objects")?.firstOrNull()?.asJsonObject
+                ?: throw IOException("LFS 下载返回为空")
+            obj.getAsJsonObject("error")?.let { throw IOException(it.get("message")?.asString ?: "LFS 下载失败") }
+            obj.getAsJsonObject("actions")?.getAsJsonObject("download")?.get("href")?.asString
+                ?: throw IOException("LFS 没有返回下载地址")
+        }
+    }
+
     /** 提交 LFS 指针文件（.gitattributes + pointer），一次真实 commit。 */
     suspend fun lfsCommit(o: String, r: String, path: String, branch: String, oid: String, size: Long, message: String) {
         val ref = exec("/repos/$o/$r/git/ref/heads/$branch").body.let { JsonParser.parseString(it).asJsonObject }

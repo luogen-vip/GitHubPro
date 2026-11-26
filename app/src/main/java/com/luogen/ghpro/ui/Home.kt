@@ -54,6 +54,7 @@ fun HomeScreen(nav: NavController) {
     var loading by remember { mutableStateOf(UiCache.homeRepos.isEmpty()) }
     var loadingMore by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var reqGen by remember { mutableStateOf(0) }
     var tab by remember { mutableStateOf(UiCache.homeTab) }   // 0 我的仓库 1 已 Star
     var sort by remember { mutableStateOf(UiCache.homeSort) }
     var lang by remember { mutableStateOf<String?>(null) }
@@ -67,39 +68,53 @@ fun HomeScreen(nav: NavController) {
     val recent = Cfg.recentRepos.filter { Cfg.activityAt(it) > 0 }
 
     suspend fun load(p: Int, replace: Boolean) {
+        val req = ++reqGen
+        val t = tab
+        val s = sort
         if (p == 1) loading = true else loadingMore = true
         error = null
         try {
-            val pg = if (tab == 1) Api.starred(p) else Api.myRepos(p, 60, sort)
+            val pg = if (t == 1) Api.starred(p) else Api.myRepos(p, 60, s)
+            if (req != reqGen || t != tab || s != sort) return
             repos = if (replace) pg.items else repos + pg.items
             hasNext = pg.hasNext
             page = p
             if (replace) {
                 UiCache.homeLoaded = true
                 UiCache.homeRepos = repos
-                UiCache.homeTab = tab
-                UiCache.homeSort = sort
+                UiCache.homeTab = t
+                UiCache.homeSort = s
             }
-            UiCache.homeSnaps["$tab|$sort"] = HomeSnap(repos, page, hasNext)
+            UiCache.homeSnaps["$t|$s"] = HomeSnap(repos, page, hasNext)
             UiCache.homePage = page
             UiCache.homeHasNext = hasNext
-        } catch (e: Exception) {
-            error = e.message
-            if (replace) UiCache.homeLoaded = false
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) {
+            if (req == reqGen && t == tab && s == sort) {
+                error = e.message
+                if (replace) UiCache.homeLoaded = false
+            }
         } finally {
-            loading = false
-            loadingMore = false
+            if (req == reqGen) {
+                loading = false
+                loadingMore = false
+            }
         }
     }
 
     suspend fun refreshSilently() {
+        val req = ++reqGen
+        val t = tab
+        val s = sort
+        val pg0 = page
         runCatching {
-            if (page > 1) {
+            if (pg0 > 1) {
                 val all = ArrayList<Repo>()
                 var p = 1
                 var more = true
-                while (more && p <= page) {
-                    val pg = if (tab == 1) Api.starred(p) else Api.myRepos(p, 60, sort)
+                while (more && p <= pg0) {
+                    val pg = if (t == 1) Api.starred(p) else Api.myRepos(p, 60, s)
+                    if (req != reqGen || t != tab || s != sort) return@runCatching
                     all.addAll(pg.items)
                     more = pg.hasNext
                     p++
@@ -107,13 +122,15 @@ fun HomeScreen(nav: NavController) {
                 repos = all
                 UiCache.homeRepos = all
             } else {
-                val pg = if (tab == 1) Api.starred(1) else Api.myRepos(1, 60, sort)
+                val pg = if (t == 1) Api.starred(1) else Api.myRepos(1, 60, s)
+                if (req != reqGen || t != tab || s != sort) return@runCatching
                 repos = pg.items
                 hasNext = pg.hasNext
                 UiCache.homeRepos = pg.items
                 UiCache.homeHasNext = pg.hasNext
             }
-            UiCache.homeSnaps["$tab|$sort"] = HomeSnap(repos, page, hasNext)
+            if (req == reqGen && t == tab && s == sort)
+                UiCache.homeSnaps["$t|$s"] = HomeSnap(repos, page, hasNext)
         }
     }
 
@@ -127,7 +144,7 @@ fun HomeScreen(nav: NavController) {
     }
     LaunchedEffect(tab, sort) {
         val snap = UiCache.homeSnaps["$tab|$sort"]
-        if (snap != null && snap.repos.isNotEmpty()) {
+        if (snap != null) {
             repos = snap.repos; page = snap.page; hasNext = snap.hasNext
             loading = false; loadingMore = false
             UiCache.homeLoaded = true; UiCache.homeTab = tab; UiCache.homeSort = sort
@@ -141,7 +158,7 @@ fun HomeScreen(nav: NavController) {
 
     LaunchedEffect(tick) { if (tick > 0 && !safeMode && Cfg.autoRefresh) refreshSilently() }
     // 仓库真实操作后，首页立刻按最新活动重新排序（纯浏览不会触发）
-    LaunchedEffect(activityVer) { if (activityVer > 0) repos = repos }
+    LaunchedEffect(activityVer) { if (activityVer > 0) repos = repos.toList() }
     LaunchedEffect(starVer) {
         if (starVer > 0 && tab == 1) {
             repos = UiCache.homeRepos
@@ -154,8 +171,8 @@ fun HomeScreen(nav: NavController) {
         if (me == null) runCatching { Api.me() }.onSuccess { me = it; UiCache.homeMe = it }
         if (safeMode) return@LaunchedEffect
         while (isActive) {
-            delay(10_000L)
-            if (Cfg.autoRefresh) {
+            delay(5_000L)
+            if (Cfg.autoRefresh && !loading && !loadingMore) {
                 runCatching { if (me == null) { me = Api.me(); UiCache.homeMe = me } }
                 refreshSilently()
             }
@@ -245,9 +262,10 @@ fun HomeScreen(nav: NavController) {
                     ) {
                         FilterChip(selected = tab == 0, onClick = {
                             if (tab != 0) {
+                                reqGen++
                                 tab = 0
                                 val snap = UiCache.homeSnaps["0|$sort"]
-                                if (snap != null && snap.repos.isNotEmpty()) {
+                                if (snap != null) {
                                     repos = snap.repos; page = snap.page; hasNext = snap.hasNext; loading = false
                                     UiCache.homeLoaded = true; UiCache.homeTab = 0; UiCache.homeSort = sort
                                     UiCache.homeRepos = snap.repos; UiCache.homePage = snap.page; UiCache.homeHasNext = snap.hasNext
@@ -260,9 +278,10 @@ fun HomeScreen(nav: NavController) {
                         Spacer(Modifier.width(8.dp))
                         FilterChip(selected = tab == 1, onClick = {
                             if (tab != 1) {
+                                reqGen++
                                 tab = 1
                                 val snap = UiCache.homeSnaps["1|$sort"]
-                                if (snap != null && snap.repos.isNotEmpty()) {
+                                if (snap != null) {
                                     repos = snap.repos; page = snap.page; hasNext = snap.hasNext; loading = false
                                     UiCache.homeLoaded = true; UiCache.homeTab = 1; UiCache.homeSort = sort
                                     UiCache.homeRepos = snap.repos; UiCache.homePage = snap.page; UiCache.homeHasNext = snap.hasNext

@@ -249,7 +249,8 @@ fun messageOf(msg: String?): String {
     if (msg.isNullOrBlank()) return "出错了"
     if (msg.contains("coroutine scope left the composition") ||
         msg.contains("Job was cancelled") || msg.contains("StandaloneCoroutine was cancelled") ||
-        msg.contains("Parent job is Cancelling") || msg.contains("CancellationException"))
+        msg.contains("Parent job is Cancelling") || msg.contains("CancellationException") ||
+        msg.lowercase().contains("cancel"))
         return CANCEL_MESSAGE
     if (msg.contains("Software caused connection abort") || msg.contains("Connection reset")) return "网络中断了一下，已自动重试，还失败就再点一次"
     return msg

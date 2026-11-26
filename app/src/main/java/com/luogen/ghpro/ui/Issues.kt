@@ -92,13 +92,16 @@ fun IssueListTab(nav: NavController, owner: String, name: String) {
 
     LaunchedEffect(state, issuePoke, issueLocalPoke) {
         val cached = UiCache.repoIssues[listKey()]
-        if (cached != null && cached.isNotEmpty()) { list = cached; loading = false }
+        // 缓存已经因乐观操作更新（例如刚关闭的议题已从“打开中”移除），先立刻换上，不能等网络
+        list = cached.orEmpty()
+        loading = cached == null
+        error = null
         // 自己的关闭/重开刚做了乐观更新：先让列表用本地缓存；本地操作成功前不要拉服务端旧数据
         if (issueLocalPoke > 0 && issuePoke <= issueLocalPoke) {
             val age = System.currentTimeMillis() - issueLocalPoke
             if (age in 0..1500L) delay(1500L - age)
         }
-        if (cached != null && cached.isNotEmpty()) load(1, true, silent = true) else load(1, true)
+        if (cached != null) load(1, true, silent = true) else load(1, true)
     }
     // 页面停留时自动拉取：别人新建/关闭议题，几秒内就能看到
     LaunchedEffect(state) {
@@ -275,7 +278,12 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
             if (pendingOps == 0) {
                 runCatching {
                     val fresh = Api.issue(owner, name, number)
-                    issue = fresh
+                    val ov = UiCache.issueOverrides["$owner/$name#$number"]
+                    if (ov != null && System.currentTimeMillis() - ov.second in 0..10_000L) {
+                        // 本地刚点了关闭/重开/锁定，服务端可能还返回旧状态，先用本地乐观状态
+                        issue = fresh.copy(state = ov.first.state, state_reason = ov.first.state_reason,
+                            locked = ov.first.locked)
+                    } else issue = fresh
                     comments = Api.issueComments(owner, name, number)
                 }
             }
@@ -336,7 +344,9 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
                                 val old = issueNow
                                 val targetLocked = !old.locked
                                 val seq = ++lockOpSeq
-                                issue = old.copy(locked = targetLocked)
+                                val optimisticLock = old.copy(locked = targetLocked)
+                                issue = optimisticLock
+                                UiCache.issueOverrides["$owner/$name#$number"] = optimisticLock to System.currentTimeMillis()
                                 quickToast(if (targetLocked) "已锁定讨论" else "已解锁讨论")
                                 pendingOps++
                                 Bus.actions.launch {
@@ -344,10 +354,12 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
                                     if (seq != lockOpSeq) { pendingOps = (pendingOps - 1).coerceAtLeast(0); return@launch }
                                     try {
                                         Api.lockIssue(owner, name, number, targetLocked)
+                                        UiCache.issueOverrides["$owner/$name#$number"] = optimisticLock to System.currentTimeMillis()
                                         Cfg.touchRepo("$owner/$name")
                                         Bus.issuesChanged()
                                     } catch (e: Exception) {
                                         issue = old
+                                        UiCache.issueOverrides["$owner/$name#$number"] = old to System.currentTimeMillis()
                                         quickToast("失败：${e.message}")
                                     }
                                     pendingOps = (pendingOps - 1).coerceAtLeast(0)
@@ -411,10 +423,11 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
                                             val quote = commentClean(target).lines().take(4).joinToString("\n> ")
                                             "> $quote\n\n$raw\n\n<!-- ghpro-reply-to:${target.id} -->"
                                         } else raw
-                                        Api.addComment(owner, name, number, body)
+                                        val posted = Api.addComment(owner, name, number, body)
                                         text = ""
                                         replyTo = null
-                                        comments = Api.issueComments(owner, name, number)
+                                        // 先把刚发出的评论直接插进列表，页面立刻看到；后台轮询再校准
+                                        comments = comments + posted
                                         Cfg.touchRepo("$owner/$name")
                                         Bus.issuesChanged()
                                         quickToast("已发表评论")
@@ -461,6 +474,16 @@ fun NewIssueScreen(nav: NavController, owner: String, name: String) {
                                     labels.split(",").map { it.trim() }.filter { it.isNotBlank() },
                                     assignees.split(",").map { it.trim() }.filter { it.isNotBlank() })
                                 Cfg.touchRepo("$owner/$name")
+                                UiCache.issueOverrides["$owner/$name#${created.number}"] = created to System.currentTimeMillis()
+                                UiCache.repoIssues.keys.filter { it.startsWith("$owner/$name|") }.forEach { k ->
+                                    val st = k.substringAfterLast('|')
+                                    val oldList = UiCache.repoIssues[k].orEmpty().filter { it.number != created.number }
+                                    UiCache.repoIssues[k] = if (st == "all" || st == created.state) listOf(created) + oldList else oldList
+                                }
+                                UiCache.repoData["$owner/$name"]?.let { r ->
+                                    if (created.state == "open") UiCache.repoData["$owner/$name"] = r.copy(open_issues_count = r.open_issues_count + 1)
+                                }
+                                Bus.issueLocalChanged()
                                 Bus.issuesChanged()
                                 nav.popBackStack()
                                 nav.navigate("issue/$owner/$name/${created.number}")
