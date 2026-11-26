@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
@@ -57,12 +58,14 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
     val key = "$owner/$name"
     var repo by remember { mutableStateOf(UiCache.repoData[key]) }
     var languages by remember { mutableStateOf(UiCache.repoLangs[key] ?: emptyMap()) }
-    var starred by remember { mutableStateOf(UiCache.repoStarred[key] ?: false) }
+    var starred by remember { mutableStateOf(UiCache.repoStarred[key] ?: Cfg.isStarredCached(key)) }
+    var starReady by remember { mutableStateOf(UiCache.repoStarred[key] != null) }
     var watching by remember { mutableStateOf(UiCache.repoWatching[key] ?: false) }
     var loading by remember { mutableStateOf(UiCache.repoData[key] == null) }
     var error by remember { mutableStateOf<String?>(null) }
     var tab by remember { mutableStateOf(UiCache.repoTab[key] ?: 0) }
     var downloading by remember { mutableStateOf<String?>(null) }
+    var latestReleaseAt by remember { mutableStateOf<String?>(null) }
     var showMenu by rememberSaveable { mutableStateOf(false) }
     var confirmDelete by rememberSaveable { mutableStateOf(false) }
     var peopleDialog by rememberSaveable { mutableStateOf(-1) }  // 0 star 1 fork 2 watch 3 contributors
@@ -77,9 +80,16 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
             UiCache.repoData[key] = r
             error = null
             Cfg.watchRepos.let { s -> if (!s.contains(r.full_name)) { s.add(r.full_name); Cfg.watchRepos = s } }
-            runCatching { starred = Api.isStarred(owner, name); UiCache.repoStarred[key] = starred }
+            runCatching {
+                val st = Api.isStarred(owner, name)
+                starred = st
+                starReady = true
+                UiCache.repoStarred[key] = st
+                Cfg.setStarredCached(key, st)
+            }
             runCatching { watching = Api.isWatching(owner, name); UiCache.repoWatching[key] = watching }
             runCatching { languages = Api.languages(owner, name); UiCache.repoLangs[key] = languages }
+            runCatching { Api.releases(owner, name).items.firstOrNull()?.published_at?.let { v -> latestReleaseAt = v } }
         } catch (e: Exception) {
             error = e.message
         } finally { loading = false }
@@ -132,16 +142,23 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                 },
                 navigationIcon = { IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
                 actions = {
-                    IconButton(onClick = {
+                    if (!starReady) {
+                        Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                        }
+                    } else IconButton(onClick = {
                         val base = repo ?: return@IconButton
                         val target = !starred
                         starred = target
                         UiCache.repoStarred[key] = target
-                        repo = base.copy(stargazers_count = (base.stargazers_count + if (target) 1 else -1).coerceAtLeast(0))
+                        Cfg.setStarredCached(key, target)
+                        val optimistic = base.copy(stargazers_count = (base.stargazers_count + if (target) 1 else -1).coerceAtLeast(0))
+                        repo = optimistic
+                        UiCache.repoData[key] = optimistic
                         scope.launch {
                             Cfg.touchRepo(key)
                             runCatching { Api.star(owner, name, target) }
-                                .onSuccess { runCatching { Api.repo(owner, name).also { UiCache.repoData[key] = it; repo = it } } }
+                                .onSuccess { if (!target) { val wl = Cfg.watchRepos; wl.remove(key); Cfg.watchRepos = wl } }
                                 .onFailure {
                                     starred = !target; UiCache.repoStarred[key] = !target; repo = base
                                     Toast.makeText(ctx, "操作失败：${'$'}{it.message}", Toast.LENGTH_SHORT).show()
@@ -165,8 +182,8 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                     Box {
                         IconButton(onClick = { showMenu = true }) { Icon(Icons.Filled.MoreVert, "更多") }
                         DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                            DropdownMenuItem(text = { Text("刷新") }, leadingIcon = { Icon(Icons.Filled.Visibility, null) }, onClick = {
-                                showMenu = false; scope.launch { load() }
+                            DropdownMenuItem(text = { Text("刷新最新状态") }, leadingIcon = { Icon(Icons.Filled.Refresh, null) }, onClick = {
+                                showMenu = false; scope.launch { load(); Toast.makeText(ctx, "已刷新", Toast.LENGTH_SHORT).show() }
                             })
                             DropdownMenuItem(text = { Text("在浏览器打开") }, leadingIcon = { Icon(Icons.Filled.OpenInNew, null) }, onClick = {
                                 showMenu = false; openUrl(ctx, repo?.html_url)
@@ -208,8 +225,14 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
             Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)
                 .padding(horizontal = 14.dp, vertical = 7.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(r.full_name, fontSize = 15.sp, fontWeight = FontWeight.Bold,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    Avatar(r.owner?.avatar_url, 22, Modifier.clickable { r.owner?.login?.let { nav.navigate("user/$it") } })
+                    Spacer(Modifier.width(6.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(r.full_name, fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.clickable { r.owner?.login?.let { nav.navigate("user/$it") } })
+                        Text("作者 ${r.owner?.login ?: owner}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     if (r.isPrivate) TinyTag("私有", GH.yellow)
                 }
                 r.description?.takeIf { it.isNotBlank() }?.let {
@@ -251,11 +274,11 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                 }
             }
 
-            ActiveDownloadStrip()
+            ActiveDownloadStrip(repo?.full_name)
 
             Box(Modifier.weight(1f)) {
                 when (tab) {
-                    0 -> OverviewTab(nav, owner, name, r, languages)
+                    0 -> OverviewTab(nav, owner, name, r, languages, latestReleaseAt)
                     1 -> CodeTab(nav, owner, name, r)
                     2 -> IssueListTab(nav, owner, name)
                     3 -> PullListTab(nav, owner, name)
@@ -358,7 +381,7 @@ fun LanguageBar(languages: Map<String, Long>, legend: Boolean = true) {
 }
 
 @Composable
-fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, languages: Map<String, Long>) {
+fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, languages: Map<String, Long>, latestReleaseAt: String? = null) {
     val ctx = LocalContext.current
     var readme by remember { mutableStateOf<String?>(null) }
     var readmeLoading by remember { mutableStateOf(false) }
@@ -387,7 +410,8 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
         KeyValue("语言", r.language ?: "—")
         KeyValue("许可", r.license?.name ?: "未声明")
         KeyValue("创建", fullTime(r.created_at))
-        KeyValue("最近更新", "${timeAgo(r.updated_at)} · ${fullTime(r.updated_at)}")
+        val latest = listOfNotNull(r.updated_at, r.pushed_at, latestReleaseAt).maxOrNull()
+        KeyValue("最近更新", "${timeAgo(latest ?: r.updated_at)} · ${fullTime(latest ?: r.updated_at)}")
         KeyValue("最近推送", timeAgo(r.pushed_at))
         KeyValue("体积", humanSize(r.size * 1024))
         KeyValue("主页", r.homepage, onClick = { openUrl(ctx, r.homepage) })
@@ -483,25 +507,30 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
 fun CommitsTab(nav: NavController, owner: String, name: String, repo: Repo) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    var list by remember { mutableStateOf<List<com.luogen.ghpro.data.GitCommit>>(emptyList()) }
-    var loading by remember { mutableStateOf(true) }
+    var branch by remember { mutableStateOf(repo.default_branch ?: "main") }
+    fun ck() = "$owner/$name|$branch"
+    var list by remember { mutableStateOf(UiCache.repoCommits[ck()] ?: emptyList()) }
+    var loading by remember { mutableStateOf(list.isEmpty()) }
     var error by remember { mutableStateOf<String?>(null) }
     var page by remember { mutableStateOf(1) }
     var hasNext by remember { mutableStateOf(false) }
-    var branch by remember { mutableStateOf(repo.default_branch ?: "main") }
     var branches by remember { mutableStateOf(listOf(repo.default_branch ?: "main")) }
     var menu by remember { mutableStateOf(false) }
 
-    suspend fun load(p: Int, replace: Boolean) {
-        if (p == 1) loading = true
+    suspend fun load(p: Int, replace: Boolean, silent: Boolean = false) {
+        if (p == 1 && !silent) loading = true
         try {
             val pg = Api.commits(owner, name, branch, p)
             list = if (replace) pg.items else list + pg.items
+            if (replace) UiCache.repoCommits[ck()] = list
             hasNext = pg.hasNext; page = p; error = null
         } catch (e: Exception) { error = e.message }
         loading = false
     }
-    LaunchedEffect(branch) { load(1, true) }
+    LaunchedEffect(branch) {
+        val cached = UiCache.repoCommits[ck()]
+        if (cached != null && cached.isNotEmpty()) { list = cached; loading = false; load(1, true, silent = true) } else load(1, true)
+    }
     LaunchedEffect(Unit) {
         runCatching { Api.branches(owner, name).map { it.name } }.onSuccess { if (it.isNotEmpty()) branches = it }
     }
@@ -617,9 +646,12 @@ fun PeopleDialog(nav: NavController, owner: String, name: String, kind: Int, onC
 
 
 @Composable
-fun ActiveDownloadStrip() {
+fun ActiveDownloadStrip(repoFilter: String? = null) {
     val map by Downloader.state.collectAsState()
-    val active = map.values.filter { it.status != "已完成" && it.status != "失败" && it.status.isNotBlank() }
+    val active = map.values.filter {
+        it.active &&
+            (repoFilter == null || Downloader.repoOf(it.fileName) == repoFilter)
+    }
     if (active.isEmpty()) return
     Column(
         Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant)

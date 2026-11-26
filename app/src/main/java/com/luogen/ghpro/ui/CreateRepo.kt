@@ -71,24 +71,26 @@ fun CreateRepoScreen(nav: NavController) {
                                 val repo = Api.createRepo(name.trim(), desc.trim(), private, autoInit,
                                     homepage.trim().ifBlank { null }, gitignore.ifBlank { null }, license.ifBlank { null },
                                     hasIssues, hasWiki, hasProjects, hasDiscussions)
-                                // topics 真实写入
-                                val ts = topics.split(",", "，").map { it.trim() }.filter { it.isNotBlank() }
-                                if (ts.isNotEmpty()) runCatching { Api.setTopics(repo.owner?.login ?: "", repo.name, ts) }
-                                // 自定义许可证正文真实提交
-                                if (customLicense.isNotBlank()) {
-                                    val path = "LICENSE"
-                                    runCatching {
-                                        Api.putFile(repo.owner?.login ?: "", repo.name, path, "Add LICENSE",
-                                            android.util.Base64.encodeToString(customLicense.toByteArray(), android.util.Base64.NO_WRAP),
-                                            null, repo.default_branch)
-                                    }
-                                }
                                 Cfg.touchRepo(repo.full_name)
                                 val wl = Cfg.watchRepos; wl.add(repo.full_name); Cfg.watchRepos = wl
                                 UiCache.invalidateHome()
                                 Bus.poke()
-                                android.widget.Toast.makeText(ctx, "仓库 ${repo.full_name} 创建成功，已在首页置顶", android.widget.Toast.LENGTH_LONG).show()
+                                android.widget.Toast.makeText(ctx, "仓库 ${repo.full_name} 创建成功", android.widget.Toast.LENGTH_LONG).show()
                                 nav.popBackStack()
+                                // topics / 自定义 LICENSE 放到后台补写，不再卡住建库后的等待
+                                val ownerLogin = repo.owner?.login ?: ""
+                                val ts = topics.split(",", "，").map { it.trim() }.filter { it.isNotBlank() }
+                                val lic = customLicense
+                                val repoName = repo.name
+                                val branch = repo.default_branch
+                                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO).launch {
+                                    if (ts.isNotEmpty()) runCatching { Api.setTopics(ownerLogin, repoName, ts) }
+                                    if (lic.isNotBlank()) runCatching {
+                                        Api.putFile(ownerLogin, repoName, "LICENSE", "Add LICENSE",
+                                            android.util.Base64.encodeToString(lic.toByteArray(), android.util.Base64.NO_WRAP), null, branch)
+                                    }
+                                    Bus.poke()
+                                }
                             } catch (e: Exception) {
                                 snackbar.showSnackbar("创建失败：${e.message}")
                                 android.widget.Toast.makeText(ctx, "创建失败：${e.message}", android.widget.Toast.LENGTH_LONG).show()

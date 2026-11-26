@@ -7,6 +7,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -202,6 +204,17 @@ fun KeyValue(label: String, value: String?, onClick: (() -> Unit)? = null) {
         Text(label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(72.dp))
         Text(value, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
     }
+}
+
+/** 列表滑动后出现的「一键回到顶部」小圆钮。 */
+@Composable
+fun SmallFab(modifier: Modifier = Modifier, onClick: () -> Unit) {
+    androidx.compose.material3.SmallFloatingActionButton(
+        onClick = onClick,
+        modifier = modifier,
+        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = MaterialTheme.colorScheme.onSurface
+    ) { androidx.compose.material3.Icon(Icons.Filled.ArrowUpward, "回到顶部") }
 }
 
 @Composable

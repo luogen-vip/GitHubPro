@@ -148,8 +148,8 @@ fun LoginScreen(onLoggedIn: (User) -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var err by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf("") }
-    var tab by remember { mutableStateOf(0) }
     var cid by remember { mutableStateOf(Cfg.oauthClientId ?: "") }
+    var tab by remember { mutableStateOf(if (cid.isNotBlank()) 1 else 0) }
     var device by remember { mutableStateOf<DeviceState?>(null) }
     var polling by remember { mutableStateOf(false) }
 
@@ -328,9 +328,12 @@ fun LoginScreen(onLoggedIn: (User) -> Unit) {
                     }
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "在 GitHub 创建一个 OAuth App 并开启 Enable Device Flow，把 Client ID 填进来即可（不需要 Client Secret）。适合不想手动复制令牌的情况。",
+                        "先在 GitHub 建一个 OAuth App，勾选 Enable Device Flow，把 Client ID 填到下面（不需要 Client Secret）。之后点“获取设备码”，浏览器会打开授权页，代码已自动带过去，点授权就能登录；换任何浏览器/电脑都能用。",
                         fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 17.sp
                     )
+                    TextButton({ openUrl(ctx, "https://github.com/settings/applications/new") }, contentPadding = PaddingValues(0.dp)) {
+                        Text("还没有 Client ID？点这里创建 OAuth App →", fontSize = 11.sp, color = GH.blue)
+                    }
                     Spacer(Modifier.height(14.dp))
                     GhField(
                         value = cid,
@@ -353,7 +356,7 @@ fun LoginScreen(onLoggedIn: (User) -> Unit) {
                                         val d = DeviceState(
                                             deviceCode = j.get("device_code").asString,
                                             userCode = j.get("user_code").asString,
-                                            uri = j.get("verification_uri").asString,
+                                            uri = j.get("verification_uri_complete")?.asString ?: j.get("verification_uri").asString,
                                             interval = j.get("interval")?.asInt ?: 5
                                         )
                                         device = d

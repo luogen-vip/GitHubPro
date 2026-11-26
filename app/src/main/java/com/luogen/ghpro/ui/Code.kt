@@ -49,22 +49,30 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
     var branch by remember { mutableStateOf(repo.default_branch ?: "main") }
     var branches by remember { mutableStateOf(listOf<String>()) }
     var branchMenu by remember { mutableStateOf(false) }
-    var path by remember { mutableStateOf("") }
-    var listing by remember { mutableStateOf<DirListing?>(null) }
-    var loading by remember { mutableStateOf(true) }
+    var path by remember { mutableStateOf(UiCache.codePath["$owner/$name"] ?: "") }
+    var listing by remember { mutableStateOf(UiCache.codeListing["$owner/$name|${repo.default_branch ?: "main"}|${UiCache.codePath["$owner/$name"] ?: ""}"]) }
+    var loading by remember { mutableStateOf(listing == null) }
     var error by remember { mutableStateOf<String?>(null) }
     val snackbar = remember { SnackbarHostState() }
 
-    suspend fun load() {
-        loading = true
+    suspend fun load(silent: Boolean = false) {
+        if (!silent) loading = true
         error = null
         try {
             listing = Api.contents(owner, name, path, branch)
+            listing?.let { UiCache.codeListing["$owner/$name|$branch|$path"] = it }
         } catch (e: Exception) { error = e.message }
         loading = false
     }
 
-    LaunchedEffect(branch, path) { load() }
+    androidx.activity.compose.BackHandler(enabled = path.isNotEmpty()) {
+        path = path.substringBeforeLast('/', "")
+    }
+    LaunchedEffect(branch, path) {
+        UiCache.codePath["$owner/$name"] = path
+        val cached = UiCache.codeListing["$owner/$name|$branch|$path"]
+        if (cached != null) { listing = cached; loading = false; runCatching { load(true) } } else load()
+    }
     LaunchedEffect(Unit) {
         branches = runCatching { Api.branches(owner, name).map { it.name } }.getOrDefault(emptyList())
             .ifEmpty { listOf(repo.default_branch ?: "main") }
@@ -146,22 +154,23 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
 fun FileScreen(nav: NavController, owner: String, name: String, branch: String, path: String, isNew: Boolean) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    var content by remember { mutableStateOf("") }
-    var original by remember { mutableStateOf("") }
+    val fileKey = "$owner/$name|$branch|$path"
+    var content by remember { mutableStateOf(UiCache.fileContent[fileKey] ?: "") }
+    var original by remember { mutableStateOf(UiCache.fileContent[fileKey] ?: "") }
     var sha by remember { mutableStateOf<String?>(null) }
     var fileName by remember { mutableStateOf(path) }
     var editing by remember { mutableStateOf(isNew) }
-    var loading by remember { mutableStateOf(!isNew) }
+    var loading by remember { mutableStateOf(!isNew && UiCache.fileContent[fileKey] == null) }
     var error by remember { mutableStateOf<String?>(null) }
     var message by remember { mutableStateOf("") }
     var confirmDelete by remember { mutableStateOf(false) }
     var isFile by remember { mutableStateOf(true) }
     val snackbar = remember { SnackbarHostState() }
 
-    fun load() {
+    fun load(silent: Boolean = false) {
         if (isNew) { loading = false; return }
         scope.launch {
-            loading = true
+            if (!silent) loading = true
             try {
                 val l = Api.contents(owner, name, path, branch)
                 val f = l.file
@@ -172,6 +181,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                     else {
                         content = Api.fileContent(owner, name, path, branch)
                         original = content
+                        UiCache.fileContent[fileKey] = content
                     }
                 }
             } catch (e: Exception) { error = e.message }
@@ -179,7 +189,12 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
         }
     }
 
-    LaunchedEffect(path) { load() }
+    LaunchedEffect(path) {
+        if (!isNew) {
+            val cached = UiCache.fileContent[fileKey]
+            if (cached != null) { content = cached; original = cached; loading = false; runCatching { load(true) } } else load()
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,

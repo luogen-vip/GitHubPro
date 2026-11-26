@@ -33,22 +33,29 @@ import kotlinx.coroutines.launch
 fun PullListTab(nav: NavController, owner: String, name: String) {
     val scope = rememberCoroutineScope()
     var state by remember { mutableStateOf("open") }
-    var list by remember { mutableStateOf<List<PullRequest>>(emptyList()) }
-    var loading by remember { mutableStateOf(true) }
+    fun listKey() = "$owner/$name|$state"
+    var list by remember { mutableStateOf(UiCache.repoPulls[listKey()] ?: emptyList()) }
+    var loading by remember { mutableStateOf(list.isEmpty()) }
     var error by remember { mutableStateOf<String?>(null) }
     var page by remember { mutableStateOf(1) }
     var hasNext by remember { mutableStateOf(false) }
 
-    suspend fun load(p: Int, replace: Boolean) {
-        if (p == 1) loading = true
+    suspend fun load(p: Int, replace: Boolean, silent: Boolean = false) {
+        if (p == 1 && !silent) loading = true
         try {
             val pg = Api.pulls(owner, name, state, p)
             list = if (replace) pg.items else list + pg.items
-            hasNext = pg.hasNext; page = p; error = null
+            hasNext = pg.hasNext; page = p
+            if (replace) UiCache.repoPulls[listKey()] = list
+            error = null
         } catch (e: Exception) { error = e.message }
         loading = false
     }
-    LaunchedEffect(state) { load(1, true) }
+    LaunchedEffect(state) {
+        val cached = UiCache.repoPulls[listKey()]
+        if (cached != null && cached.isNotEmpty()) { list = cached; loading = false; load(1, true, silent = true) }
+        else load(1, true)
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {

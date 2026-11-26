@@ -3,6 +3,7 @@ package com.luogen.ghpro.ui
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
@@ -13,6 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -34,6 +36,7 @@ private val FEATURED_SORTS = listOf(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FeaturedScreen(nav: NavController) {
+    val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var sort by rememberSaveable { mutableStateOf("stars") }
     var list by remember { mutableStateOf<List<Repo>>(emptyList()) }
@@ -71,8 +74,13 @@ fun FeaturedScreen(nav: NavController) {
         }
     }
 
+    val listState = rememberLazyListState()
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
+        floatingActionButton = {
+            val showTop by remember { derivedStateOf { listState.firstVisibleItemIndex > 3 || listState.firstVisibleItemScrollOffset > 600 } }
+            if (showTop) SmallFab { scope.launch { listState.animateScrollToItem(0) } }
+        },
         topBar = {
             TopAppBar(
                 title = {
@@ -83,7 +91,7 @@ fun FeaturedScreen(nav: NavController) {
                     }
                 },
                 navigationIcon = { IconButton({ nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
-                actions = { IconButton({ scope.launch { load() } }) { Icon(Icons.Filled.Refresh, "刷新") } },
+                actions = { IconButton({ scope.launch { load(); android.widget.Toast.makeText(ctx, "已刷新", android.widget.Toast.LENGTH_SHORT).show() } }) { Icon(Icons.Filled.Refresh, "刷新") } },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )
         }
@@ -99,7 +107,7 @@ fun FeaturedScreen(nav: NavController) {
                 loading && list.isEmpty() -> LoadingBox("正在挑选高质量仓库…")
                 error != null && list.isEmpty() -> ErrorBox(error) { scope.launch { load() } }
                 list.isEmpty() -> EmptyBox("暂时没有取到精选仓库")
-                else -> LazyColumn(Modifier.fillMaxSize()) {
+                else -> LazyColumn(Modifier.fillMaxSize(), state = listState) {
                     items(list, key = { "${it.id}-${it.full_name}" }) { r ->
                         RepoRow(r) { nav.navigate("repo/${r.full_name}") }
                     }

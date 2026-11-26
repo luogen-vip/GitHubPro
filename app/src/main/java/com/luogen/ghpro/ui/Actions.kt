@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
@@ -45,9 +46,10 @@ import kotlinx.coroutines.launch
 @Composable
 fun ActionsTab(nav: NavController, owner: String, name: String, repo: Repo) {
     val scope = rememberCoroutineScope()
+    val cacheKey = "$owner/$name"
     var workflows by remember { mutableStateOf<List<Workflow>>(emptyList()) }
-    var runs by remember { mutableStateOf<List<Run>>(emptyList()) }
-    var loading by remember { mutableStateOf(true) }
+    var runs by remember { mutableStateOf(UiCache.repoRuns[cacheKey] ?: emptyList()) }
+    var loading by remember { mutableStateOf(runs.isEmpty()) }
     var error by remember { mutableStateOf<String?>(null) }
     var lastSync by remember { mutableStateOf(0L) }
     var autoOn by remember { mutableStateOf(Cfg.autoRefresh) }
@@ -57,6 +59,7 @@ fun ActionsTab(nav: NavController, owner: String, name: String, repo: Repo) {
         if (!silent) loading = true
         try {
             runs = Api.runs(owner, name, 1).first
+            UiCache.repoRuns[cacheKey] = runs
             if (workflows.isEmpty()) workflows = runCatching { Api.workflows(owner, name) }.getOrDefault(emptyList())
             error = null
             lastSync = System.currentTimeMillis()
@@ -64,7 +67,7 @@ fun ActionsTab(nav: NavController, owner: String, name: String, repo: Repo) {
         loading = false
     }
 
-    LaunchedEffect(owner, name) { load() }
+    LaunchedEffect(owner, name) { if (runs.isNotEmpty()) load(true) else load() }
     LaunchedEffect(autoOn) {
         while (isActive && autoOn) {
             delay((Cfg.pollSeconds.coerceIn(8, 300)) * 1000L)
@@ -153,10 +156,10 @@ fun RunRow(run: Run, onClick: () -> Unit) {
 fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    var run by remember { mutableStateOf<Run?>(null) }
-    var jobs by remember { mutableStateOf<List<Job>>(emptyList()) }
-    var artifacts by remember { mutableStateOf<List<Artifact>>(emptyList()) }
-    var loading by remember { mutableStateOf(true) }
+    var run by remember { mutableStateOf<Run?>(UiCache.runData[runId]) }
+    var jobs by remember { mutableStateOf(UiCache.runJobs[runId] ?: emptyList()) }
+    var artifacts by remember { mutableStateOf(UiCache.runArtifacts[runId] ?: emptyList()) }
+    var loading by remember { mutableStateOf(run == null) }
     var error by remember { mutableStateOf<String?>(null) }
     var auto by remember { mutableStateOf(true) }
     var expanded by remember { mutableStateOf<Long?>(null) }
@@ -167,6 +170,9 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
             run = Api.run(owner, name, runId)
             jobs = Api.runJobs(owner, name, runId)
             artifacts = Api.runArtifacts(owner, name, runId)
+            UiCache.runData[runId] = run!!
+            UiCache.runJobs[runId] = jobs
+            UiCache.runArtifacts[runId] = artifacts
             error = null
         } catch (e: Exception) { error = e.message }
         loading = false
@@ -199,9 +205,10 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                 error != null -> ErrorBox(error) { scope.launch { load() } }
                 run != null -> {
                     val r = run!!
+                    var more by remember { mutableStateOf(false) }
                     Row(
                         Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                            .heightIn(max = 60.dp).padding(start = 12.dp, end = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(Modifier.weight(1f)) {
@@ -210,38 +217,51 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 StateChip(null, r.status, r.conclusion)
                                 Spacer(Modifier.width(6.dp))
-                                Text("${r.event ?: ""} · ${r.head_branch ?: "-"} · #${r.run_number ?: runId}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("${r.event ?: ""} · ${r.head_branch ?: "-"} · #${r.run_number ?: runId}", fontSize = 10.sp,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
-                        IconButton({
-                            scope.launch {
-                                try { Api.rerun(owner, name, runId); Cfg.touchRepo("$owner/$name"); snackbar.showSnackbar("已重新发起"); delay(1500); load() }
-                                catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
+                        Box {
+                            IconButton({ more = true }) { Icon(Icons.Filled.MoreVert, "更多操作") }
+                            DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
+                                DropdownMenuItem(text = { Text("重新运行", fontSize = 13.sp) }, onClick = {
+                                    more = false
+                                    scope.launch {
+                                        try { Api.rerun(owner, name, runId); Cfg.touchRepo("$owner/$name"); snackbar.showSnackbar("已重新发起"); delay(1500); load() }
+                                        catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
+                                    }
+                                })
+                                DropdownMenuItem(text = { Text("取消运行", fontSize = 13.sp) }, onClick = {
+                                    more = false
+                                    scope.launch {
+                                        try { Api.cancelRun(owner, name, runId); snackbar.showSnackbar("已取消"); delay(1500); load() }
+                                        catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
+                                    }
+                                })
+                                DropdownMenuItem(text = { Text("复制运行链接", fontSize = 13.sp) }, onClick = {
+                                    more = false
+                                    val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                                    cm?.setPrimaryClip(android.content.ClipData.newPlainText("链接", r.html_url ?: ""))
+                                    Toast.makeText(ctx, "已复制链接", Toast.LENGTH_SHORT).show()
+                                })
+                                DropdownMenuItem(text = { Text("下载本次日志", fontSize = 13.sp) }, onClick = {
+                                    more = false
+                                    Downloader.startDownload(ctx,
+                                        "https://api.github.com/repos/$owner/$name/actions/runs/$runId/logs",
+                                        "logs-$runId.zip", Cfg.token, useMirror = false,
+                                        onDone = { Toast.makeText(ctx, "日志已保存到 下载/GitHubPro/logs-$runId.zip", Toast.LENGTH_LONG).show() },
+                                        onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
+                                })
+                                DropdownMenuItem(text = { Text("删除这次运行", fontSize = 13.sp, color = GH.red) }, onClick = {
+                                    more = false
+                                    scope.launch {
+                                        try { Api.deleteRun(owner, name, runId); snackbar.showSnackbar("已删除运行记录"); nav.popBackStack() }
+                                        catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
+                                    }
+                                })
                             }
-                        }) { Icon(Icons.Filled.PlayArrow, "重跑", Modifier.size(18.dp)) }
-                        IconButton({
-                            scope.launch {
-                                try { Api.cancelRun(owner, name, runId); snackbar.showSnackbar("已取消"); delay(1500); load() }
-                                catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
-                            }
-                        }) { Icon(Icons.Filled.Stop, "取消", Modifier.size(18.dp)) }
-                        IconButton({
-                            val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
-                            cm?.setPrimaryClip(android.content.ClipData.newPlainText("链接", r.html_url ?: ""))
-                        }) { Icon(Icons.Filled.ContentCopy, "复制链接", Modifier.size(18.dp)) }
-                        IconButton({
-                            Downloader.startDownload(ctx,
-                                "https://api.github.com/repos/$owner/$name/actions/runs/$runId/logs",
-                                "logs-$runId.zip", Cfg.token, useMirror = false,
-                                onDone = { Toast.makeText(ctx, "日志已保存到 下载/GitHubPro/logs-$runId.zip", Toast.LENGTH_LONG).show() },
-                                onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
-                        }) { Icon(Icons.Filled.Download, "下载日志", Modifier.size(18.dp), tint = GH.blue) }
-                        IconButton({
-                            scope.launch {
-                                try { Api.deleteRun(owner, name, runId); snackbar.showSnackbar("已删除运行记录"); nav.popBackStack() }
-                                catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
-                            }
-                        }) { Icon(Icons.Filled.Delete, "删除", Modifier.size(18.dp), tint = GH.red) }
+                        }
                     }
                     LazyColumn(Modifier.weight(1f)) {
                         item {

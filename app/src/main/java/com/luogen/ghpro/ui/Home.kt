@@ -12,6 +12,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Search
@@ -181,6 +182,7 @@ fun HomeScreen(nav: NavController) {
                         }
                         IconButton(onClick = { nav.navigate("search") }) { Icon(Icons.Filled.Search, "搜索") }
                         IconButton(onClick = { nav.navigate("featured") }) { Icon(Icons.Filled.Explore, "精选仓库") }
+                        IconButton(onClick = { nav.navigate("downloads") }) { Icon(Icons.Filled.Download, "下载管理") }
                         IconButton(onClick = { nav.navigate("notifications") }) { Icon(Icons.Filled.Notifications, "通知") }
                         IconButton(onClick = { nav.navigate("settings") }) { Icon(Icons.Filled.Settings, "设置") }
                     }
@@ -216,7 +218,10 @@ fun HomeScreen(nav: NavController) {
                             }
                             DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
                                 listOf("updated" to "最近更新", "pushed" to "最近推送", "full_name" to "名称", "stars" to "Star 最多").forEach { (k, v) ->
-                                    DropdownMenuItem(text = { Text(v) }, onClick = { sort = k; sortMenu = false })
+                                    DropdownMenuItem(text = { Text(v) }, onClick = {
+                                        sort = k; sortMenu = false
+                                        scope.launch { listState.scrollToItem(0); UiCache.homeIndex = 0; UiCache.homeOffset = 0 }
+                                    })
                                 }
                             }
                         }

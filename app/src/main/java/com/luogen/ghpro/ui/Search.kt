@@ -92,6 +92,7 @@ private fun RoundedSearchField(
 
 @Composable
 fun SearchScreen(nav: NavController) {
+    val scope = rememberCoroutineScope()
     var q by remember { mutableStateOf(UiCache.searchQuery) }
     var type by remember { mutableStateOf(UiCache.searchType) }
     var lang by remember { mutableStateOf(UiCache.searchLang) }
@@ -123,6 +124,7 @@ fun SearchScreen(nav: NavController) {
         UiCache.searchTotal = total
         UiCache.searchPage = page
         UiCache.searchHasNext = hasNext
+        UiCache.searchKey = "$type|$lang|$sort|$q"
         UiCache.searchRan = true
     }
 
@@ -225,8 +227,17 @@ fun SearchScreen(nav: NavController) {
 
     // 输入 400ms 防抖；切分类 / 语言 / 排序立刻重搜
     var lastFilterKey by remember { mutableStateOf("$type|$lang|$sort") }
+    var firstPass by remember { mutableStateOf(true) }
     LaunchedEffect(q, type, lang, sort, retryTick) {
         val key = "$type|$lang|$sort"
+        if (firstPass) {
+            firstPass = false
+            // 从详情页返回：缓存里的搜索词、分类、语言、排序、结果、位置全都对得上，就直接还原，不再重搜也不回顶
+            if (UiCache.searchRan && UiCache.searchKey == "$key|$q") {
+                lastFilterKey = key
+                return@LaunchedEffect
+            }
+        }
         val filtersChanged = key != lastFilterKey
         lastFilterKey = key
         if (q.isBlank()) { clearAll(); cacheWrite(); return@LaunchedEffect }
@@ -258,8 +269,12 @@ fun SearchScreen(nav: NavController) {
             .collect { last -> if (hasNext && last >= currentCount(repos, users, codes, issues) - 4) loadMore() }
     }
 
+    val showTop by remember { derivedStateOf { listState.firstVisibleItemIndex > 3 || listState.firstVisibleItemScrollOffset > 600 } }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
+        floatingActionButton = {
+            if (showTop) SmallFab { scope.launch { listState.animateScrollToItem(0) } }
+        },
         topBar = {
             Column(Modifier.background(MaterialTheme.colorScheme.surface).padding(horizontal = 8.dp, vertical = 6.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {

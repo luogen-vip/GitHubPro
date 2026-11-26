@@ -42,6 +42,9 @@ data class DownloadState(
     val localPath: String? = null
 ) {
     val percent: Int get() = if (total <= 0) 0 else ((done * 100) / total).toInt()
+    val active: Boolean
+        get() = status.startsWith("下载中") || status.startsWith("多线程下载") ||
+            status in listOf("连接中", "重试中", "合并中", "准备中")
 }
 
 data class DlRecord(
@@ -69,6 +72,17 @@ object Downloader {
     val state = MutableStateFlow<Map<String, DownloadState>>(emptyMap())
     val historyVersion = MutableStateFlow(0)
     private val jobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+    private val epochs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val repoMap = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    fun repoOf(name: String): String? = repoMap[sanitize(name)]
+    private fun newEpoch(name: String): Long {
+        val e = System.nanoTime()
+        epochs[name] = e
+        return e
+    }
+    private fun sameEpoch(name: String, e: Long) = e == 0L || epochs[name] == e
+    private fun updateE(s: DownloadState, e: Long) { if (sameEpoch(s.fileName, e)) update(s) }
     private const val HPREFS = "ghpro_downloads"
 
     fun stateOf(name: String): DownloadState? = state.value[name]
@@ -90,10 +104,12 @@ object Downloader {
     ): Job {
         val key = sanitize(fileName)
         jobs[key]?.takeIf { it.isActive }?.let { return it }
+        val epoch = newEpoch(key)
+        if (!repo.isNullOrBlank()) repoMap[key] = repo
         lateinit var job: Job
         job = appScope.launch {
             try {
-                val f = download(ctx, rawUrl, fileName, token, useMirror)
+                val f = download(ctx, rawUrl, fileName, token, useMirror, epoch = epoch)
                 val st = stateOf(fileName)
                 record(ctx, DlRecord(
                     id = java.util.UUID.randomUUID().toString(),
@@ -106,7 +122,7 @@ object Downloader {
                 }
                 kotlinx.coroutines.withContext(Dispatchers.Main) { onDone?.invoke(f) }
             } catch (e: kotlinx.coroutines.CancellationException) {
-                update(DownloadState(key, status = "已取消"))
+                if (sameEpoch(key, epoch)) update(DownloadState(key, status = "已取消"))
             } catch (e: Exception) {
                 kotlinx.coroutines.withContext(Dispatchers.Main) { onError?.invoke(e.message ?: "下载失败") }
             } finally {
@@ -119,6 +135,7 @@ object Downloader {
 
     fun cancelDownload(name: String): Boolean {
         val key = sanitize(name)
+        newEpoch(key)
         val j = jobs.remove(key)
         j?.cancel()
         update(DownloadState(key, status = "已取消"))
@@ -236,7 +253,8 @@ object Downloader {
         token: String? = null,
         useMirror: Boolean = true,
         threads: Int = Cfg.downThreads,
-        notify: Boolean = true
+        notify: Boolean = true,
+        epoch: Long = 0L
     ): File = withContext(Dispatchers.IO) {
         val safe = sanitize(fileName)
         val cur = state.value[safe]
@@ -248,21 +266,21 @@ object Downloader {
         var lastError: Exception? = null
         for (c in cands) {
             try {
-                update(DownloadState(safe, status = "连接中", mirrorUsed = c))
-                fetch(c, outFile, token, threads, safe, notify)
+                updateE(DownloadState(safe, status = "连接中", mirrorUsed = c), epoch)
+                fetch(c, outFile, token, threads, safe, notify, epoch)
                 if (notify) Notifier.downloadDone(ctx, safe, outFile.absolutePath)
                 val pub = publish(ctx, outFile, safe)
-                update(DownloadState(safe, done = outFile.length(), total = outFile.length(),
+                updateE(DownloadState(safe, done = outFile.length(), total = outFile.length(),
                     status = "已完成", path = pub.first, publicPath = pub.first, localPath = outFile.absolutePath,
-                    mirrorUsed = c, threads = threads))
+                    mirrorUsed = c, threads = threads), epoch)
                 return@withContext outFile
             } catch (e: Exception) {
                 lastError = e
                 outFile.delete()
-                update(DownloadState(safe, status = "重试中", error = e.message, mirrorUsed = c))
+                updateE(DownloadState(safe, status = "重试中", error = e.message, mirrorUsed = c), epoch)
             }
         }
-        update(DownloadState(safe, status = "失败", error = lastError?.message ?: "下载失败"))
+        updateE(DownloadState(safe, status = "失败", error = lastError?.message ?: "下载失败"), epoch)
         throw lastError ?: IOException("下载失败")
     }
 
@@ -310,7 +328,7 @@ object Downloader {
         else -> "application/octet-stream"
     }
 
-    private fun fetch(url: String, outFile: File, token: String?, threadsWanted: Int, name: String, notify: Boolean) {
+    private fun fetch(url: String, outFile: File, token: String?, threadsWanted: Int, name: String, notify: Boolean, epoch: Long) {
         val host = runCatching { java.net.URI(url).host ?: "" }.getOrDefault("")
         val sendAuth = token != null && (host.contains("github.com") || host.contains("githubusercontent.com"))
         val head = Request.Builder().url(url)
@@ -330,13 +348,13 @@ object Downloader {
 
         val useMulti = Cfg.multiThread && threadsWanted > 1 && total > 1024 * 1024 && acceptRanges
         if (useMulti) {
-            multiThread(url, outFile, token, sendAuth, total, threadsWanted, name, notify)
+            multiThread(url, outFile, token, sendAuth, total, threadsWanted, name, notify, epoch)
         } else {
-            single(url, outFile, token, sendAuth, total, name, notify)
+            single(url, outFile, token, sendAuth, total, name, notify, epoch)
         }
     }
 
-    private fun single(url: String, outFile: File, token: String?, sendAuth: Boolean, totalHint: Long, name: String, notify: Boolean) {
+    private fun single(url: String, outFile: File, token: String?, sendAuth: Boolean, totalHint: Long, name: String, notify: Boolean, epoch: Long) {
         val req = Request.Builder().url(url)
             .header("User-Agent", "GitHubPro/1.0")
             .apply { if (sendAuth) header("Authorization", "Bearer $token") }
@@ -358,9 +376,9 @@ object Downloader {
                     val now = System.currentTimeMillis()
                     if (now - last > 400) {
                         val speed = (done - lastBytes) * 1000 / max(1, now - last)
-                        update(DownloadState(name, done = done, total = total, speed = speed,
+                        updateE(DownloadState(name, done = done, total = total, speed = speed,
                             status = if (total > 0) "下载中 ${done * 100 / total}%" else "下载中 ${done / 1024}KB",
-                            threads = 1))
+                            threads = 1), epoch)
                         if (notify && total > 0) Notifier.downloadProgress(
                             com.luogen.ghpro.AppCtx.get(), name, (done * 100 / total).toInt()
                         )
@@ -375,7 +393,7 @@ object Downloader {
 
     private fun multiThread(
         url: String, outFile: File, token: String?, sendAuth: Boolean,
-        total: Long, threads: Int, name: String, notify: Boolean
+        total: Long, threads: Int, name: String, notify: Boolean, epoch: Long
     ) {
         RandomAccessFile(outFile, "rw").use { raf ->
             raf.setLength(total)
@@ -392,8 +410,8 @@ object Downloader {
                 if (d >= total) break
                 val now = System.currentTimeMillis()
                 val speed = (d - lastBytes) * 1000 / max(1, now - last)
-                update(DownloadState(name, done = d, total = total, speed = speed,
-                    status = "多线程下载 ${d * 100 / total}%", threads = threads))
+                updateE(DownloadState(name, done = d, total = total, speed = speed,
+                    status = "多线程下载 ${d * 100 / total}%", threads = threads), epoch)
                 if (notify) Notifier.downloadProgress(com.luogen.ghpro.AppCtx.get(), name, (d * 100 / total).toInt())
                 last = now
                 lastBytes = d

@@ -64,7 +64,7 @@ fun DownloadsScreen(nav: NavController) {
                 },
                 navigationIcon = { IconButton({ nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
                 actions = {
-                    IconButton({ list = Downloader.history(ctx) }) { Icon(Icons.Filled.Refresh, "刷新") }
+                    IconButton({ list = Downloader.history(ctx); Toast.makeText(ctx, "已刷新", Toast.LENGTH_SHORT).show() }) { Icon(Icons.Filled.Refresh, "刷新") }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )
@@ -93,7 +93,8 @@ fun DownloadsScreen(nav: NavController) {
                             Spacer(Modifier.height(3.dp))
                             Text("${humanSize(r.size)} · ${timeAgo(java.time.Instant.ofEpochMilli(r.time).toString())} · 来源 ${r.source}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             if (!r.repo.isNullOrBlank() || !r.release.isNullOrBlank()) {
-                                Text(listOfNotNull(r.repo, r.release).joinToString(" · "), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("来自 " + listOfNotNull(r.repo, r.release).joinToString(" · "), fontSize = 10.sp, color = GH.blue,
+                                    modifier = Modifier.clickable { r.repo?.let { UiCache.repoTab[it] = if (!r.release.isNullOrBlank()) 5 else 1; nav.navigate("repo/$it") } })
                             }
                             Spacer(Modifier.height(6.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -104,6 +105,13 @@ fun DownloadsScreen(nav: NavController) {
                                         else Downloader.share(ctx, local)
                                     }, contentPadding = PaddingValues(horizontal = 8.dp)) {
                                         Icon(Icons.Filled.OpenInNew, null, Modifier.size(14.dp)); Text("打开", fontSize = 11.sp)
+                                    }
+                                }
+                                if (!r.repo.isNullOrBlank()) {
+                                    TextButton({
+                                        r.repo?.let { UiCache.repoTab[it] = if (!r.release.isNullOrBlank()) 5 else 1; nav.navigate("repo/$it") }
+                                    }, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                                        Icon(Icons.Filled.OpenInNew, null, Modifier.size(14.dp)); Text("定位仓库", fontSize = 11.sp)
                                     }
                                 }
                                 TextButton({ copy(r.url) }, contentPadding = PaddingValues(horizontal = 8.dp)) {

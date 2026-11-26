@@ -48,8 +48,9 @@ import java.io.File
 fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    var list by remember { mutableStateOf<List<Release>>(emptyList()) }
-    var loading by remember { mutableStateOf(true) }
+    val cacheKey = "$owner/$name"
+    var list by remember { mutableStateOf(UiCache.repoReleases[cacheKey] ?: emptyList()) }
+    var loading by remember { mutableStateOf(list.isEmpty()) }
     var error by remember { mutableStateOf<String?>(null) }
     var page by remember { mutableStateOf(1) }
     var hasNext by remember { mutableStateOf(false) }
@@ -63,13 +64,17 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
         try {
             val pg = Api.releases(owner, name, p)
             list = if (replace) pg.items else list + pg.items
+            if (replace) UiCache.repoReleases[cacheKey] = list
             hasNext = pg.hasNext; page = p; error = null
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) { if (!silent) error = e.message }
         loading = false
     }
-    LaunchedEffect(Unit) { load(1, true) }
+    LaunchedEffect(Unit) {
+        val cached = UiCache.repoReleases[cacheKey]
+        if (cached != null && cached.isNotEmpty()) { list = cached; loading = false; load(1, true, silent = true) } else load(1, true)
+    }
 
     fun copy(text: String, tip: String) {
         val cm = ctx.getSystemService(ClipboardManager::class.java)
@@ -157,14 +162,14 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                                             Text(a.name, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                             Text("${humanSize(a.size)} · 已下载 ${a.download_count} 次", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                             Box(Modifier.fillMaxWidth().height(9.dp).padding(top = 3.dp)) {
-                                                if (st != null && st.status in listOf("连接中", "下载中", "重试中", "合并中")) {
+                                                if (st != null && st.active) {
                                                     LinearProgressIndicator(
                                                         progress = { if (st.total > 0) st.percent / 100f else 0f },
                                                         modifier = Modifier.fillMaxWidth().height(4.dp))
                                                 }
                                             }
                                         }
-                                        if (st != null && st.status in listOf("连接中", "下载中", "重试中", "合并中")) {
+                                        if (st != null && st.active) {
                                             IconButton({ Downloader.cancelDownload(a.name) }) {
                                                 Icon(Icons.Filled.Cancel, "取消下载", Modifier.size(16.dp), tint = GH.red)
                                             }

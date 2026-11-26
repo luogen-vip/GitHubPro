@@ -1,8 +1,14 @@
 package com.luogen.ghpro.ui
 
 import com.luogen.ghpro.data.CodeItem
+import com.luogen.ghpro.data.GitCommit
 import com.luogen.ghpro.data.Issue
+import com.luogen.ghpro.data.PullRequest
+import com.luogen.ghpro.data.Release
 import com.luogen.ghpro.data.Repo
+import com.luogen.ghpro.data.Run
+import com.luogen.ghpro.data.Job
+import com.luogen.ghpro.data.Artifact
 import com.luogen.ghpro.data.User
 
 /**
@@ -46,8 +52,32 @@ object UiCache {
         repoWatching.remove(full)
     }
 
+    // ---------------- 用户主页 ----------------
+    val userData = HashMap<String, User>()
+    val userRepos = HashMap<String, List<Repo>>()
+    val userTab = HashMap<String, Int>()
+    val userIndex = HashMap<String, Int>()
+
+    // ---------------- 代码浏览 ----------------
+    val codePath = HashMap<String, String>()          // owner/name|branch -> 当前目录
+    val codeListing = HashMap<String, com.luogen.ghpro.data.DirListing>() // owner/name|branch|path
+    val fileContent = HashMap<String, String>()       // owner/name|branch|path
+    val codeScroll = HashMap<String, Int>()
+
+    // ---------------- 仓库各 Tab 列表 ----------------
+    val repoRuns = HashMap<String, List<Run>>()
+    val runData = HashMap<Long, Run>()
+    val runJobs = HashMap<Long, List<Job>>()
+    val runArtifacts = HashMap<Long, List<Artifact>>()
+    val repoIssues = HashMap<String, List<Issue>>()
+    val repoPulls = HashMap<String, List<PullRequest>>()
+    val repoReleases = HashMap<String, List<Release>>()
+    val repoCommits = HashMap<String, List<GitCommit>>()
+    val repoIndex = HashMap<String, Int>()   // "tab|repo" -> 滚动位置
+
     // ---------------- 搜索 ----------------
     var searchRan = false
+    var searchKey = ""
     var searchQuery = ""
     var searchType = 0
     var searchLang: String? = null

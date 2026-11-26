@@ -28,6 +28,18 @@ object Cfg {
         get() = sp.getString("login", null)
         set(v) { sp.edit().putString("login", v).apply() }
 
+    /** 已 Star / 正在关注 的仓库，本地持久化：进详情页时星星状态不会先闪成未 Star。 */
+    private fun starSet(): MutableSet<String> =
+        (sp.getStringSet("starred_repos", emptySet()) ?: emptySet()).toMutableSet()
+
+    fun isStarredCached(full: String): Boolean = starSet().contains(full)
+
+    fun setStarredCached(full: String, on: Boolean) {
+        val s = starSet()
+        if (on) s.add(full) else s.remove(full)
+        sp.edit().putStringSet("starred_repos", s).apply()
+    }
+
     var userName: String?
         get() = sp.getString("uname", null)
         set(v) { sp.edit().putString("uname", v).apply() }

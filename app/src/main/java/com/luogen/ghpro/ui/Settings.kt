@@ -218,9 +218,6 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
         }
 
         item {
-            TextButton(onClick = { nav.navigate("downloads") }, modifier = Modifier.fillMaxWidth()) {
-                Text("下载管理（查看/删除/重新下载所有文件）", fontSize = 13.sp)
-            }
             SectionTitle("API 用量")
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("剩余额度", fontSize = 13.sp, modifier = Modifier.weight(1f))
@@ -240,23 +237,8 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
         }
 
         item {
-            val dl by Downloader.state.collectAsState()
-            if (dl.isNotEmpty()) {
-                SectionTitle("本次下载")
-                dl.values.sortedByDescending { it.done }.take(8).forEach { d ->
-                    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable {
-                        d.localPath?.let { p -> Downloader.installApk(ctx, java.io.File(p)) }
-                    }) {
-                        Text(d.fileName, fontSize = 12.sp, maxLines = 1)
-                        Text("${d.status} · ${humanSize(d.done)}/${if (d.total > 0) humanSize(d.total) else "?"}" +
-                                if (d.speed > 0) " · ${humanSize(d.speed)}/s" else "",
-                            fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        if (d.total > 0) LinearProgressIndicator(progress = { d.percent / 100f }, Modifier.fillMaxWidth().padding(top = 2.dp))
-                    }
-                }
-            }
             Spacer(Modifier.height(40.dp))
-            Text("GitHub Pro 1.0.3 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("GitHub Pro 1.0.6 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("数据全部来自 GitHub 官方 REST / GraphQL API", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(30.dp))
         }
