@@ -17,6 +17,8 @@ import com.luogen.ghpro.data.Discussion
  * 列表数据与滚动位置都还在，不会再重新请求、也不会跳回顶部。
  * 进程被系统回收时缓存自然失效，最多重新加载一次。
  */
+data class HomeSnap(val repos: List<Repo>, val page: Int, val hasNext: Boolean)
+
 object UiCache {
 
     // ---------------- 首页 ----------------
@@ -25,6 +27,7 @@ object UiCache {
     var homeSort = "updated"
     var homeMe: User? = null
     var homeRepos: List<Repo> = emptyList()
+    val homeSnaps = HashMap<String, HomeSnap>()   // "tab|sort" -> 上次列表，切 tab 秒显示
     var homePage = 1
     var homeHasNext = false
     var homeIndex = 0
@@ -33,6 +36,7 @@ object UiCache {
     fun invalidateHome() {
         homeLoaded = false
         homeRepos = emptyList()
+        homeSnaps.clear()
         homePage = 1
         homeHasNext = false
         homeIndex = 0
@@ -71,6 +75,7 @@ object UiCache {
     val runJobs = HashMap<Long, List<Job>>()
     val runArtifacts = HashMap<Long, List<Artifact>>()
     val repoIssues = HashMap<String, List<Issue>>()
+    val issueOverrides = HashMap<String, Pair<Issue, Long>>()   // owner/name#number -> 本地乐观状态（10 秒内不被服务端旧数据覆盖）
     val repoPulls = HashMap<String, List<PullRequest>>()
     val repoReleases = HashMap<String, List<Release>>()
     val repoContributors = HashMap<String, List<User>>()

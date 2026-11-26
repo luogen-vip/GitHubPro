@@ -44,9 +44,21 @@ object Api {
             .build()
     }
 
+    /** 大文件上传单独放宽写超时；手机上传 1-2GB 不能只给 45 秒。 */
+    private val uploadHttp: OkHttpClient by lazy {
+        http.newBuilder()
+            .writeTimeout(30, TimeUnit.MINUTES)
+            .readTimeout(30, TimeUnit.MINUTES)
+            .build()
+    }
+
     fun enc(s: String): String = try {
         URLEncoder.encode(s, "UTF-8").replace("+", "%20")
     } catch (e: Exception) { s }
+
+    /** 仅编码每一段路径，保留 /；文件名含空格、#、中文时必须这样编码。 */
+    fun encPath(path: String): String =
+        path.trim('/').split('/').joinToString("/") { enc(it) }
 
     fun buildUrl(path: String, query: Map<String, String?> = emptyMap()): String {
         val p = if (path.startsWith("http")) path else base + path
@@ -251,7 +263,7 @@ object Api {
     suspend fun repoEvents(o: String, r: String): List<GhEvent> = callList<GhEvent>("/repos/$o/$r/events", mapOf("per_page" to "30")).items
 
     suspend fun contents(o: String, r: String, path: String, ref: String?): DirListing {
-        val text = raw("/repos/$o/$r/contents/${path.trim('/')}", query = mapOf("ref" to ref))
+        val text = raw("/repos/$o/$r/contents/${encPath(path)}", query = mapOf("ref" to ref))
         if (text.isBlank()) return DirListing(false, emptyList(), null)
         val el = JsonParser.parseString(text)
         return if (el.isJsonArray) {
@@ -263,16 +275,31 @@ object Api {
     }
 
     suspend fun fileContent(o: String, r: String, path: String, ref: String?): String {
-        val c = callObj("/repos/$o/$r/contents/${path.trim('/')}", ContentItem::class.java, mapOf("ref" to ref))
+        val c = callObj("/repos/$o/$r/contents/${encPath(path)}", ContentItem::class.java, mapOf("ref" to ref))
         if (c.encoding == "base64" && c.content != null) {
             return String(android.util.Base64.decode(c.content.replace("\n", ""), android.util.Base64.DEFAULT))
         }
         return c.content ?: ""
     }
 
+    /** 超过 1MB 时用 raw 媒体类型直接取文件字节（GitHub 仍限制单文件 100MB）。 */
+    suspend fun fileRaw(o: String, r: String, path: String, ref: String?): ByteArray =
+        withContext(Dispatchers.IO) {
+            val url = buildUrl("/repos/$o/$r/contents/${encPath(path)}", mapOf("ref" to ref))
+            val req = Request.Builder().url(url)
+                .header("Accept", "application/vnd.github.raw")
+                .header("User-Agent", "GitHubPro/1.0")
+                .header("Authorization", "Bearer $token")
+                .build()
+            http.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
+                resp.body?.bytes() ?: throw IOException("文件为空")
+            }
+        }
+
     /** 读取文件元信息（含 sha，编辑保存时要用）。 */
     suspend fun fileItem(o: String, r: String, path: String, ref: String?): ContentItem =
-        callObj("/repos/$o/$r/contents/${path.trim('/')}", ContentItem::class.java, mapOf("ref" to ref))
+        callObj("/repos/$o/$r/contents/${encPath(path)}", ContentItem::class.java, mapOf("ref" to ref))
 
     suspend fun putFile(o: String, r: String, path: String, message: String, base64: String, sha: String?, branch: String?): JsonObject {
         val body = JsonObject().apply {
@@ -281,7 +308,7 @@ object Api {
             if (sha != null) addProperty("sha", sha)
             if (branch != null) addProperty("branch", branch)
         }
-        return JsonParser.parseString(exec("/repos/$o/$r/contents/${path.trim('/')}", "PUT", body.toString()).body).asJsonObject
+        return JsonParser.parseString(exec("/repos/$o/$r/contents/${encPath(path)}", "PUT", body.toString()).body).asJsonObject
     }
 
     private suspend fun collectFiles(o: String, r: String, path: String, branch: String?): List<String> {
@@ -337,7 +364,7 @@ object Api {
             addProperty("sha", sha)
             if (branch != null) addProperty("branch", branch)
         }
-        return JsonParser.parseString(exec("/repos/$o/$r/contents/${path.trim('/')}", "DELETE", body.toString()).body).asJsonObject
+        return JsonParser.parseString(exec("/repos/$o/$r/contents/${encPath(path)}", "DELETE", body.toString()).body).asJsonObject
     }
 
     suspend fun createRepo(
@@ -624,6 +651,121 @@ object Api {
             }
         }
 
+    // ---------------- Git LFS（大文件） ----------------
+    private fun sha256File(file: java.io.File): String {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buf = ByteArray(8192)
+            while (true) {
+                val n = input.read(buf)
+                if (n <= 0) break
+                md.update(buf, 0, n)
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+    }
+
+    private fun basicAuth(): String {
+        val user = Cfg.login ?: "x-access-token"
+        val raw = "$user:$token"
+        return "Basic " + android.util.Base64.encodeToString(raw.toByteArray(), android.util.Base64.NO_WRAP)
+    }
+
+    /** 把文件上传到 GitHub LFS（单文件最大 2GB，受账号 LFS 配额限制），返回 oid。 */
+    suspend fun lfsUpload(o: String, r: String, file: java.io.File): String = withContext(Dispatchers.IO) {
+        val oid = sha256File(file)
+        val body = JsonObject().apply {
+            addProperty("operation", "upload")
+            add("transfers", JsonArray().apply { add("basic") })
+            add("objects", JsonArray().apply {
+                add(JsonObject().apply { addProperty("oid", oid); addProperty("size", file.length()) })
+            })
+            addProperty("hash_algo", "sha256")
+        }
+        val req = Request.Builder()
+            .url("https://github.com/$o/$r.git/info/lfs/objects/batch")
+            .header("Accept", "application/vnd.git-lfs+json")
+            .header("Content-Type", "application/vnd.git-lfs+json")
+            .header("Authorization", basicAuth())
+            .header("User-Agent", "GitHubPro/1.0")
+            .post(body.toString().toRequestBody("application/vnd.git-lfs+json".toMediaType()))
+            .build()
+        http.newCall(req).execute().use { resp ->
+            val txt = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) throw IOException("LFS 拒绝（HTTP ${resp.code}）：${txt.take(300)}")
+            val root = JsonParser.parseString(txt).asJsonObject
+            val obj = root.getAsJsonArray("objects")?.firstOrNull()?.asJsonObject
+                ?: throw IOException("LFS 返回为空")
+            obj.getAsJsonObject("error")?.let { throw IOException(it.get("message")?.asString ?: "LFS 上传失败") }
+            val actions = obj.getAsJsonObject("actions")
+            val upload = actions?.getAsJsonObject("upload")
+            if (upload == null) return@withContext oid // 服务器已有这个对象
+            val href = upload.get("href")?.asString ?: throw IOException("LFS 上传地址为空")
+            val headers = HashMap<String, String>()
+            upload.getAsJsonObject("header")?.entrySet()?.forEach { (k, v) -> headers[k] = v.asString }
+            val pb = Request.Builder().url(href)
+            headers.forEach { (k, v) -> pb.header(k, v) }
+            val put = pb.put(file.asRequestBody("application/octet-stream".toMediaType())).build()
+            uploadHttp.newCall(put).execute().use { up ->
+                if (!up.isSuccessful) throw IOException("LFS 文件上传失败（HTTP ${up.code}）")
+            }
+            oid
+        }
+    }
+
+    /** 提交 LFS 指针文件（.gitattributes + pointer），一次真实 commit。 */
+    suspend fun lfsCommit(o: String, r: String, path: String, branch: String, oid: String, size: Long, message: String) {
+        val ref = exec("/repos/$o/$r/git/ref/heads/$branch").body.let { JsonParser.parseString(it).asJsonObject }
+        val commitSha = ref.getAsJsonObject("object").get("sha").asString
+        val commit = exec("/repos/$o/$r/git/commits/$commitSha").body.let { JsonParser.parseString(it).asJsonObject }
+        val baseTree = commit.getAsJsonObject("tree").get("sha").asString
+        val ext = path.substringAfterLast('.', "")
+        val attrLine = if (ext.isNotBlank() && path.contains('.')) "*.$ext filter=lfs diff=lfs merge=lfs -text" else "/$path filter=lfs diff=lfs merge=lfs -text"
+        val attrsExists = runCatching { fileItem(o, r, ".gitattributes", branch) }.isSuccess
+        val attrsOld = if (attrsExists) runCatching { fileContent(o, r, ".gitattributes", branch) }.getOrNull() else ""
+        if (attrsOld != null && !attrsOld.lineSequence().any { it.trim() == attrLine }) {
+            val attrsNew = attrsOld.trimEnd() + (if (attrsOld.isBlank()) "" else "\n") + attrLine + "\n"
+            val attrSha = JsonParser.parseString(exec("/repos/$o/$r/git/blobs", "POST", JsonObject().apply {
+                addProperty("content", android.util.Base64.encodeToString(attrsNew.toByteArray(), android.util.Base64.NO_WRAP))
+                addProperty("encoding", "base64")
+            }.toString()).body).asJsonObject.get("sha").asString
+            // .gitattributes 与指针一起放进 tree
+            val tree = JsonObject().apply {
+                addProperty("base_tree", baseTree)
+                add("tree", JsonArray().apply {
+                    add(JsonObject().apply { addProperty("path", ".gitattributes"); addProperty("mode", "100644"); addProperty("type", "blob"); addProperty("sha", attrSha) })
+                })
+            }
+            val treeSha = JsonParser.parseString(exec("/repos/$o/$r/git/trees", "POST", tree.toString()).body).asJsonObject.get("sha").asString
+            commitPointer(o, r, path, branch, oid, size, message, commitSha, treeSha)
+        } else {
+            commitPointer(o, r, path, branch, oid, size, message, commitSha, baseTree)
+        }
+    }
+
+    private suspend fun commitPointer(o: String, r: String, path: String, branch: String, oid: String, size: Long,
+                              message: String, parent: String, baseTree: String) {
+        val pointer = "version https://git-lfs.github.com/spec/v1\noid sha256:$oid\nsize $size\n"
+        val blob = JsonParser.parseString(exec("/repos/$o/$r/git/blobs", "POST", JsonObject().apply {
+            addProperty("content", android.util.Base64.encodeToString(pointer.toByteArray(), android.util.Base64.NO_WRAP))
+            addProperty("encoding", "base64")
+        }.toString()).body).asJsonObject.get("sha").asString
+        val treeBody = JsonObject().apply {
+            addProperty("base_tree", baseTree)
+            add("tree", JsonArray().apply {
+                add(JsonObject().apply { addProperty("path", path); addProperty("mode", "100644"); addProperty("type", "blob"); addProperty("sha", blob) })
+            })
+        }
+        val tree = JsonParser.parseString(exec("/repos/$o/$r/git/trees", "POST", treeBody.toString()).body).asJsonObject.get("sha").asString
+        val cb = JsonObject().apply {
+            addProperty("message", message)
+            addProperty("tree", tree)
+            add("parents", JsonArray().apply { add(parent) })
+        }
+        val newCommit = JsonParser.parseString(exec("/repos/$o/$r/git/commits", "POST", cb.toString()).body).asJsonObject.get("sha").asString
+        exec("/repos/$o/$r/git/refs/heads/$branch", "PATCH", JsonObject().apply { addProperty("sha", newCommit) }.toString())
+    }
+
     // ---------------- 发行版 ----------------
     suspend fun releases(o: String, r: String, page: Int = 1): Page<Release> =
         callList("/repos/$o/$r/releases", mapOf("per_page" to "20", "page" to "$page"))
@@ -656,7 +798,7 @@ object Api {
                 .header("Accept", "application/vnd.github+json")
                 .header("User-Agent", "GitHubPro/1.0")
                 .post(body).build()
-            val txt = http.newCall(req).execute().use { it.body?.string() ?: "" }
+            val txt = uploadHttp.newCall(req).execute().use { it.body?.string() ?: "" }
             JsonParser.parseString(txt).asJsonObject
         }
 

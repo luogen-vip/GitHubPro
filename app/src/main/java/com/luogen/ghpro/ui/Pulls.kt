@@ -31,6 +31,7 @@ import com.luogen.ghpro.data.PullRequest
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 
 @Composable
 fun PullListTab(nav: NavController, owner: String, name: String) {
@@ -51,7 +52,8 @@ fun PullListTab(nav: NavController, owner: String, name: String) {
             hasNext = pg.hasNext; page = p
             if (replace) UiCache.repoPulls[listKey()] = list
             error = null
-        } catch (e: Exception) { if (!silent) error = e.message }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { if (!silent) error = e.message }
         loading = false
     }
     LaunchedEffect(state) {
@@ -61,7 +63,7 @@ fun PullListTab(nav: NavController, owner: String, name: String) {
     }
     LaunchedEffect(state) {
         while (isActive) {
-            delay(4_000L)
+            delay(3_000L)
             if (page == 1 && !loading) runCatching { load(1, true, silent = true) }
         }
     }
@@ -123,13 +125,14 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
             files = runCatching { Api.prFiles(owner, name, number) }.getOrDefault(emptyList())
             comments = runCatching { Api.prComments(owner, name, number) }.getOrDefault(emptyList())
             error = null
-        } catch (e: Exception) { error = e.message }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { error = e.message }
         loading = false
     }
     LaunchedEffect(number) { load() }
     LaunchedEffect(number) {
         while (isActive) {
-            delay(5_000L)
+            delay(3_000L)
             if (!busy) runCatching { load() }
         }
     }

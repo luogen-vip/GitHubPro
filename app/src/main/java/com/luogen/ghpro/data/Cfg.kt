@@ -134,6 +134,18 @@ object Cfg {
         val cur = recentRepos
         val next = (listOf(full) + cur.filter { it != full }).take(20)
         recentRepos = next
+        // 只有真实操作才记时间；单纯打开浏览不参与排序
+        val now = System.currentTimeMillis()
+        val old = (sp.getString("repo_activity", "") ?: "").split("|").filter { it.isNotBlank() }
+        val mine = "$full@$now"
+        sp.edit().putString("repo_activity",
+            (listOf(mine) + old.filter { !it.startsWith("$full@") }).take(40).joinToString("|")).apply()
+        Bus.activityChanged()
+    }
+
+    fun activityAt(full: String): Long {
+        val raw = (sp.getString("repo_activity", "") ?: "").split("|").firstOrNull { it.startsWith("$full@") } ?: return 0L
+        return raw.substringAfterLast('@').toLongOrNull() ?: 0L
     }
 
     fun clearAll() {

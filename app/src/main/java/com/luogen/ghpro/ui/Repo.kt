@@ -50,6 +50,7 @@ import com.luogen.ghpro.download.Downloader
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -60,6 +61,9 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
     var repo by remember { mutableStateOf(UiCache.repoData[key]) }
     var languages by remember { mutableStateOf(UiCache.repoLangs[key] ?: emptyMap()) }
     var starred by remember { mutableStateOf(UiCache.repoStarred[key] ?: Cfg.isStarredCached(key)) }
+    var starSeq by remember { mutableStateOf(0) }
+    var watchSeq by remember { mutableStateOf(0) }
+    var statPending by remember { mutableStateOf(0) }
     var starReady by remember { mutableStateOf(true) }
     var watching by remember { mutableStateOf(UiCache.repoWatching[key] ?: false) }
     var loading by remember { mutableStateOf(UiCache.repoData[key] == null) }
@@ -73,6 +77,11 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
     var peopleDialog by rememberSaveable { mutableStateOf(-1) }  // 0 star 1 fork 2 watch 3 contributors
     var msg by remember { mutableStateOf<String?>(null) }
     val snackbar = remember { SnackbarHostState() }
+    var lastToast by remember { mutableStateOf<Toast?>(null) }
+    fun quickToast(msg: String) {
+        lastToast?.cancel()
+        lastToast = Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).also { it.show() }
+    }
 
     suspend fun load() {
         try {
@@ -99,9 +108,36 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
     // 有缓存就直接用缓存，不再自动重复请求；需要最新数据用右上角刷新
     LaunchedEffect(owner, name) {
         if (UiCache.repoData[key] == null) load()
-        else { repo = UiCache.repoData[key]; loading = false }
+        else {
+            repo = UiCache.repoData[key]; loading = false
+            // 缓存可能不是最新：进页面时把 Star / 关注状态重新核对一遍（失败就继续用缓存，不挡页面）
+            scope.launch {
+                runCatching { Api.isStarred(owner, name) }.onSuccess {
+                    starred = it; starReady = true; UiCache.repoStarred[key] = it; Cfg.setStarredCached(key, it)
+                }
+                runCatching { Api.isWatching(owner, name) }.onSuccess {
+                    watching = it; UiCache.repoWatching[key] = it
+                }
+            }
+        }
     }
     LaunchedEffect(tab) { UiCache.repoTab[key] = tab }
+    val issueVer by Bus.issuePoke.collectAsState()
+    val issueLocalVer by Bus.issueLocalPoke.collectAsState()
+    LaunchedEffect(issueVer, issueLocalVer) {
+        UiCache.repoData[key]?.let { repo = it }
+    }
+    // 仓库统计（Star/复刻/关注/议题）自动追最新，别人操作也能看到
+    LaunchedEffect(owner, name) {
+        while (isActive) {
+            delay(3_000L)
+            if (!loading && statPending == 0) runCatching {
+                val fresh = Api.repo(owner, name)
+                repo = fresh
+                UiCache.repoData[key] = fresh
+            }
+        }
+    }
 
     fun startZipDownload() {
         val r = repo ?: return
@@ -137,8 +173,9 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                             CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
                         }
                     } else IconButton(onClick = {
-                        val base = repo ?: return@IconButton
+                        val base = UiCache.repoData[key] ?: repo ?: return@IconButton
                         val target = !starred
+                        val seq = ++starSeq
                         starred = target
                         UiCache.repoStarred[key] = target
                         Cfg.setStarredCached(key, target)
@@ -151,33 +188,59 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                             else UiCache.homeRepos.filter { it.full_name != key }
                             Bus.starChanged()
                         }
-                        Toast.makeText(ctx, if (target) "已 Star" else "已取消 Star", Toast.LENGTH_SHORT).show()
-                        scope.launch {
-                            Cfg.touchRepo(key)
-                            runCatching { Api.star(owner, name, target) }
-                                .onSuccess {
-                                    val wl = Cfg.watchRepos
-                                    if (target) wl.add(key) else wl.remove(key)
-                                    Cfg.watchRepos = wl
-                                }
-                                .onFailure {
-                                    starred = !target; UiCache.repoStarred[key] = !target; repo = base
-                                    Toast.makeText(ctx, "操作失败：${'$'}{it.message}", Toast.LENGTH_SHORT).show()
-                                }
+                        quickToast(if (target) "已 Star" else "已取消 Star")
+                        statPending++
+                        Bus.actions.launch {
+                            try {
+                                delay(150L)
+                                if (seq != starSeq) return@launch
+                                runCatching { Api.star(owner, name, target) }
+                                    .onSuccess {
+                                        Cfg.touchRepo(key)
+                                        val wl = Cfg.watchRepos
+                                        if (target) wl.add(key) else wl.remove(key)
+                                        Cfg.watchRepos = wl
+                                    }
+                                    .onFailure {
+                                        if (seq == starSeq) {
+                                            starred = !target; UiCache.repoStarred[key] = !target; Cfg.setStarredCached(key, !target)
+                                            repo = base; UiCache.repoData[key] = base
+                                            if (UiCache.homeTab == 1) {
+                                                UiCache.homeRepos = if (target) UiCache.homeRepos.filter { it.full_name != key }
+                                                                      else (UiCache.homeRepos.filter { it.full_name != key } + base)
+                                                Bus.starChanged()
+                                            }
+                                            quickToast("操作失败：${it.message}")
+                                        }
+                                    }
+                            } finally { statPending = (statPending - 1).coerceAtLeast(0) }
                         }
                     }) { Icon(if (starred) Icons.Filled.Star else Icons.Filled.StarBorder, "Star", tint = GH.yellow) }
                     IconButton(onClick = {
+                        val base = UiCache.repoData[key] ?: repo ?: return@IconButton
                         val target = !watching
+                        val seq = ++watchSeq
                         watching = target
                         UiCache.repoWatching[key] = target
-                        Cfg.touchRepo(key)
-                        Toast.makeText(ctx, if (target) "已关注：仓库有动态会收到通知（再点一次取消）" else "已取消关注", Toast.LENGTH_SHORT).show()
-                        scope.launch {
-                            runCatching { Api.watch(owner, name, target) }
-                                .onFailure {
-                                    watching = !target; UiCache.repoWatching[key] = !target
-                                    Toast.makeText(ctx, "操作失败：${'$'}{it.message}", Toast.LENGTH_SHORT).show()
-                                }
+                        val optimistic = base.copy(subscribers_count = (base.subscribers_count + if (target) 1 else -1).coerceAtLeast(0))
+                        repo = optimistic
+                        UiCache.repoData[key] = optimistic
+                        quickToast(if (target) "已关注：仓库有动态会收到通知" else "已取消关注")
+                        statPending++
+                        Bus.actions.launch {
+                            try {
+                                delay(150L)
+                                if (seq != watchSeq) return@launch
+                                runCatching { Api.watch(owner, name, target) }
+                                    .onSuccess { Cfg.touchRepo(key) }
+                                    .onFailure {
+                                        if (seq == watchSeq) {
+                                            watching = !target; UiCache.repoWatching[key] = !target
+                                            repo = base; UiCache.repoData[key] = base
+                                            quickToast("操作失败：${it.message}")
+                                        }
+                                    }
+                            } finally { statPending = (statPending - 1).coerceAtLeast(0) }
                         }
                     }) { Icon(if (watching) Icons.Filled.Visibility else Icons.Filled.VisibilityOff, "关注这个仓库") }
                     Box {
@@ -201,9 +264,14 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                             })
                             DropdownMenuItem(text = { Text("复刻 Fork 到我的账号") }, onClick = {
                                 showMenu = false
-                                scope.launch {
+                                Bus.actions.launch {
                                     runCatching { Api.fork(owner, name) }
-                                        .onSuccess { snackbar.showSnackbar("已复刻到 ${it.full_name}"); msg = it.full_name }
+                                        .onSuccess {
+                                            Cfg.touchRepo(key)
+                                            repo = repo?.copy(forks_count = (repo?.forks_count ?: 0) + 1)
+                                            repo?.let { UiCache.repoData[key] = it }
+                                            snackbar.showSnackbar("已复刻到 ${it.full_name}"); msg = it.full_name
+                                        }
                                         .onFailure { snackbar.showSnackbar("复刻失败：${it.message}") }
                                 }
                             })
@@ -254,13 +322,13 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                 }
                 Spacer(Modifier.height(3.dp))
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Star " + compactNum(r.stargazers_count), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Text("Star ${r.stargazers_count}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { peopleDialog = 0 }.padding(end = 4.dp))
-                    Text("· 复刻 " + compactNum(r.forks_count), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Text("· 复刻 ${r.forks_count}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { peopleDialog = 1 }.padding(end = 4.dp))
-                    Text("· 关注 " + compactNum(r.subscribers_count), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Text("· 关注 ${r.subscribers_count}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { peopleDialog = 2 }.padding(end = 4.dp))
-                    Text("· 议题 " + compactNum(r.open_issues_count), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("· 议题 ${r.open_issues_count}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     val top = languages.entries.maxByOrNull { it.value }
@@ -509,7 +577,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
                             }
                         } catch (e: Exception) {
                             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                Toast.makeText(ctx, "保存失败：${'$'}{e.message}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(ctx, "保存失败：${e.message}", Toast.LENGTH_LONG).show()
                             }
                         } finally {
                             saving = false
@@ -544,7 +612,8 @@ fun CommitsTab(nav: NavController, owner: String, name: String, repo: Repo) {
             list = if (replace) pg.items else list + pg.items
             if (replace) UiCache.repoCommits[ck()] = list
             hasNext = pg.hasNext; page = p; error = null
-        } catch (e: Exception) { error = e.message }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { error = e.message }
         loading = false
     }
     LaunchedEffect(branch) {
@@ -616,7 +685,7 @@ fun ContributorsTab(nav: NavController, owner: String, name: String) {
                 Avatar(u.avatar_url, 34)
                 Spacer(Modifier.width(10.dp))
                 Text(u.login, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                Text("${compactNum(u.contributions)} 次提交", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("${u.contributions} 次提交", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Divider1()
         }
@@ -692,8 +761,8 @@ fun PeopleDialog(nav: NavController, owner: String, name: String, kind: Int, onC
                     list.forEach { item ->
                         val (login, avatar, extra) = when (item) {
                             is User -> Triple(item.login, item.avatar_url,
-                                if (kind == 3) "${compactNum(item.contributions)} 次贡献" else if (kind == 2) "关注者" else "Star 用户")
-                            is Repo -> Triple(item.full_name, item.owner?.avatar_url, "${compactNum(item.stargazers_count)} star")
+                                if (kind == 3) "${item.contributions} 次贡献" else if (kind == 2) "关注者" else "Star 用户")
+                            is Repo -> Triple(item.full_name, item.owner?.avatar_url, "${item.stargazers_count} star")
                             else -> Triple("", null, "")
                         }
                         Row(Modifier.fillMaxWidth().clickable {

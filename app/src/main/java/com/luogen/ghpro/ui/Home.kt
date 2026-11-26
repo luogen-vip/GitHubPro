@@ -62,8 +62,9 @@ fun HomeScreen(nav: NavController) {
     val listState = rememberLazyListState(UiCache.homeIndex, UiCache.homeOffset)
     val tick by Bus.tick.collectAsState()
     val starVer by Bus.starPoke.collectAsState()
+    val activityVer by Bus.activityPoke.collectAsState()
     val safeMode = Cfg.safeMode
-    val recent = Cfg.recentRepos
+    val recent = Cfg.recentRepos.filter { Cfg.activityAt(it) > 0 }
 
     suspend fun load(p: Int, replace: Boolean) {
         if (p == 1) loading = true else loadingMore = true
@@ -79,6 +80,7 @@ fun HomeScreen(nav: NavController) {
                 UiCache.homeTab = tab
                 UiCache.homeSort = sort
             }
+            UiCache.homeSnaps["$tab|$sort"] = HomeSnap(repos, page, hasNext)
             UiCache.homePage = page
             UiCache.homeHasNext = hasNext
         } catch (e: Exception) {
@@ -111,6 +113,7 @@ fun HomeScreen(nav: NavController) {
                 UiCache.homeRepos = pg.items
                 UiCache.homeHasNext = pg.hasNext
             }
+            UiCache.homeSnaps["$tab|$sort"] = HomeSnap(repos, page, hasNext)
         }
     }
 
@@ -123,15 +126,26 @@ fun HomeScreen(nav: NavController) {
         }
     }
     LaunchedEffect(tab, sort) {
-        val cached = UiCache.homeLoaded && UiCache.homeTab == tab && UiCache.homeSort == sort &&
-                UiCache.homeRepos.isNotEmpty()
-        if (!cached) load(1, true)
+        val snap = UiCache.homeSnaps["$tab|$sort"]
+        if (snap != null && snap.repos.isNotEmpty()) {
+            repos = snap.repos; page = snap.page; hasNext = snap.hasNext
+            loading = false; loadingMore = false
+            UiCache.homeLoaded = true; UiCache.homeTab = tab; UiCache.homeSort = sort
+            UiCache.homeRepos = snap.repos; UiCache.homePage = snap.page; UiCache.homeHasNext = snap.hasNext
+            refreshSilently()
+        } else {
+            repos = emptyList(); loading = true
+            load(1, true)
+        }
     }
 
     LaunchedEffect(tick) { if (tick > 0 && !safeMode && Cfg.autoRefresh) refreshSilently() }
+    // 仓库真实操作后，首页立刻按最新活动重新排序（纯浏览不会触发）
+    LaunchedEffect(activityVer) { if (activityVer > 0) repos = repos }
     LaunchedEffect(starVer) {
         if (starVer > 0 && tab == 1) {
             repos = UiCache.homeRepos
+            UiCache.homeSnaps["$tab|$sort"] = HomeSnap(repos, page, hasNext)
             UiCache.homeLoaded = true
         }
     }
@@ -140,7 +154,7 @@ fun HomeScreen(nav: NavController) {
         if (me == null) runCatching { Api.me() }.onSuccess { me = it; UiCache.homeMe = it }
         if (safeMode) return@LaunchedEffect
         while (isActive) {
-            delay(30_000L)
+            delay(10_000L)
             if (Cfg.autoRefresh) {
                 runCatching { if (me == null) { me = Api.me(); UiCache.homeMe = me } }
                 refreshSilently()
@@ -167,19 +181,22 @@ fun HomeScreen(nav: NavController) {
             }
     }
 
+    fun stamp(v: String?): Long {
+        if (v.isNullOrBlank()) return 0L
+        return runCatching { java.time.Instant.parse(v).toEpochMilli() }.getOrDefault(0L)
+    }
+    fun activityScore(r: com.luogen.ghpro.data.Repo): Long =
+        maxOf(Cfg.activityAt(r.full_name), stamp(r.pushed_at), stamp(r.updated_at))
+
     val byLang = if (lang == null) repos else repos.filter { it.language == lang }
     val sorted = when (sort) {
-        "updated" -> byLang.sortedByDescending { it.updated_at ?: it.pushed_at ?: "" }
+        "updated" -> byLang.sortedByDescending { activityScore(it) }
         "pushed" -> byLang.sortedByDescending { it.pushed_at ?: it.updated_at ?: "" }
         "full_name" -> byLang.sortedBy { it.full_name.lowercase() }
         "stars" -> byLang.sortedByDescending { it.stargazers_count }
         else -> byLang
     }
-    val shown = if (tab == 0) {
-        val at = sorted.associateBy { it.full_name }
-        val pinned = recent.mapNotNull { at[it] }
-        pinned + sorted.filter { it.full_name !in recent }
-    } else sorted
+    val shown = sorted
     val languages = repos.mapNotNull { it.language }.distinct().sorted()
 
     Scaffold(
@@ -229,6 +246,12 @@ fun HomeScreen(nav: NavController) {
                         FilterChip(selected = tab == 0, onClick = {
                             if (tab != 0) {
                                 tab = 0
+                                val snap = UiCache.homeSnaps["0|$sort"]
+                                if (snap != null && snap.repos.isNotEmpty()) {
+                                    repos = snap.repos; page = snap.page; hasNext = snap.hasNext; loading = false
+                                    UiCache.homeLoaded = true; UiCache.homeTab = 0; UiCache.homeSort = sort
+                                    UiCache.homeRepos = snap.repos; UiCache.homePage = snap.page; UiCache.homeHasNext = snap.hasNext
+                                } else { repos = emptyList(); loading = true; UiCache.homeLoaded = false }
                                 kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
                                     listState.scrollToItem(0); UiCache.homeIndex = 0; UiCache.homeOffset = 0
                                 }
@@ -238,6 +261,12 @@ fun HomeScreen(nav: NavController) {
                         FilterChip(selected = tab == 1, onClick = {
                             if (tab != 1) {
                                 tab = 1
+                                val snap = UiCache.homeSnaps["1|$sort"]
+                                if (snap != null && snap.repos.isNotEmpty()) {
+                                    repos = snap.repos; page = snap.page; hasNext = snap.hasNext; loading = false
+                                    UiCache.homeLoaded = true; UiCache.homeTab = 1; UiCache.homeSort = sort
+                                    UiCache.homeRepos = snap.repos; UiCache.homePage = snap.page; UiCache.homeHasNext = snap.hasNext
+                                } else { repos = emptyList(); loading = true; UiCache.homeLoaded = false }
                                 kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
                                     listState.scrollToItem(0); UiCache.homeIndex = 0; UiCache.homeOffset = 0
                                 }
@@ -361,7 +390,7 @@ fun RepoRow(repo: Repo, recent: Boolean = false, onClick: () -> Unit) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.Star, null, Modifier.size(13.dp), tint = GH.yellow)
                     Spacer(Modifier.width(3.dp))
-                    Text(compactNum(repo.stargazers_count), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    Text("${repo.stargazers_count}", fontSize = 12.sp, fontWeight = FontWeight.Medium)
                 }
             }
             repo.description?.takeIf { it.isNotBlank() }?.let {
@@ -377,7 +406,7 @@ fun RepoRow(repo: Repo, recent: Boolean = false, onClick: () -> Unit) {
                     Text(l, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.width(10.dp))
                 }
-                Text("⑂ ${compactNum(repo.forks_count)}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("⑂ ${repo.forks_count}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.width(10.dp))
                 Text("更新 ${timeAgo(repo.updated_at ?: repo.pushed_at)}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.weight(1f))
@@ -421,7 +450,7 @@ fun SafeRepoRow(repo: Repo, recent: Boolean = false, onClick: () -> Unit) {
                 }
                 Icon(Icons.Filled.Star, null, Modifier.size(13.dp), tint = GH.yellow)
                 Spacer(Modifier.width(3.dp))
-                Text(compactNum(repo.stargazers_count), fontSize = 12.sp)
+                Text("${repo.stargazers_count}", fontSize = 12.sp)
             }
             repo.description?.takeIf { it.isNotBlank() }?.let {
                 Spacer(Modifier.height(6.dp))

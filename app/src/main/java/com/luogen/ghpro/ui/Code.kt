@@ -41,13 +41,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.luogen.ghpro.data.Api
+import com.luogen.ghpro.data.Bus
+import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.ContentItem
 import com.luogen.ghpro.data.DirListing
 import com.luogen.ghpro.data.Repo
 import com.luogen.ghpro.download.Downloader
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
 
 @Composable
 fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
@@ -87,7 +92,8 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
         try {
             listing = Api.contents(owner, name, path, branch)
             listing?.let { UiCache.codeListing["$owner/$name|$branch|$path"] = it }
-        } catch (e: Exception) { if (!silent) error = e.message }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { if (!silent) error = e.message }
         loading = false
     }
 
@@ -103,7 +109,7 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
     // 代码页实时刷新：别人新建/删除/修改文件，几秒内自动出现
     LaunchedEffect(branch, path) {
         while (isActive) {
-            delay(6_000L)
+            delay(3_000L)
             if (!selecting && !uploading) runCatching { load(silent = true) }
         }
     }
@@ -217,7 +223,7 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
             title = { Text("上传文件", fontSize = 15.sp) },
             text = {
                 Column {
-                    Text("文件会直接提交到当前分支 $branch。路径可手动修改，留空则默认放在根目录。", fontSize = 11.sp,
+                    Text("文件会直接提交到当前分支 $branch。路径可手动修改，留空则默认放在根目录。\n30MB 以内走普通提交；超过 30MB 自动走 Git LFS（单文件最大 2GB，受账号 LFS 配额限制）。", fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(uploadTarget, { uploadTarget = it }, label = { Text("完整路径（含文件名）") },
@@ -228,23 +234,37 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
                 TextButton(enabled = uploadTarget.isNotBlank() && !uploading, onClick = {
                     val target = uploadTarget.trim().trim('/')
                     if (target.isBlank()) return@TextButton
-                    scope.launch {
+                    Bus.actions.launch {
                         uploading = true
                         try {
                             Toast.makeText(ctx, "开始上传…", Toast.LENGTH_SHORT).show()
-                            val bytes = ctx.contentResolver.openInputStream(pu)?.use { it.readBytes() }
-                                ?: throw java.io.IOException("读不到这个文件")
-                            if (bytes.size > 30 * 1024 * 1024) throw java.io.IOException("文件超过 30MB，GitHub 单文件接口传不了，请用电脑上传")
-                            val sha = runCatching { Api.fileItem(owner, name, target, branch).sha }.getOrNull()
-                            Api.putFile(owner, name, target, "upload ${target.substringAfterLast('/')}",
-                                android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP), sha, branch)
+                            val tmp = java.io.File(ctx.cacheDir, "ghpro_upload_source.bin")
+                            withContext(Dispatchers.IO) {
+                                ctx.contentResolver.openInputStream(pu)?.use { input -> tmp.outputStream().use { input.copyTo(it) } }
+                                    ?: throw java.io.IOException("读不到这个文件")
+                            }
+                            val size = tmp.length()
+                            if (size > 2L * 1024 * 1024 * 1024) throw java.io.IOException("单个文件最大 2GB")
+                            if (size > 30L * 1024 * 1024) {
+                                Toast.makeText(ctx, "大文件走 Git LFS（${size / 1024 / 1024} MB），请稍等…", Toast.LENGTH_LONG).show()
+                                val oid = Api.lfsUpload(owner, name, tmp)
+                                Api.lfsCommit(owner, name, target, branch, oid, size, "upload ${target.substringAfterLast('/')} via LFS")
+                            } else {
+                                val bytes = withContext(Dispatchers.IO) { tmp.readBytes() }
+                                val sha = runCatching { Api.fileItem(owner, name, target, branch).sha }.getOrNull()
+                                Api.putFile(owner, name, target, "upload ${target.substringAfterLast('/')}",
+                                    android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP), sha, branch)
+                            }
+                            tmp.delete()
                             UiCache.codeListing.keys.filter { it.startsWith("$owner/$name|") }.forEach { UiCache.codeListing.remove(it) }
                             UiCache.fileContent.remove("$owner/$name|$branch|$target")
+                            Cfg.touchRepo("$owner/$name")
                             Toast.makeText(ctx, "已上传 $target", Toast.LENGTH_LONG).show()
                             pendingUpload = null
                             uploadTarget = ""
                             load(true)
                         } catch (e: Exception) {
+                            java.io.File(ctx.cacheDir, "ghpro_upload_source.bin").delete()
                             Toast.makeText(ctx, "上传失败：${e.message}", Toast.LENGTH_LONG).show()
                         }
                         uploading = false
@@ -271,9 +291,10 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
                     listing = snapshot?.copy(items = snapshot.items.filter { it.path !in paths })
                     selecting = false
                     selected.clear()
-                    scope.launch {
+                    Bus.actions.launch {
                         try {
                             val deleted = Api.deletePaths(owner, name, paths, branch)
+                            Cfg.touchRepo("$owner/$name")
                             UiCache.codeListing.keys.filter { it.startsWith("$owner/$name|") }.forEach { UiCache.codeListing.remove(it) }
                             Toast.makeText(ctx, "已真实删除 $deleted 个文件", Toast.LENGTH_LONG).show()
                             load(true)
@@ -288,6 +309,17 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
         )
     }
 
+}
+
+private fun looksBinary(bytes: ByteArray): Boolean {
+    val n = minOf(bytes.size, 4096)
+    if (n == 0) return false
+    var bad = 0
+    for (i in 0 until n) {
+        val b = bytes[i].toInt() and 0xFF
+        if (b == 0 || (b < 9) || (b in 14..31)) bad++
+    }
+    return bad * 100 > n * 5
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -318,14 +350,21 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                 if (f == null || l.items.size > 1) { isFile = false; error = "这是一个目录，请返回列表" }
                 else {
                     sha = f.sha
-                    if (f.size > 1_000_000) { error = "文件超过 1MB，GitHub API 不返回内容，请直接下载" }
-                    else {
-                        content = Api.fileContent(owner, name, path, branch)
-                        original = content
-                        UiCache.fileContent[fileKey] = content
+                    val text = if (f.size <= 20_000_000) {
+                        val bytes = if (f.size <= 1_000_000) {
+                            Api.fileContent(owner, name, path, branch).toByteArray(Charsets.UTF_8)
+                        } else Api.fileRaw(owner, name, path, branch)
+                        if (looksBinary(bytes)) throw java.io.IOException("这是二进制文件（${f.size / 1024} KB），不能当源码显示，请点“直接下载文件”")
+                        String(bytes, Charsets.UTF_8)
+                    } else {
+                        throw java.io.IOException("文件较大（${f.size / 1024 / 1024} MB），不自动加载，请点“直接下载文件”")
                     }
+                    content = text
+                    original = text
+                    UiCache.fileContent[fileKey] = text
                 }
-            } catch (e: Exception) { error = e.message }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { error = e.message }
             loading = false
         }
     }
@@ -338,7 +377,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
     }
     LaunchedEffect(path) {
         if (!isNew) while (isActive) {
-            delay(6_000L)
+            delay(3_000L)
             if (!editing && !loading) runCatching { load(true) }
         }
     }
@@ -367,6 +406,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                                             message.ifBlank { if (isNew) "create $fileName" else "update $fileName" },
                                             b64, sha, branch)
                                         snackbar.showSnackbar("已提交到 GitHub")
+                                        Cfg.touchRepo("$owner/$name")
                                         editing = false; original = content
                                         load()
                                     } catch (e: Exception) { snackbar.showSnackbar("保存失败：${e.message}") }
@@ -378,7 +418,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                         IconButton({
                             val fileName2 = path.substringAfterLast('/')
                             Toast.makeText(ctx, "开始下载 $fileName2…", Toast.LENGTH_SHORT).show()
-                            Downloader.startDownload(ctx, "https://raw.githubusercontent.com/$owner/$name/$branch/${path}", fileName2,
+                            Downloader.startDownload(ctx, "https://raw.githubusercontent.com/$owner/$name/$branch/${Api.encPath(path)}", fileName2,
                                 source = "仓库文件", repo = "$owner/$name",
                                 onDone = {
                                     val where = Downloader.stateOf(fileName2)?.publicPath ?: "下载/GitHubPro/$fileName2"
@@ -436,6 +476,10 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                         )
                     } else {
                         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(8.dp)) {
+                            if (content.length > 200_000) {
+                                Text("文件较大，下面只预览前 20 万字符；点右上角下载可查看完整文件。",
+                                    fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
+                            }
                             Row {
                                 Column(Modifier.padding(end = 8.dp)) {
                                     val lines = content.count { it == '\n' } + 1
@@ -466,14 +510,28 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
             text = { Text("将从仓库中删除 $path 并创建一个提交，确定吗？") },
             confirmButton = {
                 TextButton(onClick = {
-                    scope.launch {
+                    confirmDelete = false
+                    // 先把界面和缓存里的文件移除并返回列表，真实删除在后台继续，不让用户等网络
+                    UiCache.fileContent.remove(fileKey)
+                    UiCache.codeListing.keys.filter { it.startsWith("$owner/$name|") }.forEach { k ->
+                        val d = UiCache.codeListing[k] ?: return@forEach
+                        UiCache.codeListing[k] = d.copy(items = d.items.filter { it.path != path })
+                    }
+                    nav.popBackStack()
+                    val appCtx = ctx.applicationContext
+                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO).launch {
                         try {
                             val realSha = sha ?: Api.fileItem(owner, name, path, branch).sha
                             Api.deleteFile(owner, name, path, "delete $path", realSha, branch)
-                            confirmDelete = false
-                            snackbar.showSnackbar("已删除")
-                            nav.popBackStack()
-                        } catch (e: Exception) { snackbar.showSnackbar("删除失败：${e.message}") }
+                            Cfg.touchRepo("$owner/$name")
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(appCtx, "已删除 $path", Toast.LENGTH_LONG).show()
+                            }
+                        } catch (e: Exception) {
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(appCtx, "删除失败：${e.message}（文件仍在）", Toast.LENGTH_LONG).show()
+                            }
+                        }
                     }
                 }) { Text("确认删除", color = GH.red) }
             },

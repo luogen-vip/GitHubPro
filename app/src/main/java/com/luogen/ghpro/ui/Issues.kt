@@ -33,6 +33,7 @@ import com.luogen.ghpro.data.Bus
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Comment
 import com.luogen.ghpro.data.Issue
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -48,43 +49,77 @@ fun IssueListTab(nav: NavController, owner: String, name: String) {
     var page by remember { mutableStateOf(1) }
     var hasNext by remember { mutableStateOf(false) }
     val issuePoke by Bus.issuePoke.collectAsState()
+    val issueLocalPoke by Bus.issueLocalPoke.collectAsState()
 
     suspend fun load(p: Int, replace: Boolean, silent: Boolean = false) {
         if (p == 1 && !silent) loading = true
         try {
             val pg = Api.issues(owner, name, state, p)
-            list = if (replace) pg.items.filter { it.pull_request == null } else list + pg.items.filter { it.pull_request == null }
+            val fetched = pg.items.filter { it.pull_request == null }
+            val now = System.currentTimeMillis()
+            val local = UiCache.issueOverrides.entries
+                .filter { it.key.startsWith("$owner/$name#") && now - it.value.second in 0..10_000L }
+                .map { it.value.first }
+            fun merge(items: List<Issue>): List<Issue> {
+                var out = items
+                local.forEach { o ->
+                    out = out.filter { it.number != o.number }
+                    if (state == "all" || state == o.state) out = listOf(o) + out
+                }
+                return out
+            }
+            val pageItems = merge(fetched)
+            list = if (replace) pageItems else list + fetched
             hasNext = pg.hasNext
             page = p
             if (replace) UiCache.repoIssues[listKey()] = list
             error = null
-        } catch (e: Exception) { if (!silent) error = e.message }
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { if (!silent) error = e.message }
         loading = false
     }
 
-    LaunchedEffect(state, issuePoke) {
+    fun pick(s: String) {
+        if (s == state) return
+        state = s
+        val cached = UiCache.repoIssues["$owner/$name|$s"]
+        list = cached.orEmpty()
+        loading = cached == null
+        error = null
+        page = 1
+        hasNext = false
+    }
+
+    LaunchedEffect(state, issuePoke, issueLocalPoke) {
         val cached = UiCache.repoIssues[listKey()]
-        if (cached != null && cached.isNotEmpty()) { list = cached; loading = false; load(1, true, silent = true) }
-        else load(1, true)
+        if (cached != null && cached.isNotEmpty()) { list = cached; loading = false }
+        // 自己的关闭/重开刚做了乐观更新：先让列表用本地缓存；本地操作成功前不要拉服务端旧数据
+        if (issueLocalPoke > 0 && issuePoke <= issueLocalPoke) {
+            val age = System.currentTimeMillis() - issueLocalPoke
+            if (age in 0..1500L) delay(1500L - age)
+        }
+        if (cached != null && cached.isNotEmpty()) load(1, true, silent = true) else load(1, true)
     }
     // 页面停留时自动拉取：别人新建/关闭议题，几秒内就能看到
     LaunchedEffect(state) {
         while (isActive) {
-            delay(4_000L)
+            delay(2_000L)
             if (page == 1 && !loading) runCatching { load(1, true, silent = true) }
         }
     }
 
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            FilterChip(selected = state == "open", onClick = { state = "open" }, label = { Text("打开中", fontSize = 12.sp) })
-            Spacer(Modifier.width(6.dp))
-            FilterChip(selected = state == "closed", onClick = { state = "closed" }, label = { Text("已关闭", fontSize = 12.sp) })
-            Spacer(Modifier.width(6.dp))
-            FilterChip(selected = state == "all", onClick = { state = "all" }, label = { Text("全部", fontSize = 12.sp) })
+        Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            FilterChip(selected = state == "open", onClick = { pick("open") }, label = { Text("打开中", fontSize = 12.sp) })
+            Spacer(Modifier.width(5.dp))
+            FilterChip(selected = state == "closed", onClick = { pick("closed") }, label = { Text("已关闭", fontSize = 12.sp) })
+            Spacer(Modifier.width(5.dp))
+            FilterChip(selected = state == "all", onClick = { pick("all") }, label = { Text("全部", fontSize = 12.sp) })
             Spacer(Modifier.weight(1f))
-            TextButton(onClick = { nav.navigate("newissue/$owner/$name") }) {
-                Icon(Icons.Filled.Add, null, Modifier.size(16.dp)); Text("新建议题", fontSize = 12.sp)
+            TextButton(onClick = { nav.navigate("newissue/$owner/$name") },
+                contentPadding = PaddingValues(horizontal = 4.dp)) {
+                Icon(Icons.Filled.Add, "新建议题", Modifier.size(15.dp), tint = GH.blue)
+                Text("新建", fontSize = 11.sp)
             }
         }
         when {
@@ -137,6 +172,54 @@ fun IssueRow(issue: Issue, onClick: () -> Unit) {
     }
 }
 
+private val replyMarker = Regex("""<!--\s*ghpro-reply-to:(\d+)\s*-->""")
+private data class ThreadedComment(val comment: Comment, val depth: Int)
+
+private fun commentParent(c: Comment): Long? =
+    replyMarker.find(c.body ?: "")?.groupValues?.getOrNull(1)?.toLongOrNull()
+
+private fun commentClean(c: Comment): String =
+    replyMarker.replace(c.body ?: "", "").trim()
+
+private fun commentThread(list: List<Comment>): List<ThreadedComment> {
+    val ids = list.map { it.id }.toSet()
+    val children = list.filter { commentParent(it) != null }.groupBy { commentParent(it)!! }
+    val out = ArrayList<ThreadedComment>()
+    val seen = HashSet<Long>()
+    fun walk(c: Comment, depth: Int) {
+        if (!seen.add(c.id)) return
+        out.add(ThreadedComment(c, minOf(depth, 4)))
+        children[c.id]?.forEach { walk(it, depth + 1) }
+    }
+    list.filter { commentParent(it) == null || commentParent(it) !in ids }.forEach { walk(it, 0) }
+    list.filter { it.id !in seen }.forEach { walk(it, 0) }
+    return out
+}
+
+@Composable
+private fun IssueCommentRow(c: Comment, depth: Int, selected: Boolean, onReply: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(start = (depth * 16).dp, top = 6.dp, bottom = 6.dp)
+        .then(if (selected) Modifier.background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(6.dp)) else Modifier)) {
+        Avatar(c.user?.avatar_url, 24)
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(c.user?.login ?: "", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                Spacer(Modifier.width(6.dp))
+                Text(timeAgo(c.created_at), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (depth > 0) {
+                    Spacer(Modifier.width(6.dp))
+                    Text("回复", fontSize = 9.sp, color = GH.blue)
+                }
+            }
+            Spacer(Modifier.height(3.dp))
+            Text(commentClean(c), fontSize = 12.sp, lineHeight = 18.sp)
+            TextButton(onClick = onReply, modifier = Modifier.height(24.dp)) { Text("回复", fontSize = 10.sp) }
+        }
+    }
+    Divider1()
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: Int) {
@@ -152,6 +235,7 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var text by remember { mutableStateOf("") }
+    var replyTo by remember { mutableStateOf<Comment?>(null) }
     var sending by remember { mutableStateOf(false) }
     var actionMsg by remember { mutableStateOf<String?>(null) }
     var opSeq by remember { mutableStateOf(0) }
@@ -164,18 +248,20 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
             issue = Api.issue(owner, name, number)
             comments = Api.issueComments(owner, name, number)
             error = null
-        } catch (e: Exception) { error = e.message }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { error = e.message }
         loading = false
     }
 
-    fun cacheIssue(up: Issue) {
+    fun cacheIssue(up: Issue, adjustCount: Boolean = true) {
+        UiCache.issueOverrides["$owner/$name#${up.number}"] = up to System.currentTimeMillis()
         UiCache.repoIssues.keys.filter { it.startsWith("$owner/$name|") }.forEach { k ->
             val st = k.substringAfterLast('|')
             val old = UiCache.repoIssues[k].orEmpty()
             val rest = old.filter { it.number != up.number }
             UiCache.repoIssues[k] = if (st == "all" || st == up.state) listOf(up) + rest else rest
         }
-        UiCache.repoData["$owner/$name"]?.let { r ->
+        if (adjustCount) UiCache.repoData["$owner/$name"]?.let { r ->
             if (up.state == "open") UiCache.repoData["$owner/$name"] = r.copy(open_issues_count = r.open_issues_count + 1)
             else UiCache.repoData["$owner/$name"] = r.copy(open_issues_count = (r.open_issues_count - 1).coerceAtLeast(0))
         }
@@ -185,7 +271,7 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
         if (UiCache.repoData["$owner/$name"] == null) runCatching { UiCache.repoData["$owner/$name"] = Api.repo(owner, name) }
         load()
         while (isActive) {
-            delay(4_000L)
+            delay(2_000L)
             if (pendingOps == 0) {
                 runCatching {
                     val fresh = Api.issue(owner, name, number)
@@ -215,21 +301,27 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
                                 val old = issueNow
                                 val seq = ++opSeq
                                 // 先立刻改 UI 和提示，网络在后台真实提交
-                                issue = old.copy(state = if (targetOpen) "open" else "closed",
+                                val optimistic = old.copy(state = if (targetOpen) "open" else "closed",
                                     state_reason = if (targetOpen) null else "completed")
+                                issue = optimistic
+                                cacheIssue(optimistic)
+                                Bus.issueLocalChanged()
                                 quickToast(if (targetOpen) "已重新打开" else "已关闭")
                                 pendingOps++
-                                scope.launch {
+                                Bus.actions.launch {
                                     kotlinx.coroutines.delay(150L)
                                     if (seq != opSeq) { pendingOps = (pendingOps - 1).coerceAtLeast(0); return@launch }
                                     try {
                                         val up = Api.patchIssue(owner, name, number,
                                             if (targetOpen) mapOf("state" to "open")
                                             else mapOf("state" to "closed", "state_reason" to "completed"))
-                                        if (seq == opSeq) { issue = up; cacheIssue(up) }
+                                        if (seq == opSeq) { issue = up; cacheIssue(up, adjustCount = false) }
+                                        Cfg.touchRepo("$owner/$name")
+                                        runCatching { UiCache.repoData["$owner/$name"] = Api.repo(owner, name) }
                                         Bus.issuesChanged()
                                     } catch (e: Exception) {
-                                        if (seq == opSeq) issue = old
+                                        if (seq == opSeq) { issue = old; cacheIssue(old, adjustCount = true) }
+                                        Bus.issuesChanged()
                                         quickToast("失败：${e.message}")
                                     }
                                     pendingOps = (pendingOps - 1).coerceAtLeast(0)
@@ -247,11 +339,12 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
                                 issue = old.copy(locked = targetLocked)
                                 quickToast(if (targetLocked) "已锁定讨论" else "已解锁讨论")
                                 pendingOps++
-                                scope.launch {
+                                Bus.actions.launch {
                                     kotlinx.coroutines.delay(150L)
                                     if (seq != lockOpSeq) { pendingOps = (pendingOps - 1).coerceAtLeast(0); return@launch }
                                     try {
                                         Api.lockIssue(owner, name, number, targetLocked)
+                                        Cfg.touchRepo("$owner/$name")
                                         Bus.issuesChanged()
                                     } catch (e: Exception) {
                                         issue = old
@@ -293,35 +386,39 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
                         Spacer(Modifier.height(10.dp))
                         Text("讨论（${comments.size}）", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(8.dp))
-                        comments.forEach { c ->
-                            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                                Avatar(c.user?.avatar_url, 26)
-                                Spacer(Modifier.width(8.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(c.user?.login ?: "", fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                                        Spacer(Modifier.width(6.dp))
-                                        Text(timeAgo(c.created_at), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    }
-                                    Spacer(Modifier.height(3.dp))
-                                    Text(c.body ?: "", fontSize = 12.sp, lineHeight = 18.sp)
-                                }
-                            }
-                            Divider1()
+                        commentThread(comments).forEach { tc ->
+                            IssueCommentRow(tc.comment, tc.depth, replyTo?.id == tc.comment.id) { replyTo = tc.comment }
                         }
                         Spacer(Modifier.height(10.dp))
+                        replyTo?.let { target ->
+                            Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(6.dp)).padding(6.dp),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                Text("正在回复 @${target.user?.login ?: ""}", fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                TextButton(onClick = { replyTo = null }) { Text("取消", fontSize = 11.sp) }
+                            }
+                            Spacer(Modifier.height(4.dp))
+                        }
                         OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth(),
-                            label = { Text("写下你的评论…") }, minLines = 2)
+                            label = { Text(if (replyTo == null) "写下你的评论…" else "回复 @${replyTo?.user?.login ?: ""}…") }, minLines = 2)
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             TextButton(enabled = text.isNotBlank() && !sending, onClick = {
-                                scope.launch {
+                                Bus.actions.launch {
                                     sending = true
+                                    val target = replyTo
                                     try {
-                                        Api.addComment(owner, name, number, text)
+                                        val raw = text.trim()
+                                        val body = if (target != null) {
+                                            val quote = commentClean(target).lines().take(4).joinToString("\n> ")
+                                            "> $quote\n\n$raw\n\n<!-- ghpro-reply-to:${target.id} -->"
+                                        } else raw
+                                        Api.addComment(owner, name, number, body)
                                         text = ""
+                                        replyTo = null
                                         comments = Api.issueComments(owner, name, number)
-                                        snackbar.showSnackbar("已发表评论")
-                                    } catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
+                                        Cfg.touchRepo("$owner/$name")
+                                        Bus.issuesChanged()
+                                        quickToast("已发表评论")
+                                    } catch (e: Exception) { quickToast("失败：${e.message}") }
                                     sending = false
                                 }
                             }) { Icon(Icons.Filled.Send, null, Modifier.size(16.dp)); Text("发送") }
@@ -363,6 +460,7 @@ fun NewIssueScreen(nav: NavController, owner: String, name: String) {
                                 val created = Api.createIssue(owner, name, title, body,
                                     labels.split(",").map { it.trim() }.filter { it.isNotBlank() },
                                     assignees.split(",").map { it.trim() }.filter { it.isNotBlank() })
+                                Cfg.touchRepo("$owner/$name")
                                 Bus.issuesChanged()
                                 nav.popBackStack()
                                 nav.navigate("issue/$owner/$name/${created.number}")

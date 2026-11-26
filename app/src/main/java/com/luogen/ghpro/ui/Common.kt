@@ -170,6 +170,7 @@ fun EmptyBox(text: String) {
 
 @Composable
 fun ErrorBox(msg: String?, onRetry: (() -> Unit)? = null) {
+    if (messageOf(msg) == CANCEL_MESSAGE) { LoadingBox("正在同步最新内容…"); return }
     Column(
         Modifier.fillMaxWidth().padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -242,9 +243,14 @@ fun openUrl(context: android.content.Context, url: String?) {
 }
 
 /** 把内部异常翻译成人话；被组合取消的请求不当作错误吓用户。 */
+private const val CANCEL_MESSAGE = "正在同步最新内容…"
+
 fun messageOf(msg: String?): String {
     if (msg.isNullOrBlank()) return "出错了"
-    if (msg.contains("coroutine scope left the composition")) return "请求被页面切换打断，点重试再搜一次就行"
+    if (msg.contains("coroutine scope left the composition") ||
+        msg.contains("Job was cancelled") || msg.contains("StandaloneCoroutine was cancelled") ||
+        msg.contains("Parent job is Cancelling") || msg.contains("CancellationException"))
+        return CANCEL_MESSAGE
     if (msg.contains("Software caused connection abort") || msg.contains("Connection reset")) return "网络中断了一下，已自动重试，还失败就再点一次"
     return msg
 }
