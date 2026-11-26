@@ -7,6 +7,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -34,7 +36,7 @@ import java.io.File
 
 private val CATS = listOf("全部", "应用", "图片", "视频", "音频", "压缩包", "镜像", "文档", "其他")
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun DownloadsScreen(nav: NavController) {
     val ctx = LocalContext.current
@@ -125,7 +127,7 @@ fun DownloadsScreen(nav: NavController) {
                                     modifier = Modifier.clickable { r.repo?.let { UiCache.repoTab[it] = if (!r.release.isNullOrBlank()) 5 else 1; nav.navigate("repo/$it") } })
                             }
                             Spacer(Modifier.height(6.dp))
-                            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            FlowRow(Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 val local = r.localPath?.let { File(it) }
                                 if (local != null && local.exists()) {
@@ -154,7 +156,7 @@ fun DownloadsScreen(nav: NavController) {
                                     Icon(Icons.Filled.Download, null, Modifier.size(14.dp)); Text("重新下载", fontSize = 11.sp)
                                 }
                             }
-                            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            FlowRow(Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 TextButton({ Downloader.removeRecord(ctx, r.id, false) }, contentPadding = PaddingValues(horizontal = 8.dp)) {
                                     Text("删除记录", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
