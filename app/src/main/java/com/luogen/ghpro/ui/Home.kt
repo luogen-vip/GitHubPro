@@ -48,9 +48,10 @@ private class HomeAction(val icon: ImageVector, val label: String, val go: () ->
 fun HomeScreen(nav: NavController) {
     val scope = rememberCoroutineScope()
     var me by remember { mutableStateOf(UiCache.homeMe) }
-    var repos by remember { mutableStateOf(UiCache.homeRepos) }
-    var page by remember { mutableStateOf(UiCache.homePage) }
-    var hasNext by remember { mutableStateOf(UiCache.homeHasNext) }
+    val bootSnap = UiCache.homeSnaps["${UiCache.homeTab}|${UiCache.homeSort}"]
+    var repos by remember { mutableStateOf(bootSnap?.repos ?: UiCache.homeRepos) }
+    var page by remember { mutableStateOf(bootSnap?.page ?: UiCache.homePage) }
+    var hasNext by remember { mutableStateOf(bootSnap?.hasNext ?: UiCache.homeHasNext) }
     var loading by remember { mutableStateOf(UiCache.homeRepos.isEmpty()) }
     var loadingMore by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
