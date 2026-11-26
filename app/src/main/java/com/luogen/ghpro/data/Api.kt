@@ -243,7 +243,7 @@ object Api {
         return out.entries.sortedByDescending { it.value }.associate { it.key to it.value }
     }
     suspend fun contributors(o: String, r: String): List<User> =
-        callList<User>("/repos/$o/$r/contributors", mapOf("per_page" to "50")).items
+        callList<User>("/repos/$o/$r/contributors", mapOf("per_page" to "100")).items
     suspend fun branches(o: String, r: String): List<Branch> = callList<Branch>("/repos/$o/$r/branches", mapOf("per_page" to "100")).items
     suspend fun commits(o: String, r: String, sha: String? = null, page: Int = 1): Page<GitCommit> =
         callList("/repos/$o/$r/commits", mapOf("per_page" to "30", "page" to "$page", "sha" to sha))
@@ -282,6 +282,53 @@ object Api {
             if (branch != null) addProperty("branch", branch)
         }
         return JsonParser.parseString(exec("/repos/$o/$r/contents/${path.trim('/')}", "PUT", body.toString()).body).asJsonObject
+    }
+
+    private suspend fun collectFiles(o: String, r: String, path: String, branch: String?): List<String> {
+        val head = contents(o, r, path, branch)
+        if (head.isFile) return listOf(head.file?.path ?: path)
+        val out = ArrayList<String>()
+        head.items.forEach { child ->
+            if (child.type == "dir") out.addAll(collectFiles(o, r, child.path, branch))
+            else out.add(child.path)
+        }
+        return out
+    }
+
+    /** 真实删除文件或整个文件夹：一次 Git Tree 提交，目录下所有文件一起删掉。 */
+    suspend fun deletePath(o: String, r: String, path: String, branch: String?): Int =
+        deletePaths(o, r, listOf(path), branch)
+
+    suspend fun deletePaths(o: String, r: String, paths: List<String>, branch: String?): Int {
+        val files = LinkedHashSet<String>()
+        paths.forEach { p -> files.addAll(collectFiles(o, r, p, branch)) }
+        if (files.isEmpty()) return 0
+        val ref = exec("/repos/$o/$r/git/ref/heads/${branch ?: "main"}").body.let { JsonParser.parseString(it).asJsonObject }
+        val commitSha = ref.getAsJsonObject("object").get("sha").asString
+        val commit = exec("/repos/$o/$r/git/commits/$commitSha").body.let { JsonParser.parseString(it).asJsonObject }
+        val baseTree = commit.getAsJsonObject("tree").get("sha").asString
+        val entries = JsonArray()
+        files.forEach { f ->
+            entries.add(JsonObject().apply {
+                addProperty("path", f)
+                addProperty("mode", "100644")
+                addProperty("type", "blob")
+                add("sha", com.google.gson.JsonNull.INSTANCE)
+            })
+        }
+        val treeBody = JsonObject().apply { addProperty("base_tree", baseTree); add("tree", entries) }
+        val newTree = JsonParser.parseString(exec("/repos/$o/$r/git/trees", "POST", treeBody.toString()).body)
+            .asJsonObject.get("sha").asString
+        val commitBody = JsonObject().apply {
+            addProperty("message", "delete ${files.size} file(s)")
+            addProperty("tree", newTree)
+            add("parents", JsonArray().apply { add(commitSha) })
+        }
+        val newCommit = JsonParser.parseString(exec("/repos/$o/$r/git/commits", "POST", commitBody.toString()).body)
+            .asJsonObject.get("sha").asString
+        val patch = JsonObject().apply { addProperty("sha", newCommit) }
+        exec("/repos/$o/$r/git/refs/heads/${branch ?: "main"}", "PATCH", patch.toString())
+        return files.size
     }
 
     suspend fun deleteFile(o: String, r: String, path: String, message: String, sha: String, branch: String?): JsonObject {
@@ -344,10 +391,32 @@ object Api {
         val body = JsonObject().apply { addProperty("starred", on) }.toString()
         if (on) exec("/user/starred/$o/$r", "PUT") else exec("/user/starred/$o/$r", "DELETE")
     }
-    suspend fun stargazers(o: String, r: String, page: Int): Page<Repo> =
-        callList("/repos/$o/$r/stargazers", mapOf("page" to "$page", "per_page" to "50"), accept = "application/vnd.github.star+json")
-    suspend fun forks(o: String, r: String): Page<Repo> = callList("/repos/$o/$r/forks", mapOf("per_page" to "50"))
-    suspend fun watchers(o: String, r: String): Page<User> = callList("/repos/$o/$r/subscribers", mapOf("per_page" to "50"))
+    suspend fun stargazers(o: String, r: String, page: Int = 1, perPage: Int = 100): Page<User> =
+        callList("/repos/$o/$r/stargazers", mapOf("page" to "$page", "per_page" to "$perPage"))
+    /** REST 的 Star 名单对部分仓库返回 404 时，用 GraphQL 兜底取前 100 个真实用户。 */
+    suspend fun stargazersGraphql(o: String, r: String): Page<User> {
+        val q = "query(\$owner:String!,\$name:String!){repository(owner:\$owner,name:\$name){stargazers(first:100){totalCount pageInfo{hasNextPage} edges{node{login avatarUrl name}}}}}"
+
+        val vars = JsonObject().apply { addProperty("owner", o); addProperty("name", r) }
+        val data = graphql(q, vars).getAsJsonObject("data")?.getAsJsonObject("repository")
+            ?.getAsJsonObject("stargazers") ?: return Page(emptyList(), false)
+        val users = ArrayList<User>()
+        data.getAsJsonArray("edges")?.forEach { e ->
+            val n = e.asJsonObject.getAsJsonObject("node")
+            users.add(User(
+                login = n.get("login")?.asString ?: "",
+                avatar_url = n.get("avatarUrl")?.asString,
+                name = n.get("name")?.takeIf { !it.isJsonNull }?.asString
+            ))
+        }
+        // GraphQL 兜底只取前 100 个，避免翻页重复；名单被 GitHub 隐藏时本来就没有更多
+        return Page(users, false)
+    }
+
+    suspend fun forks(o: String, r: String, page: Int = 1, perPage: Int = 100): Page<Repo> =
+        callList("/repos/$o/$r/forks", mapOf("page" to "$page", "per_page" to "$perPage"))
+    suspend fun watchers(o: String, r: String, page: Int = 1, perPage: Int = 100): Page<User> =
+        callList("/repos/$o/$r/subscribers", mapOf("page" to "$page", "per_page" to "$perPage"))
     suspend fun isWatching(o: String, r: String): Boolean = try { exec("/repos/$o/$r/subscription").code == 200 } catch (e: ApiException) { false }
     suspend fun watch(o: String, r: String, on: Boolean) {
         val body = JsonObject().apply { addProperty("subscribed", on) }.toString()

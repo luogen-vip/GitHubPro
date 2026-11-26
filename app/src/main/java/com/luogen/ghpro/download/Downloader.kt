@@ -269,19 +269,22 @@ object Downloader {
         var lastError: Exception? = null
         for (c in cands) {
             if (isCancelled(safe)) throw kotlinx.coroutines.CancellationException("已取消")
+            // 每个镜像候选使用新的进度代号：上个候选残留线程的进度会被直接丢弃，绝不可能再闪回旧百分比
+            val candEpoch = newEpoch(safe)
             try {
-                updateE(DownloadState(safe, status = "连接中", mirrorUsed = c), epoch)
-                fetch(c, outFile, token, threads, safe, notify, epoch)
+                updateE(DownloadState(safe, status = "连接中", mirrorUsed = c), candEpoch)
+                fetch(c, outFile, token, threads, safe, notify, candEpoch)
+                if (isCancelled(safe)) throw kotlinx.coroutines.CancellationException("已取消")
                 if (notify) Notifier.downloadDone(ctx, safe, outFile.absolutePath)
                 val pub = publish(ctx, outFile, safe)
                 updateE(DownloadState(safe, done = outFile.length(), total = outFile.length(),
                     status = "已完成", path = pub.first, publicPath = pub.first, localPath = outFile.absolutePath,
-                    mirrorUsed = c, threads = threads), epoch)
+                    mirrorUsed = c, threads = threads), candEpoch)
                 return@withContext outFile
             } catch (e: Exception) {
                 lastError = e
                 outFile.delete()
-                updateE(DownloadState(safe, status = "重试中", error = e.message, mirrorUsed = c), epoch)
+                if (!isCancelled(safe)) updateE(DownloadState(safe, status = "重试中", error = e.message, mirrorUsed = c), candEpoch)
             }
         }
         updateE(DownloadState(safe, status = "失败", error = lastError?.message ?: "下载失败"), epoch)
@@ -407,10 +410,11 @@ object Downloader {
         val stop = java.util.concurrent.atomic.AtomicBoolean(false)
         val chunk = (total + threads - 1) / threads
         val errors = java.util.Collections.synchronizedList(ArrayList<Exception>())
+        val abort = java.util.concurrent.atomic.AtomicBoolean(false)
         val progress = Thread {
             var last = System.currentTimeMillis()
             var lastBytes = 0L
-            while (!stop.get()) {
+            while (!stop.get() && !abort.get()) {
                 if (isCancelled(name)) break
                 Thread.sleep(400)
                 if (stop.get()) break
@@ -460,6 +464,7 @@ object Downloader {
                     }
                 } catch (e: Exception) {
                     errors.add(e)
+                    abort.set(true)
                 }
             }
             t.isDaemon = true

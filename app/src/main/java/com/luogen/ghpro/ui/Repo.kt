@@ -44,6 +44,7 @@ import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Bus
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Repo
+import com.luogen.ghpro.data.Page
 import com.luogen.ghpro.data.User
 import com.luogen.ghpro.download.Downloader
 import kotlinx.coroutines.delay
@@ -248,23 +249,23 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                 }
                 r.description?.takeIf { it.isNotBlank() }?.let {
                     Spacer(Modifier.height(2.dp))
-                    Text(it, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(it, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
                 Spacer(Modifier.height(3.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
                     Text("Star " + compactNum(r.stargazers_count), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { peopleDialog = 0 }.padding(2.dp))
+                        modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { peopleDialog = 0 }.padding(end = 4.dp))
                     Text("· 复刻 " + compactNum(r.forks_count), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { peopleDialog = 1 }.padding(2.dp))
+                        modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { peopleDialog = 1 }.padding(end = 4.dp))
                     Text("· 关注 " + compactNum(r.subscribers_count), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { peopleDialog = 2 }.padding(2.dp))
+                        modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { peopleDialog = 2 }.padding(end = 4.dp))
                     Text("· 议题 " + compactNum(r.open_issues_count), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     val top = languages.entries.maxByOrNull { it.value }
-                    if (top != null && languages.isNotEmpty()) {
-                        val pct = top.value * 100.0 / languages.values.sum().coerceAtLeast(1)
-                        Text("· " + top.key + " " + String.format("%.1f", pct) + "%", fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+                    Text(if (top != null && languages.isNotEmpty())
+                        "主要语言 " + top.key + " " + String.format("%.1f", top.value * 100.0 / languages.values.sum().coerceAtLeast(1)) + "%"
+                    else "这个仓库还没有语言统计", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (tab == 0) {
                     val langsShown = languages.ifEmpty { r.language?.let { mapOf(it to 1L) } ?: emptyMap() }
@@ -623,41 +624,97 @@ fun ContributorsTab(nav: NavController, owner: String, name: String) {
 
 @Composable
 fun PeopleDialog(nav: NavController, owner: String, name: String, kind: Int, onClose: () -> Unit) {
+    val scope = rememberCoroutineScope()
     var list by remember { mutableStateOf<List<Any>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
-    LaunchedEffect(kind) {
-        list = runCatching {
+    var loadingMore by remember { mutableStateOf(false) }
+    var page by remember { mutableStateOf(1) }
+    var hasMore by remember { mutableStateOf(false) }
+    var err by remember { mutableStateOf<String?>(null) }
+
+    suspend fun fetch(p: Int) {
+        if (kind == 3) {
+            if (p > 1) return
+            val items = runCatching { Api.contributors(owner, name) }.getOrDefault(emptyList())
+            list = items
+            hasMore = false
+        } else {
+            var fetched: List<Any> = emptyList()
+            var more = false
             when (kind) {
-                0 -> Api.stargazers(owner, name, 1).items
-                1 -> Api.forks(owner, name).items
-                2 -> Api.watchers(owner, name).items
-                else -> Api.contributors(owner, name)
-            } as List<Any>
-        }.getOrDefault(emptyList())
+                0 -> {
+                    val pg = try { Api.stargazers(owner, name, p) }
+                    catch (e: Exception) { if (p == 1) Api.stargazersGraphql(owner, name) else Page(emptyList(), false) }
+                    fetched = pg.items; more = pg.hasNext
+                }
+                1 -> { val pg = Api.forks(owner, name, p); fetched = pg.items; more = pg.hasNext }
+                else -> { val pg = Api.watchers(owner, name, p); fetched = pg.items; more = pg.hasNext }
+            }
+            list = if (p == 1) fetched else list + fetched
+            hasMore = more
+        }
+        page = p
+    }
+
+    LaunchedEffect(kind) {
+        loading = true
+        err = null
+        try {
+            fetch(1)
+            if (hasMore) fetch(2)
+        } catch (e: Exception) { err = e.message }
         loading = false
     }
-    val title = when (kind) { 0 -> "点过 Star 的人"; 1 -> "复刻过的人"; 2 -> "关注这个仓库的人"; else -> "贡献者" }
+
+    val title = when (kind) { 0 -> "点过 Star 的人"; 1 -> "复刻过的仓库"; 2 -> "关注这个仓库的人"; else -> "贡献者" }
+    val emptyText = when (kind) {
+        0 -> "GitHub 没有公开这个仓库的 Star 名单（官方接口受限），自己的仓库通常可以查看"
+        1 -> "还没有人复刻这个仓库"
+        2 -> "还没有人关注这个仓库（关注数可能为 0）"
+        else -> "暂无贡献者数据"
+    }
     AlertDialog(
         onDismissRequest = onClose,
         title = { Text(title, fontSize = 15.sp) },
         text = {
-            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+            Column(Modifier.heightIn(max = 430.dp).verticalScroll(rememberScrollState())) {
                 if (loading) LoadingBox()
-                else if (list.isEmpty()) EmptyBox("暂无数据")
-                else list.forEach { item ->
-                    val (login, avatar, extra) = when (item) {
-                        is User -> Triple(item.login, item.avatar_url, "${compactNum(item.contributions)} 次贡献")
-                        is Repo -> Triple(item.full_name, item.owner?.avatar_url, "${item.stargazers_count} star")
-                        else -> Triple("", null, "")
+                else if (err != null) EmptyBox(when {
+                    kind == 2 -> "GitHub 只允许仓库管理员查看“关注者”名单，别人的仓库看不到具体是谁；关注人数仍然会显示。"
+                    kind == 0 -> "GitHub 没有公开这个仓库的 Star 名单（接口返回受限）。这不是网络问题，自己的仓库通常可以正常查看。"
+                    else -> "读取失败：$err"
+                })
+                else if (list.isEmpty()) EmptyBox(emptyText)
+                else {
+                    Text("已加载 ${list.size} 个" + if (hasMore) "（还有更多，可继续加载）" else "（已全部显示）",
+                        fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
+                    list.forEach { item ->
+                        val (login, avatar, extra) = when (item) {
+                            is User -> Triple(item.login, item.avatar_url,
+                                if (kind == 3) "${compactNum(item.contributions)} 次贡献" else if (kind == 2) "关注者" else "Star 用户")
+                            is Repo -> Triple(item.full_name, item.owner?.avatar_url, "${compactNum(item.stargazers_count)} star")
+                            else -> Triple("", null, "")
+                        }
+                        Row(Modifier.fillMaxWidth().clickable {
+                            onClose(); if (!login.contains("/")) nav.navigate("user/$login")
+                            else nav.navigate("repo/${login.split("/")[0]}/${login.split("/")[1]}")
+                        }.padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Avatar(avatar, 28)
+                            Spacer(Modifier.width(8.dp))
+                            Text(login, fontSize = 12.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(extra, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
-                    Row(Modifier.fillMaxWidth().clickable {
-                        onClose(); if (!login.contains("/")) nav.navigate("user/$login")
-                        else nav.navigate("repo/${login.split("/")[0]}/${login.split("/")[1]}")
-                    }.padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Avatar(avatar, 28)
-                        Spacer(Modifier.width(8.dp))
-                        Text(login, fontSize = 12.sp, modifier = Modifier.weight(1f), maxLines = 1)
-                        Text(extra, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (hasMore) {
+                        TextButton(enabled = !loadingMore, onClick = {
+                            scope.launch {
+                                loadingMore = true
+                                runCatching { fetch(page + 1) }.onFailure { err = it.message }
+                                loadingMore = false
+                            }
+                        }, modifier = Modifier.fillMaxWidth()) {
+                            Text(if (loadingMore) "加载中…" else "加载更多", fontSize = 12.sp)
+                        }
                     }
                 }
             }

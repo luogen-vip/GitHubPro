@@ -125,7 +125,8 @@ fun DownloadsScreen(nav: NavController) {
                                     modifier = Modifier.clickable { r.repo?.let { UiCache.repoTab[it] = if (!r.release.isNullOrBlank()) 5 else 1; nav.navigate("repo/$it") } })
                             }
                             Spacer(Modifier.height(6.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 val local = r.localPath?.let { File(it) }
                                 if (local != null && local.exists()) {
                                     TextButton(onClick = {
@@ -153,7 +154,8 @@ fun DownloadsScreen(nav: NavController) {
                                     Icon(Icons.Filled.Download, null, Modifier.size(14.dp)); Text("重新下载", fontSize = 11.sp)
                                 }
                             }
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 TextButton({ Downloader.removeRecord(ctx, r.id, false) }, contentPadding = PaddingValues(horizontal = 8.dp)) {
                                     Text("删除记录", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }

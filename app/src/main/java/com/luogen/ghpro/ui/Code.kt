@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
@@ -61,6 +62,9 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
     var pendingUpload by remember { mutableStateOf<Uri?>(null) }
     var uploadTarget by remember { mutableStateOf("") }
     var uploading by remember { mutableStateOf(false) }
+    var selecting by remember { mutableStateOf(false) }
+    val selected = remember { mutableStateListOf<String>() }
+    var confirmBulk by remember { mutableStateOf(false) }
     val uploadPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
             var name = "file.bin"
@@ -85,8 +89,9 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
         loading = false
     }
 
-    androidx.activity.compose.BackHandler(enabled = path.isNotEmpty()) {
-        path = path.substringBeforeLast('/', "")
+    androidx.activity.compose.BackHandler(enabled = selecting || path.isNotEmpty()) {
+        if (selecting) { selecting = false; selected.clear() }
+        else path = path.substringBeforeLast('/', "")
     }
     LaunchedEffect(branch, path) {
         UiCache.codePath["$owner/$name"] = path
@@ -120,14 +125,32 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
             if (path.isNotEmpty()) {
                 TextButton(onClick = { path = path.substringBeforeLast('/', "") }) { Text("上级", fontSize = 11.sp) }
             }
+            IconButton({ selecting = !selecting; selected.clear() }) {
+                Icon(Icons.Filled.CheckCircle, "多选", tint = if (selecting) GH.blue else MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             IconButton({ uploadPicker.launch("*/*") }, enabled = !uploading) {
                 Icon(Icons.Filled.Upload, "上传文件", tint = GH.blue)
             }
             IconButton(onClick = {
-                nav.navigate("file?owner=$owner&repo=$name&branch=${Uri.encode(branch)}&path=&isNew=1")
+                nav.navigate("file?owner=$owner&repo=$name&branch=${Uri.encode(branch)}&path=${Uri.encode(if (path.isBlank()) "" else "$path/")}&isNew=1")
             }) { Icon(Icons.Filled.Add, "新建文件", tint = GH.green) }
         }
 
+        if (selecting) {
+            val all = listing?.items ?: emptyList()
+            Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 10.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Text("已选 ${selected.size} 项", fontSize = 12.sp, modifier = Modifier.weight(1f))
+                TextButton(onClick = {
+                    if (selected.size == all.size) selected.clear() else { selected.clear(); selected.addAll(all.map { it.path }) }
+                }) { Text(if (selected.size == all.size) "取消全选" else "全选", fontSize = 11.sp) }
+                TextButton(enabled = selected.isNotEmpty(), onClick = { confirmBulk = true }) {
+                    Icon(Icons.Filled.Delete, null, Modifier.size(15.dp), tint = GH.red)
+                    Text("删除", fontSize = 11.sp, color = GH.red)
+                }
+                TextButton({ selecting = false; selected.clear() }) { Text("退出", fontSize = 11.sp) }
+            }
+        }
         when {
             loading -> LoadingBox()
             error != null -> ErrorBox(error) { scope.launch { load() } }
@@ -138,11 +161,19 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
                     items(l.items.sortedWith(compareBy({ it.type != "dir" }, { it.name })), key = { it.sha + it.path }) { item ->
                         Row(
                             Modifier.fillMaxWidth().clickable {
-                                if (item.type == "dir") path = item.path
+                                if (selecting) {
+                                    if (selected.contains(item.path)) selected.remove(item.path) else selected.add(item.path)
+                                } else if (item.type == "dir") path = item.path
                                 else nav.navigate("file?owner=$owner&repo=$name&branch=${Uri.encode(branch)}&path=${Uri.encode(item.path)}&isNew=0")
-                            }.padding(horizontal = 14.dp, vertical = 11.dp),
+                            }.padding(horizontal = 10.dp, vertical = if (selecting) 6.dp else 11.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            if (selecting) {
+                                Checkbox(checked = selected.contains(item.path), onCheckedChange = { checked ->
+                                    if (checked) selected.add(item.path) else selected.remove(item.path)
+                                }, modifier = Modifier.size(24.dp))
+                                Spacer(Modifier.width(6.dp))
+                            }
                             Icon(
                                 if (item.type == "dir") Icons.Filled.Folder else Icons.Filled.InsertDriveFile,
                                 null, Modifier.size(18.dp),
@@ -194,7 +225,7 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
                             Toast.makeText(ctx, "开始上传…", Toast.LENGTH_SHORT).show()
                             val bytes = ctx.contentResolver.openInputStream(pu)?.use { it.readBytes() }
                                 ?: throw java.io.IOException("读不到这个文件")
-                            if (bytes.size > 5 * 1024 * 1024) throw java.io.IOException("文件超过 5MB，GitHub 网页接口不适合传这么大的文件")
+                            if (bytes.size > 30 * 1024 * 1024) throw java.io.IOException("文件超过 30MB，GitHub 单文件接口传不了，请用电脑上传")
                             val sha = runCatching { Api.fileItem(owner, name, target, branch).sha }.getOrNull()
                             Api.putFile(owner, name, target, "upload ${target.substringAfterLast('/')}",
                                 android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP), sha, branch)
@@ -212,6 +243,39 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
                 }) { Text(if (uploading) "上传中…" else "上传", fontSize = 13.sp) }
             },
             dismissButton = { TextButton({ if (!uploading) pendingUpload = null }) { Text("取消") } }
+        )
+    }
+
+    if (confirmBulk) {
+        val targets = listing?.items?.filter { selected.contains(it.path) } ?: emptyList()
+        AlertDialog(
+            onDismissRequest = { confirmBulk = false },
+            title = { Text("删除 ${targets.size} 项", fontSize = 15.sp) },
+            text = { Text("会从 GitHub 真实删除选中的文件和文件夹；选中文件夹会递归删除里面所有文件。删除后立即生效，不可恢复。", fontSize = 12.sp) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmBulk = false
+                    val snapshot = listing
+                    val paths = targets.map { it.path }
+                    if (paths.isEmpty()) return@TextButton
+                    // 先本地移除，界面立即消失；随后真实提交删除
+                    listing = snapshot?.copy(items = snapshot.items.filter { it.path !in paths })
+                    selecting = false
+                    selected.clear()
+                    scope.launch {
+                        try {
+                            val deleted = Api.deletePaths(owner, name, paths, branch)
+                            UiCache.codeListing.keys.filter { it.startsWith("$owner/$name|") }.forEach { UiCache.codeListing.remove(it) }
+                            Toast.makeText(ctx, "已真实删除 $deleted 个文件", Toast.LENGTH_LONG).show()
+                            load(true)
+                        } catch (e: Exception) {
+                            Toast.makeText(ctx, "删除失败：${e.message}", Toast.LENGTH_LONG).show()
+                            load(true)
+                        }
+                    }
+                }) { Text("确认删除", color = GH.red) }
+            },
+            dismissButton = { TextButton({ confirmBulk = false }) { Text("取消") } }
         )
     }
 
@@ -280,7 +344,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                     if (isFile && !loading) {
                         if (editing) {
                             IconButton({
-                                if (fileName.isBlank()) { scope.launch { snackbar.showSnackbar("请输入文件名") }; return@IconButton }
+                                if (fileName.isBlank() || fileName.endsWith("/")) { scope.launch { snackbar.showSnackbar("请输入完整文件名（当前只填了文件夹路径）") }; return@IconButton }
                                 scope.launch {
                                     try {
                                         val b64 = android.util.Base64.encodeToString(content.toByteArray(), android.util.Base64.NO_WRAP)
@@ -307,7 +371,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                                 },
                                 onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
                         }) { Icon(Icons.Filled.Download, "下载") }
-                        if (!isNew && sha != null) {
+                        if (!isNew) {
                             IconButton({ confirmDelete = true }) { Icon(Icons.Filled.Delete, "删除", tint = GH.red) }
                         }
                     }
@@ -380,7 +444,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
         }
     }
 
-    if (confirmDelete && sha != null) {
+    if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
             title = { Text("删除文件") },
@@ -389,7 +453,8 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                 TextButton(onClick = {
                     scope.launch {
                         try {
-                            Api.deleteFile(owner, name, path, "delete $path", sha!!, branch)
+                            val realSha = sha ?: Api.fileItem(owner, name, path, branch).sha
+                            Api.deleteFile(owner, name, path, "delete $path", realSha, branch)
                             confirmDelete = false
                             snackbar.showSnackbar("已删除")
                             nav.popBackStack()

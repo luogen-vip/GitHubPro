@@ -29,6 +29,8 @@ import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.download.Downloader
 import com.luogen.ghpro.sync.CrashReporter
 import com.luogen.ghpro.sync.WatchService
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 @Composable
@@ -50,12 +52,15 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
     var rate by remember { mutableStateOf<String?>(null) }
     var rateLoading by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        rateLoading = true
-        rate = try {
-            val r = Api.rateLimit().resources?.core
-            "核心 ${r?.remaining ?: "-"}/${r?.limit ?: "-"}"
-        } catch (e: Exception) { "读取失败：${e.message}" }
-        rateLoading = false
+        while (isActive) {
+            rateLoading = rate == null
+            rate = try {
+                val r = Api.rateLimit().resources?.core
+                "核心 ${r?.remaining ?: "-"}/${r?.limit ?: "-"} · 重置 ${r?.reset?.let { fullTime(java.time.Instant.ofEpochSecond(it).toString()) } ?: "-"}"
+            } catch (e: Exception) { "读取失败：${e.message}" }
+            rateLoading = false
+            delay(8_000L)
+        }
     }
     var safe by remember { mutableStateOf(Cfg.safeMode) }
     var crash by remember { mutableStateOf(CrashReporter.lastCrash(ctx)) }
@@ -229,7 +234,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
         }
 
         item {
-            SectionTitle("API 用量")
+            SectionTitle("API 用量 · 每 8 秒自动刷新")
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("剩余额度", fontSize = 13.sp, modifier = Modifier.weight(1f))
                 Text(if (rateLoading) "读取中…" else (rate ?: "-"), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -249,7 +254,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
 
         item {
             Spacer(Modifier.height(40.dp))
-            Text("GitHub Pro 1.0.7 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("GitHub Pro 1.0.8 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("数据全部来自 GitHub 官方 REST / GraphQL API", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(30.dp))
         }
