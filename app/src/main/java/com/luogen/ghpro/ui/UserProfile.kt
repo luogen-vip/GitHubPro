@@ -77,7 +77,7 @@ fun UserScreen(nav: NavController, login: String) {
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(u!!.name ?: u!!.login, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                                Text("@" + u!!.login, fontSize = 11.sp, color = GH.muted)
+                                Text("@" + u!!.login, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 u!!.bio?.let {
                                     Spacer(Modifier.height(4.dp))
                                     Text(it, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -184,7 +184,7 @@ fun EventsTab(login: String, nav: NavController) {
                 )
                 Text(e.repo?.full_name ?: "", fontSize = 10.sp, color = GH.blue,
                     modifier = Modifier.clickable { e.repo?.let { nav.navigate("repo/${it.full_name}") } })
-                Text(timeAgo(e.created_at), fontSize = 10.sp, color = GH.muted)
+                Text(timeAgo(e.created_at), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Divider1()
         }

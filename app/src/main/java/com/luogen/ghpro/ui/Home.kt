@@ -12,6 +12,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -149,9 +150,18 @@ fun HomeScreen(nav: NavController) {
     }
 
     val byLang = if (lang == null) repos else repos.filter { it.language == lang }
+    val sorted = when (sort) {
+        "updated" -> byLang.sortedByDescending { it.updated_at ?: it.pushed_at ?: "" }
+        "pushed" -> byLang.sortedByDescending { it.pushed_at ?: it.updated_at ?: "" }
+        "full_name" -> byLang.sortedBy { it.full_name.lowercase() }
+        "stars" -> byLang.sortedByDescending { it.stargazers_count }
+        else -> byLang
+    }
     val shown = if (tab == 0) {
-        byLang.sortedBy { r -> recent.indexOf(r.full_name).let { if (it < 0) Int.MAX_VALUE else it } }
-    } else byLang
+        val at = sorted.associateBy { it.full_name }
+        val pinned = recent.mapNotNull { at[it] }
+        pinned + sorted.filter { it.full_name !in recent }
+    } else sorted
     val languages = repos.mapNotNull { it.language }.distinct().sorted()
 
     Scaffold(
@@ -170,6 +180,7 @@ fun HomeScreen(nav: NavController) {
                             Text("@" + (me?.login ?: Cfg.login ?: ""), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         IconButton(onClick = { nav.navigate("search") }) { Icon(Icons.Filled.Search, "搜索") }
+                        IconButton(onClick = { nav.navigate("featured") }) { Icon(Icons.Filled.Explore, "精选仓库") }
                         IconButton(onClick = { nav.navigate("notifications") }) { Icon(Icons.Filled.Notifications, "通知") }
                         IconButton(onClick = { nav.navigate("settings") }) { Icon(Icons.Filled.Settings, "设置") }
                     }
@@ -251,7 +262,7 @@ fun HomeScreen(nav: NavController) {
                         Text("安全模式已开启", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = GH.yellow)
                         Spacer(Modifier.height(3.dp))
                         Text("已关闭头像加载与自动刷新。一切正常后可去「设置 → 诊断」关闭。",
-                            fontSize = 11.sp, color = GH.muted, lineHeight = 16.sp)
+                            fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 16.sp)
                     }
                 }
             }
@@ -297,8 +308,8 @@ fun RepoRow(repo: Repo, recent: Boolean = false, onClick: () -> Unit) {
                             fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
                             overflow = TextOverflow.Ellipsis)
                         if (repo.isPrivate) { Spacer(Modifier.width(6.dp)); TinyTag("私有", GH.yellow) }
-                        if (repo.fork) { Spacer(Modifier.width(4.dp)); TinyTag("复刻", GH.muted) }
-                        if (repo.archived) { Spacer(Modifier.width(4.dp)); TinyTag("归档", GH.muted) }
+                        if (repo.fork) { Spacer(Modifier.width(4.dp)); TinyTag("复刻", MaterialTheme.colorScheme.onSurfaceVariant) }
+                        if (repo.archived) { Spacer(Modifier.width(4.dp)); TinyTag("归档", MaterialTheme.colorScheme.onSurfaceVariant) }
                         if (recent) { Spacer(Modifier.width(4.dp)); TinyTag("最近", GH.blue) }
                     }
                     Text(repo.full_name, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,

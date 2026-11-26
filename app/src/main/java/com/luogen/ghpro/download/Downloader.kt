@@ -44,6 +44,19 @@ data class DownloadState(
     val percent: Int get() = if (total <= 0) 0 else ((done * 100) / total).toInt()
 }
 
+data class DlRecord(
+    val id: String,
+    val name: String,
+    val url: String,
+    val size: Long,
+    val time: Long,
+    val source: String,
+    val repo: String? = null,
+    val release: String? = null,
+    val publicPath: String? = null,
+    val localPath: String? = null
+)
+
 object Downloader {
 
     private val client = OkHttpClient.Builder()
@@ -54,6 +67,9 @@ object Downloader {
         .build()
 
     val state = MutableStateFlow<Map<String, DownloadState>>(emptyMap())
+    val historyVersion = MutableStateFlow(0)
+    private val jobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+    private const val HPREFS = "ghpro_downloads"
 
     fun stateOf(name: String): DownloadState? = state.value[name]
 
@@ -66,14 +82,121 @@ object Downloader {
         fileName: String,
         token: String? = null,
         useMirror: Boolean = true,
+        source: String = "文件",
+        repo: String? = null,
+        release: String? = null,
         onDone: ((java.io.File) -> Unit)? = null,
         onError: ((String) -> Unit)? = null
-    ): Job = appScope.launch {
-        try {
-            val f = download(ctx, rawUrl, fileName, token, useMirror)
-            kotlinx.coroutines.withContext(Dispatchers.Main) { onDone?.invoke(f) }
-        } catch (e: Exception) {
-            kotlinx.coroutines.withContext(Dispatchers.Main) { onError?.invoke(e.message ?: "下载失败") }
+    ): Job {
+        val key = sanitize(fileName)
+        jobs[key]?.takeIf { it.isActive }?.let { return it }
+        lateinit var job: Job
+        job = appScope.launch {
+            try {
+                val f = download(ctx, rawUrl, fileName, token, useMirror)
+                val st = stateOf(fileName)
+                record(ctx, DlRecord(
+                    id = java.util.UUID.randomUUID().toString(),
+                    name = fileName, url = rawUrl, size = f.length(), time = System.currentTimeMillis(),
+                    source = source, repo = repo, release = release,
+                    publicPath = st?.publicPath, localPath = st?.localPath ?: f.absolutePath
+                ))
+                if (fileName.endsWith(".apk", true)) {
+                    kotlinx.coroutines.withContext(Dispatchers.Main) { installApk(ctx, f) }
+                }
+                kotlinx.coroutines.withContext(Dispatchers.Main) { onDone?.invoke(f) }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                update(DownloadState(key, status = "已取消"))
+            } catch (e: Exception) {
+                kotlinx.coroutines.withContext(Dispatchers.Main) { onError?.invoke(e.message ?: "下载失败") }
+            } finally {
+                jobs.remove(key)
+            }
+        }
+        jobs[key] = job
+        return job
+    }
+
+    fun cancelDownload(name: String): Boolean {
+        val key = sanitize(name)
+        val j = jobs.remove(key)
+        j?.cancel()
+        update(DownloadState(key, status = "已取消"))
+        return j != null
+    }
+
+    fun retryDownload(ctx: Context, rec: DlRecord, onDone: ((File) -> Unit)? = null): Job =
+        startDownload(ctx, rec.url, rec.name, Cfg.token, true, rec.source, rec.repo, rec.release, onDone = onDone)
+
+    // ---------------- 下载历史（持久化） ----------------
+    private fun prefs(ctx: Context) = ctx.applicationContext.getSharedPreferences(HPREFS, Context.MODE_PRIVATE)
+
+    fun history(ctx: Context): List<DlRecord> {
+        val raw = prefs(ctx).getString("list", "[]") ?: "[]"
+        return runCatching {
+            val arr = org.json.JSONArray(raw)
+            (0 until arr.length()).map { i ->
+                val o = arr.getJSONObject(i)
+                DlRecord(o.optString("id"), o.optString("name"), o.optString("url"),
+                    o.optLong("size"), o.optLong("time"), o.optString("source", "文件"),
+                    o.optString("repo").takeIf { it.isNotBlank() }, o.optString("release").takeIf { it.isNotBlank() },
+                    o.optString("publicPath").takeIf { it.isNotBlank() }, o.optString("localPath").takeIf { it.isNotBlank() })
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    fun record(ctx: Context, r: DlRecord) {
+        val list = history(ctx).toMutableList()
+        list.add(0, r)
+        save(ctx, list.take(400))
+    }
+
+    private fun save(ctx: Context, list: List<DlRecord>) {
+        val arr = org.json.JSONArray()
+        list.forEach { r ->
+            arr.put(org.json.JSONObject().apply {
+                put("id", r.id); put("name", r.name); put("url", r.url); put("size", r.size)
+                put("time", r.time); put("source", r.source); put("repo", r.repo ?: "")
+                put("release", r.release ?: ""); put("publicPath", r.publicPath ?: "")
+                put("localPath", r.localPath ?: "")
+            })
+        }
+        prefs(ctx).edit().putString("list", arr.toString()).apply()
+        historyVersion.value++
+    }
+
+    fun removeRecord(ctx: Context, id: String, deleteFile: Boolean) {
+        val list = history(ctx).toMutableList()
+        val target = list.firstOrNull { it.id == id }
+        if (deleteFile && target?.localPath != null) runCatching { File(target.localPath!!).delete() }
+        list.removeAll { it.id == id }
+        save(ctx, list)
+    }
+
+    fun clearRecords(ctx: Context, deleteFiles: Boolean) {
+        if (deleteFiles) history(ctx).forEach { r -> r.localPath?.let { runCatching { File(it).delete() } } }
+        save(ctx, emptyList())
+    }
+
+    /** 进程重启后把上次没下完的条目改成「已中断」，不再卡在某个百分比。 */
+    fun markInterrupted() {
+        val cur = state.value.mapValues { (_, v) ->
+            if (v.status in listOf("连接中", "下载中", "重试中", "合并中")) v.copy(status = "已中断（可重新下载）") else v
+        }
+        if (cur.isNotEmpty()) state.value = cur
+    }
+
+    fun categoryOf(name: String): String {
+        val n = name.lowercase()
+        return when {
+            n.endsWith(".apk") || n.endsWith(".xapk") || n.endsWith(".apks") -> "应用"
+            n.endsWith(".jpg") || n.endsWith(".jpeg") || n.endsWith(".png") || n.endsWith(".webp") || n.endsWith(".gif") -> "图片"
+            n.endsWith(".mp4") || n.endsWith(".mkv") || n.endsWith(".mov") || n.endsWith(".webm") || n.endsWith(".avi") -> "视频"
+            n.endsWith(".mp3") || n.endsWith(".flac") || n.endsWith(".wav") || n.endsWith(".m4a") || n.endsWith(".ogg") -> "音频"
+            n.endsWith(".zip") || n.endsWith(".7z") || n.endsWith(".rar") || n.endsWith(".tar") || n.endsWith(".gz") -> "压缩包"
+            n.endsWith(".iso") || n.endsWith(".esd") || n.endsWith(".img") || n.endsWith(".wim") -> "镜像"
+            n.endsWith(".pdf") || n.endsWith(".doc") || n.endsWith(".docx") || n.endsWith(".xls") || n.endsWith(".xlsx") || n.endsWith(".txt") || n.endsWith(".md") -> "文档"
+            else -> "其他"
         }
     }
 

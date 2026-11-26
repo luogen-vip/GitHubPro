@@ -68,7 +68,7 @@ fun NotificationsScreen(nav: NavController) {
                 Spacer(Modifier.width(6.dp))
                 FilterChip(selected = all, onClick = { all = true }, label = { Text("全部", fontSize = 11.sp) })
                 Spacer(Modifier.weight(1f))
-                Text("${list.size} 条", fontSize = 10.sp, color = GH.muted)
+                Text("${list.size} 条", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             when {
                 loading -> LoadingBox()
@@ -108,7 +108,7 @@ fun NotificationsScreen(nav: NavController) {
                                         "WorkflowRun" -> "工作流"
                                         else -> n.subject?.type ?: "通知"
                                     },
-                                    color = if (n.unread) GH.blue else GH.muted
+                                    color = if (n.unread) GH.blue else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                                 Spacer(Modifier.width(6.dp))
                                 Text(n.subject?.title ?: "", fontSize = 12.sp, fontWeight = if (n.unread) FontWeight.SemiBold else FontWeight.Normal,
@@ -117,7 +117,7 @@ fun NotificationsScreen(nav: NavController) {
                             }
                             Spacer(Modifier.height(3.dp))
                             Text("${n.repository?.full_name ?: ""} · ${n.reason ?: ""} · ${timeAgo(n.updated_at)}",
-                                fontSize = 10.sp, color = GH.muted)
+                                fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Divider1()
                     }

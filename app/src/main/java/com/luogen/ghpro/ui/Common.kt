@@ -99,7 +99,7 @@ fun Avatar(url: String?, size: Int = 32, modifier: Modifier = Modifier) {
 
 @Composable
 fun LabelChip(label: Label, onClick: (() -> Unit)? = null) {
-    val c = try { Color(android.graphics.Color.parseColor("#" + label.color)) } catch (e: Exception) { GH.muted }
+    val c = try { Color(android.graphics.Color.parseColor("#" + label.color)) } catch (e: Exception) { MaterialTheme.colorScheme.onSurfaceVariant }
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(4.dp))
@@ -114,7 +114,7 @@ fun LabelChip(label: Label, onClick: (() -> Unit)? = null) {
 }
 
 @Composable
-fun TinyTag(text: String, color: Color = GH.muted) {
+fun TinyTag(text: String, color: Color = MaterialTheme.colorScheme.onSurfaceVariant) {
     Box(
         Modifier.clip(RoundedCornerShape(4.dp))
             .border(1.dp, color.copy(alpha = 0.6f), RoundedCornerShape(4.dp))

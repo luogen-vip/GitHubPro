@@ -64,6 +64,10 @@ object Cfg {
         get() = sp.getBoolean("notify", true)
         set(v) { sp.edit().putBoolean("notify", v).apply() }
 
+    var watchEnabled: Boolean
+        get() = sp.getBoolean("watch_enabled", false)
+        set(v) { sp.edit().putBoolean("watch_enabled", v).apply() }
+
     var autoRefresh: Boolean
         get() = sp.getBoolean("auto_refresh", true)
         set(v) { sp.edit().putBoolean("auto_refresh", v).apply() }

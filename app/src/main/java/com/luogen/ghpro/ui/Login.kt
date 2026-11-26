@@ -73,7 +73,7 @@ private fun GhField(
         value = value,
         onValueChange = onValueChange,
         singleLine = singleLine,
-        textStyle = TextStyle(color = GH.text, fontSize = 14.sp),
+        textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp),
         cursorBrush = SolidColor(GH.blue),
         keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
         visualTransformation = if (password && !showPassword) PasswordVisualTransformation() else VisualTransformation.None,
@@ -82,17 +82,17 @@ private fun GhField(
         Row(
             Modifier.fillMaxWidth()
                 .clip(RoundedCornerShape(12.dp))
-                .background(GH.bg)
-                .border(1.dp, if (focused) GH.blue else GH.border, RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.background)
+                .border(1.dp, if (focused) GH.blue else MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
                 .padding(horizontal = 14.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             if (leading != null) {
-                Icon(leading, null, Modifier.size(17.dp), tint = if (focused) GH.blue else GH.muted)
+                Icon(leading, null, Modifier.size(17.dp), tint = if (focused) GH.blue else MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.width(10.dp))
             }
             Box(Modifier.weight(1f)) {
-                if (value.isEmpty()) Text(placeholder, fontSize = 14.sp, color = GH.muted)
+                if (value.isEmpty()) Text(placeholder, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 inner()
             }
             if (onTogglePassword != null) {
@@ -102,7 +102,7 @@ private fun GhField(
                 ) {
                     Icon(
                         if (showPassword) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                        "显示或隐藏", Modifier.size(18.dp), tint = GH.muted
+                        "显示或隐藏", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -115,11 +115,11 @@ private fun FeaturePill(text: String) {
     Box(
         Modifier
             .clip(RoundedCornerShape(20.dp))
-            .background(GH.surface2)
-            .border(1.dp, GH.border, RoundedCornerShape(20.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(20.dp))
             .padding(horizontal = 10.dp, vertical = 4.dp)
     ) {
-        Text(text, fontSize = 11.sp, color = GH.muted)
+        Text(text, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -128,14 +128,14 @@ private fun PrimaryButton(text: String, enabled: Boolean, busy: Boolean, onClick
     Box(
         Modifier.fillMaxWidth().height(50.dp)
             .clip(RoundedCornerShape(12.dp))
-            .background(if (enabled) GH.blue else GH.surface2)
-            .then(if (enabled) Modifier else Modifier.border(1.dp, GH.border, RoundedCornerShape(12.dp)))
+            .background(if (enabled) GH.blue else MaterialTheme.colorScheme.surfaceVariant)
+            .then(if (enabled) Modifier else Modifier.border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp)))
             .clickable(enabled = enabled && !busy) { onClick() },
         contentAlignment = Alignment.Center
     ) {
         if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
         else Text(text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
-            color = if (enabled) Color.White else GH.muted)
+            color = if (enabled) Color.White else MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -174,7 +174,7 @@ fun LoginScreen(onLoggedIn: (User) -> Unit) {
 
     Box(
         Modifier.fillMaxSize()
-            .background(Brush.verticalGradient(listOf(Color(0xFF0A0D12), GH.bg, Color(0xFF0A0F16))))
+            .background(Brush.verticalGradient(listOf(Color(0xFF0A0D12), MaterialTheme.colorScheme.background, Color(0xFF0A0F16))))
     ) {
         // 右上角淡淡的品牌光晕，让整页不那么“死板”
         Canvas(Modifier.fillMaxSize()) {
@@ -208,9 +208,9 @@ fun LoginScreen(onLoggedIn: (User) -> Unit) {
                 }
                 Spacer(Modifier.width(14.dp))
                 Column {
-                    Text("GitHub Pro", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = GH.text)
+                    Text("GitHub Pro", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                     Spacer(Modifier.height(2.dp))
-                    Text("罗根版 · 客户端", fontSize = 12.sp, color = GH.muted)
+                    Text("罗根版 · 客户端", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
 
@@ -237,7 +237,7 @@ fun LoginScreen(onLoggedIn: (User) -> Unit) {
             Row(
                 Modifier.fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
-                    .background(GH.surface2)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
                     .padding(4.dp)
             ) {
                 listOf("访问令牌", "网页授权").forEachIndexed { i, label ->
@@ -256,7 +256,7 @@ fun LoginScreen(onLoggedIn: (User) -> Unit) {
                         Text(
                             label, fontSize = 13.sp,
                             fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
-                            color = if (on) Color.White else GH.muted
+                            color = if (on) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -268,15 +268,15 @@ fun LoginScreen(onLoggedIn: (User) -> Unit) {
             Column(
                 Modifier.fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
-                    .background(GH.surface)
-                    .border(1.dp, GH.border, RoundedCornerShape(16.dp))
+                    .background(MaterialTheme.colorScheme.surface)
+                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(16.dp))
                     .padding(18.dp)
             ) {
                 if (tab == 0) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Filled.Key, null, Modifier.size(15.dp), tint = GH.blue)
                         Spacer(Modifier.width(6.dp))
-                        Text("个人访问令牌登录", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = GH.text)
+                        Text("个人访问令牌登录", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
                         Spacer(Modifier.weight(1f))
                         Text("推荐", fontSize = 10.sp, color = GH.green)
                     }
@@ -294,7 +294,7 @@ fun LoginScreen(onLoggedIn: (User) -> Unit) {
                     Spacer(Modifier.height(10.dp))
                     Text(
                         "已预置 repo / workflow / notifications / user / delete_repo / write:discussion 权限",
-                        fontSize = 11.sp, color = GH.muted, lineHeight = 16.sp
+                        fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 16.sp
                     )
                     Spacer(Modifier.height(6.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -324,12 +324,12 @@ fun LoginScreen(onLoggedIn: (User) -> Unit) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Filled.Key, null, Modifier.size(15.dp), tint = GH.purple)
                         Spacer(Modifier.width(6.dp))
-                        Text("网页授权登录", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = GH.text)
+                        Text("网页授权登录", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
                     }
                     Spacer(Modifier.height(8.dp))
                     Text(
                         "在 GitHub 创建一个 OAuth App 并开启 Enable Device Flow，把 Client ID 填进来即可（不需要 Client Secret）。适合不想手动复制令牌的情况。",
-                        fontSize = 11.sp, color = GH.muted, lineHeight = 17.sp
+                        fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 17.sp
                     )
                     Spacer(Modifier.height(14.dp))
                     GhField(
@@ -342,8 +342,8 @@ fun LoginScreen(onLoggedIn: (User) -> Unit) {
                     Box(
                         Modifier.fillMaxWidth().height(46.dp)
                             .clip(RoundedCornerShape(12.dp))
-                            .background(if (cid.isNotBlank() && !polling && !busy) GH.surface2 else Color.Transparent)
-                            .border(1.dp, if (cid.isNotBlank()) GH.border else GH.border.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+                            .background(if (cid.isNotBlank() && !polling && !busy) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent)
+                            .border(1.dp, if (cid.isNotBlank()) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
                             .clickable(enabled = cid.isNotBlank() && !polling && !busy) {
                                 scope.launch {
                                     err = null
@@ -367,7 +367,7 @@ fun LoginScreen(onLoggedIn: (User) -> Unit) {
                         Text(
                             if (polling) "等待网页授权…" else "获取设备码并打开授权页",
                             fontSize = 13.sp,
-                            color = if (cid.isNotBlank()) GH.text else GH.muted
+                            color = if (cid.isNotBlank()) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
 
@@ -376,11 +376,11 @@ fun LoginScreen(onLoggedIn: (User) -> Unit) {
                         Column(
                             Modifier.fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(GH.bg)
-                                .border(1.dp, GH.border, RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.background)
+                                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
                                 .padding(14.dp)
                         ) {
-                            Text("在网页里输入这个代码", fontSize = 11.sp, color = GH.muted)
+                            Text("在网页里输入这个代码", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Spacer(Modifier.height(8.dp))
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
@@ -391,7 +391,7 @@ fun LoginScreen(onLoggedIn: (User) -> Unit) {
                                 IconButton(onClick = {
                                     val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
                                     cm.setPrimaryClip(ClipData.newPlainText("code", d.userCode))
-                                }) { Icon(Icons.Filled.ContentCopy, "复制", Modifier.size(18.dp), tint = GH.muted) }
+                                }) { Icon(Icons.Filled.ContentCopy, "复制", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                             }
                             Spacer(Modifier.height(6.dp))
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -403,7 +403,7 @@ fun LoginScreen(onLoggedIn: (User) -> Unit) {
                                 )
                                 Spacer(Modifier.weight(1f))
                                 Text(
-                                    "取消", fontSize = 12.sp, color = GH.muted,
+                                    "取消", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.clip(RoundedCornerShape(6.dp))
                                         .clickable { polling = false; device = null }
                                         .padding(vertical = 4.dp, horizontal = 2.dp)
@@ -460,15 +460,15 @@ fun LoginScreen(onLoggedIn: (User) -> Unit) {
 
             Spacer(Modifier.height(20.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.Lock, null, Modifier.size(12.dp), tint = GH.muted)
+                Icon(Icons.Filled.Lock, null, Modifier.size(12.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.width(6.dp))
                 Text(
                     "令牌仅保存在本机应用私有目录，不会上传；加速镜像只用于下载文件。",
-                    fontSize = 11.sp, color = GH.muted, lineHeight = 16.sp
+                    fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 16.sp
                 )
             }
             Spacer(Modifier.height(8.dp))
-            Text("v1.0.2 · 让 GitHub 尽在掌握", fontSize = 10.sp, color = GH.border)
+            Text("v1.0.2 · 让 GitHub 尽在掌握", fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
             Spacer(Modifier.height(36.dp))
         }
     }

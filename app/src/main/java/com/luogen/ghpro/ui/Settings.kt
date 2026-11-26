@@ -42,7 +42,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
     var watch by remember { mutableStateOf(Cfg.watchRepos.toList()) }
     var newMirror by remember { mutableStateOf("") }
     var newWatch by remember { mutableStateOf("") }
-    var watching by remember { mutableStateOf(WatchService.running.value) }
+    var watching by remember { mutableStateOf(Cfg.watchEnabled) }
     var rate by remember { mutableStateOf<String?>(null) }
     var rateLoading by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
@@ -94,12 +94,13 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
             }
             SwitchRow("后台实时监听（前台服务）", watching) {
                 watching = it
+                Cfg.watchEnabled = it
                 if (it) WatchService.start(ctx) else WatchService.stop(ctx)
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("监听仓库（${watch.size}）", fontSize = 13.sp, modifier = Modifier.weight(1f))
             }
-            if (watch.isEmpty()) Text("还没有监听仓库，打开某个仓库详情会自动加入", fontSize = 11.sp, color = GH.muted)
+            if (watch.isEmpty()) Text("还没有监听仓库：新建仓库会自动加入，也可以下面手动添加", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             watch.forEach { w ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(w, fontSize = 12.sp, modifier = Modifier.weight(1f))
@@ -127,7 +128,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
             SwitchRow("多线程分片下载", mt) { mt = it; Cfg.multiThread = it }
             SliderRow("线程数", threads, 1f..16f, "$threads 线程") { threads = it; Cfg.downThreads = it }
             Text("镜像只用于 github.com / raw / codeload 的文件下载；工作流产物与日志走官方 API 原地址。",
-                fontSize = 11.sp, color = GH.muted, modifier = Modifier.padding(vertical = 6.dp))
+                fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 6.dp))
             mirrors.forEach { m ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(m, fontSize = 12.sp, modifier = Modifier.weight(1f))
@@ -161,15 +162,15 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
                 crashMsg = if (it) "已开启，重进首页后生效" else "已关闭，重进首页后恢复完整界面"
             }
             Text("掉帧、被杀、进首页后异常退出时，安全模式会关掉头像加载与自动刷新，用来判断问题是否出在图片或轮询上。",
-                fontSize = 11.sp, color = GH.muted, modifier = Modifier.padding(vertical = 4.dp))
+                fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 4.dp))
             Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("历史异常次数", fontSize = 13.sp, modifier = Modifier.weight(1f))
-                Text("${Cfg.crashCount}", fontSize = 12.sp, color = if (Cfg.crashCount > 0) GH.red else GH.muted)
+                Text("${Cfg.crashCount}", fontSize = 12.sp, color = if (Cfg.crashCount > 0) GH.red else MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (crash == null) {
                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("上次崩溃日志", fontSize = 13.sp, modifier = Modifier.weight(1f))
-                    Text("无", fontSize = 12.sp, color = GH.muted)
+                    Text("无", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else {
                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -199,7 +200,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
                     }) { Text("上传到 GitHub Issues") }
                     TextButton(onClick = {
                         CrashReporter.clear(ctx); crash = null; crashMsg = "已清除"
-                    }) { Text("清除", color = GH.muted) }
+                    }) { Text("清除", color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
             }
             crashMsg?.let { Text(it, fontSize = 11.sp, color = GH.green, modifier = Modifier.padding(vertical = 2.dp)) }
@@ -217,10 +218,13 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
         }
 
         item {
+            TextButton(onClick = { nav.navigate("downloads") }, modifier = Modifier.fillMaxWidth()) {
+                Text("下载管理（查看/删除/重新下载所有文件）", fontSize = 13.sp)
+            }
             SectionTitle("API 用量")
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("剩余额度", fontSize = 13.sp, modifier = Modifier.weight(1f))
-                Text(if (rateLoading) "读取中…" else (rate ?: "-"), fontSize = 12.sp, color = GH.muted)
+                Text(if (rateLoading) "读取中…" else (rate ?: "-"), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 IconButton(onClick = {
                     scope.launch {
                         rateLoading = true
@@ -246,14 +250,14 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
                         Text(d.fileName, fontSize = 12.sp, maxLines = 1)
                         Text("${d.status} · ${humanSize(d.done)}/${if (d.total > 0) humanSize(d.total) else "?"}" +
                                 if (d.speed > 0) " · ${humanSize(d.speed)}/s" else "",
-                            fontSize = 10.sp, color = GH.muted)
+                            fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         if (d.total > 0) LinearProgressIndicator(progress = { d.percent / 100f }, Modifier.fillMaxWidth().padding(top = 2.dp))
                     }
                 }
             }
             Spacer(Modifier.height(40.dp))
-            Text("GitHub Pro 1.0.3 · 由 罗根 打造", fontSize = 11.sp, color = GH.muted)
-            Text("数据全部来自 GitHub 官方 REST / GraphQL API", fontSize = 11.sp, color = GH.muted)
+            Text("GitHub Pro 1.0.3 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("数据全部来自 GitHub 官方 REST / GraphQL API", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(30.dp))
         }
     }
@@ -269,7 +273,7 @@ fun CrashDialog(text: String, onClose: () -> Unit) {
         text = {
             Column(Modifier.heightIn(max = 380.dp)) {
                 Text(text, fontSize = 10.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                    color = GH.muted, modifier = Modifier.verticalScroll(rememberScrollState()))
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.verticalScroll(rememberScrollState()))
             }
         }
     )
@@ -291,7 +295,7 @@ fun SliderRow(title: String, value: Int, range: ClosedFloatingPointRange<Float>,
     Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
         Row {
             Text(title, fontSize = 13.sp, modifier = Modifier.weight(1f))
-            Text(label, fontSize = 12.sp, color = GH.muted)
+            Text(label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Slider(
             value = value.toFloat(),

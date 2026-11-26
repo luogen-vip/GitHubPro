@@ -74,13 +74,13 @@ fun ActionsTab(nav: NavController, owner: String, name: String, repo: Repo) {
 
     Column(Modifier.fillMaxSize()) {
         Row(
-            Modifier.fillMaxWidth().background(GH.surface2).padding(horizontal = 10.dp, vertical = 4.dp),
+            Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 10.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton({ scope.launch { load() } }) { Icon(Icons.Filled.Refresh, null, Modifier.size(18.dp)) }
             Text(if (lastSync == 0L) "同步中" else "${(System.currentTimeMillis() - lastSync) / 1000} 秒前同步 · 每 ${Cfg.pollSeconds} 秒自动",
-                fontSize = 10.sp, color = GH.muted, modifier = Modifier.weight(1f))
-            Text("自动", fontSize = 10.sp, color = GH.muted)
+                fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+            Text("自动", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Switch(checked = autoOn, onCheckedChange = { autoOn = it }, modifier = Modifier.height(28.dp))
             IconButton({ showWf = !showWf }) { Text("工作流", fontSize = 10.sp, color = GH.blue) }
         }
@@ -90,11 +90,11 @@ fun ActionsTab(nav: NavController, owner: String, name: String, repo: Repo) {
                 workflows.take(8).forEach { w ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(w.name, fontSize = 11.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        TinyTag(w.state, if (w.state == "active") GH.green else GH.muted)
+                        TinyTag(w.state, if (w.state == "active") GH.green else MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.width(6.dp))
                         TextButton(onClick = {
                             scope.launch {
-                                try { Api.dispatch(owner, name, w.id, repo.default_branch ?: "main"); load() }
+                                try { Api.dispatch(owner, name, w.id, repo.default_branch ?: "main"); Cfg.touchRepo("$owner/$name"); load() }
                                 catch (e: Exception) { }
                             }
                         }) { Text("运行", fontSize = 10.sp) }
@@ -126,24 +126,24 @@ fun RunRow(run: Run, onClick: () -> Unit) {
             Text(run.display_title ?: run.name ?: "运行 #${run.run_number}",
                 fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f))
-            Text("#${run.run_number}", fontSize = 10.sp, color = GH.muted)
+            Text("#${run.run_number}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Spacer(Modifier.height(4.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             StateChip(null, run.status, run.conclusion)
             Spacer(Modifier.width(8.dp))
-            Text("${run.event ?: ""} · ${run.head_branch ?: ""}", fontSize = 10.sp, color = GH.muted)
+            Text("${run.event ?: ""} · ${run.head_branch ?: ""}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.width(8.dp))
-            Text("耗时 ${durationText(run.run_started_at ?: run.created_at, run.updated_at)}", fontSize = 10.sp, color = GH.muted)
+            Text("耗时 ${durationText(run.run_started_at ?: run.created_at, run.updated_at)}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Spacer(Modifier.height(3.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             run.actor?.let {
                 Avatar(it.avatar_url, 12); Spacer(Modifier.width(3.dp))
-                Text(it.login, fontSize = 9.sp, color = GH.muted)
+                Text(it.login, fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Spacer(Modifier.weight(1f))
-            Text("${timeAgo(run.created_at)} · 第 ${run.run_attempt ?: 1} 次", fontSize = 9.sp, color = GH.muted)
+            Text("${timeAgo(run.created_at)} · 第 ${run.run_attempt ?: 1} 次", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -210,12 +210,12 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 StateChip(null, r.status, r.conclusion)
                                 Spacer(Modifier.width(6.dp))
-                                Text("${r.event ?: ""} · ${r.head_branch ?: "-"} · #${r.run_number ?: runId}", fontSize = 10.sp, color = GH.muted)
+                                Text("${r.event ?: ""} · ${r.head_branch ?: "-"} · #${r.run_number ?: runId}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                         IconButton({
                             scope.launch {
-                                try { Api.rerun(owner, name, runId); snackbar.showSnackbar("已重新发起"); delay(1500); load() }
+                                try { Api.rerun(owner, name, runId); Cfg.touchRepo("$owner/$name"); snackbar.showSnackbar("已重新发起"); delay(1500); load() }
                                 catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
                             }
                         }) { Icon(Icons.Filled.PlayArrow, "重跑", Modifier.size(18.dp)) }
@@ -264,13 +264,13 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                                 Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                                     Column(Modifier.weight(1f)) {
                                         Text(a.name, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text("${humanSize(a.size_in_bytes)} · ${timeAgo(a.created_at)} · ${if (a.expired) "已过期" else "有效"}", fontSize = 10.sp, color = GH.muted)
+                                        Text("${humanSize(a.size_in_bytes)} · ${timeAgo(a.created_at)} · ${if (a.expired) "已过期" else "有效"}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                     IconButton({
                                         val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
                                         cm?.setPrimaryClip(android.content.ClipData.newPlainText("链接", a.archive_download_url ?: ""))
                                         scope.launch { snackbar.showSnackbar("已复制产物链接（需登录令牌）") }
-                                    }) { Icon(Icons.Filled.ContentCopy, null, Modifier.size(16.dp), tint = GH.muted) }
+                                    }) { Icon(Icons.Filled.ContentCopy, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                                     IconButton(onClick = {
                                         Downloader.startDownload(ctx, a.archive_download_url ?: return@IconButton, "${a.name}.zip", Cfg.token, useMirror = false,
                                             onDone = { Toast.makeText(ctx, "产物已保存到 下载/GitHubPro/${a.name}.zip", Toast.LENGTH_LONG).show() },
@@ -297,11 +297,11 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                                     Text(job.name, fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f),
                                         maxLines = 2, overflow = TextOverflow.Ellipsis)
                                     Text(if (job.status == "in_progress") "已运行 ${durationText(job.started_at, null)}" else durationText(job.started_at, job.completed_at),
-                                        fontSize = 10.sp, color = if (job.status == "in_progress") GH.yellow else GH.muted)
+                                        fontSize = 10.sp, color = if (job.status == "in_progress") GH.yellow else MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 Spacer(Modifier.height(3.dp))
                                 Text("${job.status}${job.conclusion?.let { " · $it" } ?: ""} · ${job.runner_name ?: ""}",
-                                    fontSize = 10.sp, color = GH.muted)
+                                    fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 if (expanded == job.id) {
                                     Spacer(Modifier.height(8.dp))
                                     job.steps?.forEach { s ->
@@ -311,10 +311,10 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                                             Spacer(Modifier.width(6.dp))
                                             Text("${s.number}. ${s.name}", fontSize = 11.sp, modifier = Modifier.weight(1f),
                                                 maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                            Text(durationText(s.started_at, s.completed_at), fontSize = 9.sp, color = GH.muted)
+                                            Text(durationText(s.started_at, s.completed_at), fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                     }
-                                    if (job.steps.isNullOrEmpty()) Text("这个任务没有步骤信息", fontSize = 10.sp, color = GH.muted)
+                                    if (job.steps.isNullOrEmpty()) Text("这个任务没有步骤信息", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     Spacer(Modifier.height(6.dp))
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         OutlinedButton(onClick = {

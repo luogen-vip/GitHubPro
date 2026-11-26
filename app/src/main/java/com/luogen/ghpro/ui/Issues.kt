@@ -96,16 +96,16 @@ fun IssueRow(issue: Issue, onClick: () -> Unit) {
         }
         Spacer(Modifier.height(4.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("#${issue.number}", fontSize = 10.sp, color = GH.muted)
+            Text("#${issue.number}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.width(8.dp))
-            Text(timeAgo(issue.created_at), fontSize = 10.sp, color = GH.muted)
+            Text(timeAgo(issue.created_at), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.width(8.dp))
             Avatar(issue.user?.avatar_url, 14)
             Spacer(Modifier.width(4.dp))
-            Text(issue.user?.login ?: "", fontSize = 10.sp, color = GH.muted)
+            Text(issue.user?.login ?: "", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.weight(1f))
-            Icon(Icons.Filled.Comment, null, Modifier.size(11.dp), tint = GH.muted)
-            Text(issue.comments.toString(), fontSize = 10.sp, color = GH.muted)
+            Icon(Icons.Filled.Comment, null, Modifier.size(11.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(issue.comments.toString(), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         issue.labels?.takeIf { it.isNotEmpty() }?.let { ls ->
             Spacer(Modifier.height(5.dp))
@@ -188,7 +188,7 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
                             StateChip(issue!!.state)
                             Spacer(Modifier.width(8.dp))
                             Text("#${issue!!.number} · ${issue!!.user?.login} · ${timeAgo(issue!!.created_at)}",
-                                fontSize = 11.sp, color = GH.muted)
+                                fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         issue!!.labels?.takeIf { it.isNotEmpty() }?.let {
                             Spacer(Modifier.height(6.dp))
@@ -210,7 +210,7 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text(c.user?.login ?: "", fontSize = 12.sp, fontWeight = FontWeight.Medium)
                                         Spacer(Modifier.width(6.dp))
-                                        Text(timeAgo(c.created_at), fontSize = 10.sp, color = GH.muted)
+                                        Text(timeAgo(c.created_at), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                     Spacer(Modifier.height(3.dp))
                                     Text(c.body ?: "", fontSize = 12.sp, lineHeight = 18.sp)
@@ -237,7 +237,7 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
                         }
                         Spacer(Modifier.height(20.dp))
                         Text("GitHub 不支持通过 API 删除议题，只能关闭或锁定（关闭后别人仍可查看历史）。",
-                            fontSize = 10.sp, color = GH.muted)
+                            fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(20.dp))
                     }
                 }

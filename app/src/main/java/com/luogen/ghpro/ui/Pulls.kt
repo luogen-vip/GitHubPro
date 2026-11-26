@@ -73,10 +73,10 @@ fun PullListTab(nav: NavController, owner: String, name: String) {
                         }
                         Spacer(Modifier.height(4.dp))
                         Text("#${pr.number} · ${pr.user?.login} · ${timeAgo(pr.created_at)}",
-                            fontSize = 10.sp, color = GH.muted)
+                            fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(3.dp))
                         Text("${pr.head?.ref} → ${pr.base?.ref}  ·  +${pr.additions} −${pr.deletions}  ·  ${pr.changed_files} 个文件",
-                            fontSize = 10.sp, color = GH.muted)
+                            fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Divider1()
                 }
@@ -134,10 +134,10 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             StateChip(pr!!.state, conclusion = if (pr!!.merged == true) "merged" else null)
                             Spacer(Modifier.width(8.dp))
-                            Text("${pr!!.user?.login} · ${timeAgo(pr!!.created_at)}", fontSize = 10.sp, color = GH.muted)
+                            Text("${pr!!.user?.login} · ${timeAgo(pr!!.created_at)}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Spacer(Modifier.height(6.dp))
-                        Text("${pr!!.head?.ref} → ${pr!!.base?.ref}", fontSize = 11.sp, color = GH.muted)
+                        Text("${pr!!.head?.ref} → ${pr!!.base?.ref}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             if (pr!!.state == "open") {
@@ -181,7 +181,7 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
                                     TinyTag(f.status ?: "modified", if (f.status == "added") GH.green else GH.orange)
                                     Spacer(Modifier.width(6.dp))
                                     Text(f.filename, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                                    Text("+${f.additions} −${f.deletions}", fontSize = 10.sp, color = GH.muted)
+                                    Text("+${f.additions} −${f.deletions}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 f.patch?.takeIf { it.isNotBlank() }?.let { p ->
                                     Spacer(Modifier.height(3.dp))
@@ -198,7 +198,7 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
                                 Avatar(c.user?.avatar_url, 24)
                                 Spacer(Modifier.width(8.dp))
                                 Column(Modifier.weight(1f)) {
-                                    Text("${c.user?.login} · ${timeAgo(c.created_at)}", fontSize = 10.sp, color = GH.muted)
+                                    Text("${c.user?.login} · ${timeAgo(c.created_at)}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     Text(c.body ?: "", fontSize = 12.sp, lineHeight = 18.sp)
                                 }
                             }

@@ -17,6 +17,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ExpandLess
@@ -36,6 +37,7 @@ import androidx.navigation.NavController
 import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Asset
 import com.luogen.ghpro.data.Bus
+import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Repo
 import com.luogen.ghpro.data.Release
 import com.luogen.ghpro.download.Downloader
@@ -107,7 +109,7 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("发行版（${list.size}）", fontSize = 12.sp, color = GH.muted, modifier = Modifier.weight(1f))
+                Text("发行版（${list.size}）", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
                 TextButton(onClick = { showCreate = true }) {
                     Icon(Icons.Filled.Add, null, Modifier.size(16.dp)); Text("新建发行版", fontSize = 12.sp)
                 }
@@ -130,13 +132,13 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                                     }
                                     Spacer(Modifier.height(3.dp))
                                     Text("${rel.tag_name} · ${timeAgo(rel.published_at ?: rel.created_at)} · ${rel.assets?.size ?: 0} 个文件 · ${rel.author?.login ?: ""}",
-                                        fontSize = 10.sp, color = GH.muted)
+                                        fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 IconButton({ copy(rel.html_url ?: "", "已复制发行版链接") }) {
-                                    Icon(Icons.Filled.ContentCopy, "复制链接", Modifier.size(16.dp), tint = GH.muted)
+                                    Icon(Icons.Filled.ContentCopy, "复制链接", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 Icon(if (expanded == rel.id) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, null,
-                                    tint = GH.muted, modifier = Modifier.size(18.dp))
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
                             }
                             if (expanded == rel.id) {
                                 if (!rel.body.isNullOrBlank()) {
@@ -144,7 +146,7 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                                     MdText(rel.body!!.take(20000), baseSize = 12)
                                 } else {
                                     Spacer(Modifier.height(6.dp))
-                                    Text("这个发行版没有填写说明", fontSize = 11.sp, color = GH.muted)
+                                    Text("这个发行版没有填写说明", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 Spacer(Modifier.height(8.dp))
                                 val dl by Downloader.state.collectAsState()
@@ -153,19 +155,27 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                                     Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                                         Column(Modifier.weight(1f)) {
                                             Text(a.name, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                            Text("${humanSize(a.size)} · 已下载 ${a.download_count} 次", fontSize = 10.sp, color = GH.muted)
-                                            if (st != null && st.status !in listOf("已完成", "失败")) {
-                                                LinearProgressIndicator(
-                                                    progress = { if (st.total > 0) st.percent / 100f else 0f },
-                                                    modifier = Modifier.fillMaxWidth().padding(top = 3.dp).height(4.dp))
+                                            Text("${humanSize(a.size)} · 已下载 ${a.download_count} 次", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Box(Modifier.fillMaxWidth().height(9.dp).padding(top = 3.dp)) {
+                                                if (st != null && st.status in listOf("连接中", "下载中", "重试中", "合并中")) {
+                                                    LinearProgressIndicator(
+                                                        progress = { if (st.total > 0) st.percent / 100f else 0f },
+                                                        modifier = Modifier.fillMaxWidth().height(4.dp))
+                                                }
+                                            }
+                                        }
+                                        if (st != null && st.status in listOf("连接中", "下载中", "重试中", "合并中")) {
+                                            IconButton({ Downloader.cancelDownload(a.name) }) {
+                                                Icon(Icons.Filled.Cancel, "取消下载", Modifier.size(16.dp), tint = GH.red)
                                             }
                                         }
                                         IconButton({ copy(a.browser_download_url ?: "", "已复制下载链接") }) {
-                                            Icon(Icons.Filled.ContentCopy, null, Modifier.size(16.dp), tint = GH.muted)
+                                            Icon(Icons.Filled.ContentCopy, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                         IconButton(onClick = {
                                             val url = a.browser_download_url ?: return@IconButton
-                                            Downloader.startDownload(ctx, url, a.name,
+                                            Downloader.startDownload(ctx, url, a.name, source = "发行版附件",
+                                                repo = "$owner/$name", release = rel.tag_name,
                                                 onDone = { _ ->
                                                     val where = Downloader.stateOf(a.name)?.publicPath ?: "下载/GitHubPro/${a.name}"
                                                     Toast.makeText(ctx, "已下载到 $where", Toast.LENGTH_LONG).show()
@@ -256,6 +266,7 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                         busy = true
                         try {
                             val created = Api.createRelease(owner, name, tag, rname, body, draft, pre, repo.default_branch)
+                            Cfg.touchRepo(repo.full_name)
                             // 立刻插入列表并展开，不用切页
                             list = listOf(created) + list.filter { it.id != created.id }
                             expanded = created.id

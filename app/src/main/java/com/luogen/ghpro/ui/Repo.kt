@@ -13,6 +13,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
@@ -74,7 +75,6 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
             val r = Api.repo(owner, name)
             repo = r
             UiCache.repoData[key] = r
-            Cfg.touchRepo(r.full_name)
             error = null
             Cfg.watchRepos.let { s -> if (!s.contains(r.full_name)) { s.add(r.full_name); Cfg.watchRepos = s } }
             runCatching { starred = Api.isStarred(owner, name); UiCache.repoStarred[key] = starred }
@@ -96,7 +96,9 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
         val branch = r.default_branch ?: "main"
         val fname = "${r.name}-$branch.zip"
         downloading = fname
+        Cfg.touchRepo(r.full_name)
         Downloader.startDownload(ctx, "https://github.com/${r.full_name}/archive/refs/heads/$branch.zip", fname,
+            source = "源码 ZIP", repo = r.full_name,
             onDone = {
                 val where = Downloader.stateOf(fname)?.publicPath ?: "下载/GitHubPro/$fname"
                 Toast.makeText(ctx, "已保存到 $where", Toast.LENGTH_LONG).show()
@@ -137,6 +139,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                         UiCache.repoStarred[key] = target
                         repo = base.copy(stargazers_count = (base.stargazers_count + if (target) 1 else -1).coerceAtLeast(0))
                         scope.launch {
+                            Cfg.touchRepo(key)
                             runCatching { Api.star(owner, name, target) }
                                 .onSuccess { runCatching { Api.repo(owner, name).also { UiCache.repoData[key] = it; repo = it } } }
                                 .onFailure {
@@ -149,6 +152,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                         val target = !watching
                         watching = target
                         UiCache.repoWatching[key] = target
+                        Cfg.touchRepo(key)
                         Toast.makeText(ctx, if (target) "已关注：仓库有动态会收到通知（再点一次取消）" else "已取消关注", Toast.LENGTH_SHORT).show()
                         scope.launch {
                             runCatching { Api.watch(owner, name, target) }
@@ -210,7 +214,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                 }
                 r.description?.takeIf { it.isNotBlank() }?.let {
                     Spacer(Modifier.height(2.dp))
-                    Text(it, fontSize = 11.sp, color = GH.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(it, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 Spacer(Modifier.height(3.dp))
                 Text(
@@ -222,11 +226,16 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                             append(" · ${top.key} ${String.format("%.1f", pct)}%")
                         }
                     },
-                    fontSize = 10.sp, color = GH.muted
+                    fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                if (tab == 0 && languages.isNotEmpty()) {
-                    Spacer(Modifier.height(6.dp))
-                    LanguageBar(languages, legend = false)
+                if (tab == 0) {
+                    val langsShown = languages.ifEmpty { r.language?.let { mapOf(it to 1L) } ?: emptyMap() }
+                    if (langsShown.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        LanguageBar(langsShown, legend = false)
+                    } else {
+                        Spacer(Modifier.height(13.dp))
+                    }
                 }
             }
 
@@ -273,11 +282,12 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                         modifier = Modifier.fillMaxWidth(),
                         isError = input.isNotBlank() && input != name)
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = { input = name }) { Text("一键填入「$name」", fontSize = 12.sp) }
                         TextButton(onClick = {
                             val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
                             val txt = cm?.primaryClip?.getItemAt(0)?.text?.toString()?.trim().orEmpty()
                             if (txt.isNotEmpty()) input = txt
-                        }) { Text("粘贴仓库名", fontSize = 12.sp) }
+                        }) { Text("粘贴", fontSize = 12.sp) }
                         if (input.isNotBlank() && input != name) {
                             Text("名称不一致，无法删除", fontSize = 11.sp, color = GH.red)
                         }
@@ -290,6 +300,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                         runCatching { Api.deleteRepo(owner, name) }
                             .onSuccess {
                                 confirmDelete = false
+                                runCatching { val wl = Cfg.watchRepos; wl.remove("$owner/$name"); Cfg.watchRepos = wl }
                                 UiCache.invalidateHome()
                                 UiCache.invalidateRepo("$owner/$name")
                                 Bus.poke()
@@ -367,7 +378,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
         if (languages.isNotEmpty()) {
-            Text("语言占比", fontSize = 11.sp, color = GH.muted)
+            Text("语言占比", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(4.dp))
             LanguageBar(languages)
             Spacer(Modifier.height(10.dp))
@@ -395,6 +406,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
                 val branch = r.default_branch ?: "main"
                 val fname = "${r.name}-$branch.zip"
                 Downloader.startDownload(ctx, "https://github.com/${r.full_name}/archive/refs/heads/$branch.zip", fname,
+                    source = "源码 ZIP", repo = r.full_name,
                     onDone = { Toast.makeText(ctx, "已保存到 " + (Downloader.stateOf(fname)?.publicPath ?: "下载/GitHubPro/$fname"), Toast.LENGTH_LONG).show() },
                     onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
             }) { Text("下载源码", fontSize = 12.sp) }
@@ -432,7 +444,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
                     OutlinedTextField(editText, { editText = it }, modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp, max = 360.dp),
                         label = { Text("支持 Markdown") }, textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, fontFamily = FontFamily.Monospace))
                     Spacer(Modifier.height(6.dp))
-                    Text("保存后会直接提交到 ${r.default_branch ?: "main"} 分支，刷新即可看到效果。", fontSize = 11.sp, color = GH.muted)
+                    Text("保存后会直接提交到 ${r.default_branch ?: "main"} 分支，刷新即可看到效果。", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             },
             confirmButton = {
@@ -495,7 +507,7 @@ fun CommitsTab(nav: NavController, owner: String, name: String, repo: Repo) {
     }
 
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().background(GH.surface2).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Box {
                 TextButton(onClick = { menu = true }) {
                     Text(branch, fontSize = 12.sp); Icon(Icons.Filled.ArrowDropDown, null, Modifier.size(16.dp))
@@ -505,7 +517,7 @@ fun CommitsTab(nav: NavController, owner: String, name: String, repo: Repo) {
                 }
             }
             Spacer(Modifier.weight(1f))
-            Text("${list.size} 条提交", fontSize = 10.sp, color = GH.muted)
+            Text("${list.size} 条提交", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         when {
             loading && list.isEmpty() -> LoadingBox()
@@ -522,7 +534,7 @@ fun CommitsTab(nav: NavController, owner: String, name: String, repo: Repo) {
                             Text(c.commit?.message?.lineSequence()?.firstOrNull() ?: "(无提交说明)",
                                 fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
                             Text("${c.author?.login ?: c.commit?.author?.name ?: ""} · ${timeAgo(c.commit?.author?.date)} · ${c.sha.take(7)}",
-                                fontSize = 10.sp, color = GH.muted)
+                                fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                     Divider1()
@@ -594,7 +606,7 @@ fun PeopleDialog(nav: NavController, owner: String, name: String, kind: Int, onC
                         Avatar(avatar, 28)
                         Spacer(Modifier.width(8.dp))
                         Text(login, fontSize = 12.sp, modifier = Modifier.weight(1f), maxLines = 1)
-                        Text(extra, fontSize = 10.sp, color = GH.muted)
+                        Text(extra, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -617,6 +629,9 @@ fun ActiveDownloadStrip() {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(d.fileName, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 Text(if (d.total > 0) "${d.percent}%" else d.status, fontSize = 11.sp, color = GH.blue)
+                IconButton({ Downloader.cancelDownload(d.fileName) }, modifier = Modifier.size(26.dp)) {
+                    Icon(Icons.Filled.Close, "取消下载", Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
             LinearProgressIndicator(
                 progress = { if (d.total > 0) d.percent / 100f else 0f },

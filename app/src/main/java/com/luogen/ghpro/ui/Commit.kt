@@ -64,7 +64,7 @@ fun CommitDetailScreen(nav: NavController, owner: String, name: String, sha: Str
                 title = {
                     Column {
                         Text("提交 ${sha.take(7)}", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                        Text("$owner/$name", fontSize = 11.sp, color = GH.muted)
+                        Text("$owner/$name", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 },
                 navigationIcon = { IconButton({ nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
@@ -92,7 +92,7 @@ fun CommitDetailScreen(nav: NavController, owner: String, name: String, sha: Str
                                 Spacer(Modifier.width(8.dp))
                                 Column {
                                     Text(cm.commit?.author?.name ?: cm.author?.login ?: "", fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                                    Text("${cm.commit?.author?.date ?: ""}", fontSize = 10.sp, color = GH.muted)
+                                    Text("${cm.commit?.author?.date ?: ""}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 Spacer(Modifier.weight(1f))
                                 Text("+${cm.stats?.additions ?: 0}", fontSize = 11.sp, color = GH.green)
@@ -114,22 +114,22 @@ fun CommitDetailScreen(nav: NavController, owner: String, name: String, sha: Str
                                 Spacer(Modifier.width(5.dp))
                                 Text("-${f.deletions}", fontSize = 10.sp, color = GH.red)
                                 IconButton({ copy(f.raw_url ?: "", "已复制文件链接") }, modifier = Modifier.size(28.dp)) {
-                                    Icon(Icons.Filled.ContentCopy, null, Modifier.size(14.dp), tint = GH.muted)
+                                    Icon(Icons.Filled.ContentCopy, null, Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
                             if (!f.patch.isNullOrBlank()) {
                                 Box(
                                     Modifier.fillMaxWidth().padding(top = 5.dp)
                                         .clip(RoundedCornerShape(8.dp))
-                                        .background(GH.surface2)
+                                        .background(MaterialTheme.colorScheme.surfaceVariant)
                                         .horizontalScroll(rememberScrollState())
                                         .padding(8.dp)
                                 ) {
                                     Text(f.patch!!, fontFamily = FontFamily.Monospace, fontSize = 10.sp,
-                                        lineHeight = 15.sp, color = GH.text)
+                                        lineHeight = 15.sp, color = MaterialTheme.colorScheme.onSurface)
                                 }
                             } else {
-                                Text("（二进制文件或无文本差异）", fontSize = 10.sp, color = GH.muted)
+                                Text("（二进制文件或无文本差异）", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                         Divider1()

@@ -18,6 +18,8 @@ fun NavRoot(onThemeChange: () -> Unit) {
         composable("home") { HomeScreen(nav) }
         composable("settings") { SettingsScreen(nav, onThemeChange) }
         composable("search") { SearchScreen(nav) }
+        composable("featured") { FeaturedScreen(nav) }
+        composable("downloads") { DownloadsScreen(nav) }
         composable("notifications") { NotificationsScreen(nav) }
         composable("create") { CreateRepoScreen(nav) }
         composable("repo/{owner}/{repo}") { e ->

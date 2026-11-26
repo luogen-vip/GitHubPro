@@ -43,17 +43,17 @@ fun CreateRepoScreen(nav: NavController) {
     var busy by remember { mutableStateOf(false) }
     var licMenu by remember { mutableStateOf(false) }
     var igMenu by remember { mutableStateOf(false) }
-    var licenses by remember { mutableStateOf(listOf<Pair<String, String>>()) }
-    var ignores by remember { mutableStateOf(listOf<String>()) }
+    var licenses by remember { mutableStateOf(FALLBACK_LICENSES) }
+    var ignores by remember { mutableStateOf(FALLBACK_IGNORES) }
     val snackbar = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) {
         runCatching { Api.licenses() }.onSuccess { l ->
-            if (l.isNotEmpty()) licenses = l.map { it.key to it.name }
+            if (l.isNotEmpty()) licenses = (l.map { it.key to it.name } + FALLBACK_LICENSES).distinctBy { it.first }
         }
-        if (licenses.isEmpty()) licenses = FALLBACK_LICENSES
-        runCatching { Api.gitignoreTemplates() }.onSuccess { g -> if (g.isNotEmpty()) ignores = g }
-        if (ignores.isEmpty()) ignores = FALLBACK_IGNORES
+        runCatching { Api.gitignoreTemplates() }.onSuccess { g ->
+            if (g.isNotEmpty()) ignores = (g + FALLBACK_IGNORES).distinct()
+        }
     }
 
     Scaffold(
@@ -84,6 +84,7 @@ fun CreateRepoScreen(nav: NavController) {
                                     }
                                 }
                                 Cfg.touchRepo(repo.full_name)
+                                val wl = Cfg.watchRepos; wl.add(repo.full_name); Cfg.watchRepos = wl
                                 UiCache.invalidateHome()
                                 Bus.poke()
                                 android.widget.Toast.makeText(ctx, "仓库 ${repo.full_name} 创建成功，已在首页置顶", android.widget.Toast.LENGTH_LONG).show()
@@ -128,10 +129,10 @@ fun CreateRepoScreen(nav: NavController) {
                 ) {
                     Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text("许可证 License", fontSize = 12.sp, color = GH.muted)
+                            Text("许可证 License", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text(license.ifBlank { "不添加" }, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                         }
-                        Icon(Icons.Filled.ArrowDropDown, null, tint = GH.muted)
+                        Icon(Icons.Filled.ArrowDropDown, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
                 DropdownMenu(expanded = licMenu, onDismissRequest = { licMenu = false }) {
@@ -151,10 +152,10 @@ fun CreateRepoScreen(nav: NavController) {
                 ) {
                     Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text(".gitignore 模板", fontSize = 12.sp, color = GH.muted)
+                            Text(".gitignore 模板", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text(gitignore.ifBlank { "不添加" }, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                         }
-                        Icon(Icons.Filled.ArrowDropDown, null, tint = GH.muted)
+                        Icon(Icons.Filled.ArrowDropDown, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
                 DropdownMenu(expanded = igMenu, onDismissRequest = { igMenu = false }) {
@@ -171,7 +172,7 @@ fun CreateRepoScreen(nav: NavController) {
                 OutlinedTextField(customLicense, { customLicense = it }, Modifier.fillMaxWidth(),
                     label = { Text("粘贴 MIT 等许可证全文，创建后会写成 LICENSE 文件") }, minLines = 4)
                 Spacer(Modifier.height(6.dp))
-                Text("提示：留空就用上面的模板；填写后会以 LICENSE 文件真实提交。", fontSize = 11.sp, color = GH.muted)
+                Text("提示：留空就用上面的模板；填写后会以 LICENSE 文件真实提交。", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
             Spacer(Modifier.height(12.dp))
@@ -181,7 +182,7 @@ fun CreateRepoScreen(nav: NavController) {
             SwitchRow("启用 Projects", hasProjects) { hasProjects = it }
             SwitchRow("启用 Discussions 讨论区", hasDiscussions) { hasDiscussions = it }
             Spacer(Modifier.height(14.dp))
-            Text("创建成功后会给提示，并回到首页，新仓库会显示在最上面。", fontSize = 11.sp, color = GH.muted)
+            Text("创建成功后会给提示，并回到首页，新仓库会显示在最上面。", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(40.dp))
         }
     }

@@ -72,7 +72,7 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
 
     Column(Modifier.fillMaxSize()) {
         Row(
-            Modifier.fillMaxWidth().background(GH.surface2)
+            Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant)
                 .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -119,7 +119,7 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
                             )
                             Spacer(Modifier.width(10.dp))
                             Text(item.name, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                            if (item.type != "dir") Text(humanSize(item.size), fontSize = 10.sp, color = GH.muted)
+                            if (item.type != "dir") Text(humanSize(item.size), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Divider1()
                     }
@@ -286,7 +286,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
             if (editing) {
                 Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { content = original; editing = false }) { Text("取消", fontSize = 12.sp) }
-                    Text("已修改 ${(content.length - original.length)} 字符", fontSize = 10.sp, color = GH.muted,
+                    Text("已修改 ${(content.length - original.length)} 字符", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.align(Alignment.CenterVertically))
                 }
             }

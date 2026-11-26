@@ -55,7 +55,7 @@ fun DiscussionsTab(nav: NavController, owner: String, name: String, repo: Repo) 
         loading -> LoadingBox()
         error != null -> Column {
             ErrorBox(error) { scope.launch { load() } }
-            msg?.let { Text(it, fontSize = 11.sp, color = GH.muted, modifier = Modifier.padding(20.dp)) }
+            msg?.let { Text(it, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(20.dp)) }
         }
         list.isEmpty() -> EmptyBox("还没有讨论，去网页端开启 Discussions 后即可在这里看到")
         else -> LazyColumn(Modifier.fillMaxSize()) {
@@ -68,10 +68,10 @@ fun DiscussionsTab(nav: NavController, owner: String, name: String, repo: Repo) 
                     }
                     Spacer(Modifier.height(4.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("#${d.number} · ${d.author?.login ?: ""} · ${timeAgo(d.createdAt)}", fontSize = 10.sp, color = GH.muted)
+                        Text("#${d.number} · ${d.author?.login ?: ""} · ${timeAgo(d.createdAt)}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.weight(1f))
-                        Icon(Icons.Filled.Comment, null, Modifier.size(11.dp), tint = GH.muted)
-                        Text("${d.comments?.totalCount ?: 0}", fontSize = 10.sp, color = GH.muted)
+                        Icon(Icons.Filled.Comment, null, Modifier.size(11.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${d.comments?.totalCount ?: 0}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     if (d.answerChosenAt != null) {
                         Spacer(Modifier.height(3.dp))
@@ -123,7 +123,7 @@ fun DiscussionDetailScreen(nav: NavController, owner: String, name: String, numb
                         d!!.category?.let { Text("${it.emoji ?: ""} ${it.name}", fontSize = 11.sp, color = GH.blue) }
                         Text(d!!.title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(5.dp))
-                        Text("${d!!.author?.login ?: ""} · ${timeAgo(d!!.createdAt)}", fontSize = 10.sp, color = GH.muted)
+                        Text("${d!!.author?.login ?: ""} · ${timeAgo(d!!.createdAt)}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(10.dp))
                         Text(d!!.body ?: (d!!.body ?: ""), fontSize = 13.sp, lineHeight = 19.sp)
                         Spacer(Modifier.height(14.dp))
@@ -136,7 +136,7 @@ fun DiscussionDetailScreen(nav: NavController, owner: String, name: String, numb
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text(c.author?.login ?: "", fontSize = 11.sp, fontWeight = FontWeight.Medium)
                                         Spacer(Modifier.width(5.dp))
-                                        Text(timeAgo(c.createdAt), fontSize = 9.sp, color = GH.muted)
+                                        Text(timeAgo(c.createdAt), fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         if (c.isAnswer) { Spacer(Modifier.width(5.dp)); TinyTag("答案", GH.green) }
                                     }
                                     Text(c.body ?: "", fontSize = 12.sp, lineHeight = 18.sp)

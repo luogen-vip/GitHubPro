@@ -199,8 +199,14 @@ object Api {
     // ---------------- 用户 ----------------
     suspend fun me(): User = callObj("/user", User::class.java)
     suspend fun user(login: String): User = callObj("/users/$login", User::class.java)
-    suspend fun myRepos(page: Int, perPage: Int = 60, sort: String = "updated", type: String? = null): Page<Repo> =
-        callList("/user/repos", mapOf("page" to "$page", "per_page" to "$perPage", "sort" to sort, "affiliation" to "owner,collaborator,organization_member", "type" to type))
+    suspend fun myRepos(page: Int, perPage: Int = 60, sort: String = "updated", type: String? = null): Page<Repo> {
+        // /user/repos 只认 created/updated/pushed/full_name，stars 由客户端排序
+        val apiSort = if (sort == "stars") "updated" else sort
+        val dir = if (apiSort == "full_name") "asc" else "desc"
+        return callList("/user/repos", mapOf("page" to "$page", "per_page" to "$perPage",
+            "sort" to apiSort, "direction" to dir,
+            "affiliation" to "owner,collaborator,organization_member", "type" to type))
+    }
     suspend fun userRepos(login: String, page: Int, perPage: Int = 60, sort: String = "updated"): Page<Repo> =
         callList("/users/$login/repos", mapOf("page" to "$page", "per_page" to "$perPage", "sort" to sort))
     suspend fun starred(page: Int): Page<Repo> {

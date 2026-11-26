@@ -105,10 +105,11 @@ fun MdText(md: String, modifier: Modifier = Modifier, baseSize: Int = 13) {
     // 内联文本 + 链接点击
     @Composable
     fun InlineText(text: String, size: Int, bold: Boolean = false) {
-        val annotated = remember(text, bold) { buildInline(text, bold) }
+        val codeBg = MaterialTheme.colorScheme.surfaceVariant
+        val annotated = remember(text, bold, codeBg) { buildInline(text, bold, codeBg) }
         ClickableText(
             text = annotated,
-            style = TextStyle(color = GH.text, fontSize = size.sp, lineHeight = (size + 5).sp,
+            style = TextStyle(color = MaterialTheme.colorScheme.onSurface, fontSize = size.sp, lineHeight = (size + 5).sp,
                 fontWeight = if (bold) FontWeight.SemiBold else FontWeight.Normal),
             onClick = { offset ->
                 annotated.getStringAnnotations("URL", offset, offset).firstOrNull()?.let { a ->
@@ -131,12 +132,12 @@ fun MdText(md: String, modifier: Modifier = Modifier, baseSize: Int = 13) {
                             .padding(10.dp)
                     ) {
                         Text(b.text, fontFamily = FontFamily.Monospace, fontSize = (baseSize - 1).sp,
-                            color = GH.text, lineHeight = (baseSize + 3).sp)
+                            color = MaterialTheme.colorScheme.onSurface, lineHeight = (baseSize + 3).sp)
                     }
                 }
                 is MdBlock.Rule -> {
                     Spacer(Modifier.height(8.dp))
-                    Box(Modifier.fillMaxWidth().height(1.dp).background(GH.border))
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outline))
                     Spacer(Modifier.height(8.dp))
                 }
                 is MdBlock.Heading -> {
@@ -145,7 +146,7 @@ fun MdText(md: String, modifier: Modifier = Modifier, baseSize: Int = 13) {
                     InlineText(b.text, size = size, bold = true)
                 }
                 is MdBlock.Bullet -> Row(Modifier.padding(vertical = 1.dp)) {
-                    Text(b.marker, fontSize = baseSize.sp, color = GH.muted, modifier = Modifier.width(18.dp))
+                    Text(b.marker, fontSize = baseSize.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(18.dp))
                     InlineText(b.text, size = baseSize)
                 }
                 is MdBlock.Para -> {
@@ -157,7 +158,7 @@ fun MdText(md: String, modifier: Modifier = Modifier, baseSize: Int = 13) {
     }
 }
 
-private fun buildInline(src: String, bold: Boolean): AnnotatedString = buildAnnotatedString {
+private fun buildInline(src: String, bold: Boolean, codeBg: Color): AnnotatedString = buildAnnotatedString {
     var last = 0
     fun plain(s: String) {
         if (s.isNotEmpty()) withStyle(SpanStyle(fontWeight = if (bold) FontWeight.SemiBold else null)) { append(s) }
@@ -189,7 +190,7 @@ private fun buildInline(src: String, bold: Boolean): AnnotatedString = buildAnno
                 pop()
             }
             b != null -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(b) }
-            code != null -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = GH.surface2, color = GH.blue)) { append(" $code ") }
+            code != null -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = codeBg, color = GH.blue)) { append(" $code ") }
             strike != null -> withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) { append(strike) }
             italic1 != null -> withStyle(SpanStyle(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)) { append(italic1) }
             italic2 != null -> withStyle(SpanStyle(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)) { append(italic2) }

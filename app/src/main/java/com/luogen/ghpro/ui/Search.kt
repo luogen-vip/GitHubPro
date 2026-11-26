@@ -68,7 +68,7 @@ private fun RoundedSearchField(
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(Icons.Filled.Search, null, Modifier.size(17.dp), tint = if (focused) GH.blue else GH.muted)
+        Icon(Icons.Filled.Search, null, Modifier.size(17.dp), tint = if (focused) GH.blue else MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.width(8.dp))
         Box(Modifier.weight(1f)) {
             if (value.isEmpty()) Text(hint, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -84,7 +84,7 @@ private fun RoundedSearchField(
         if (value.isNotEmpty()) {
             Spacer(Modifier.width(8.dp))
             Box(Modifier.size(20.dp).clip(CircleShape).clickable { onClear() }, contentAlignment = Alignment.Center) {
-                Icon(Icons.Filled.Close, "清空", Modifier.size(15.dp), tint = GH.muted)
+                Icon(Icons.Filled.Close, "清空", Modifier.size(15.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
@@ -131,6 +131,13 @@ fun SearchScreen(nav: NavController) {
         total = 0; page = 1; hasNext = false
     }
 
+    fun orderRepos(list: List<Repo>): List<Repo> = when (sort) {
+        "stars" -> list.sortedByDescending { it.stargazers_count }
+        "forks" -> list.sortedByDescending { it.forks_count }
+        "updated" -> list.sortedByDescending { it.pushed_at ?: it.updated_at ?: "" }
+        else -> list
+    }
+
     suspend fun runFresh(text: String, resetScroll: Boolean) {
         if (text.isBlank()) { clearAll(); cacheWrite(); return }
         loading = true
@@ -142,14 +149,24 @@ fun SearchScreen(nav: NavController) {
                     if (!lang.isNullOrBlank()) append(" language:\"").append(lang).append("\"")
                 }
                 val r = Api.searchRepos(fullQ, 1, sort, if (sort != null) "desc" else null, perPage = 100)
-                val own = runCatching { Api.userRepos(text.trim(), 1, 100).items }.getOrDefault(emptyList())
+                val looksLikeUser = text.trim().length > 2 && !text.contains(" ") && text.trim().matches(Regex("[A-Za-z0-9._-]+"))
+                val own = if (looksLikeUser) runCatching {
+                    Api.userRepos(text.trim(), 1, 100, if (sort == "updated") "pushed" else "updated").items
+                }.getOrDefault(emptyList()) else emptyList()
                 val names = r.items.map { it.full_name }.toSet()
-                repos = (own + r.items.filter { it.full_name !in own.map { o -> o.full_name } })
+                repos = orderRepos(own + r.items.filter { it.full_name !in own.map { o -> o.full_name } })
                 total = r.total_count + own.count { it.full_name !in names }
                 hasNext = r.items.size >= 100
             } else if (type == 1) {
                 val r = Api.searchUsers(text, 1, 100)
                 users = r.items; total = r.total_count; hasNext = r.items.size >= 100
+                // 搜索接口返回的用户对象没有仓库数量，补全前几个真实数量
+                users = users.mapIndexed { i, u ->
+                    if (i < 8 && u.public_repos == 0) {
+                        runCatching { Api.user(u.login) }.getOrNull()
+                            ?.let { full -> u.copy(public_repos = full.public_repos, followers = full.followers) } ?: u
+                    } else u
+                }
             } else if (type == 2) {
                 val r = Api.searchCode(text, 1, 100)
                 codes = r.items; total = r.total_count; hasNext = r.items.size >= 100
@@ -184,7 +201,7 @@ fun SearchScreen(nav: NavController) {
                     if (!lang.isNullOrBlank()) append(" language:\"").append(lang).append("\"")
                 }
                 val r = Api.searchRepos(fullQ, next, sort, if (sort != null) "desc" else null, perPage = 100)
-                repos = repos + r.items; hasNext = r.items.size >= 100
+                repos = orderRepos(repos + r.items); hasNext = r.items.size >= 100
             } else if (type == 1) {
                 val r = Api.searchUsers(text, next, 100)
                 users = users + r.items; hasNext = r.items.size >= 100
@@ -292,7 +309,7 @@ fun SearchScreen(nav: NavController) {
                         q.isBlank() -> "输入关键词即可实时搜索"
                         else -> "没有结果"
                     },
-                    fontSize = 11.sp, color = GH.muted
+                    fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             LazyColumn(Modifier.fillMaxSize(), state = listState) {
@@ -322,9 +339,9 @@ fun SearchScreen(nav: NavController) {
                                     Spacer(Modifier.width(10.dp))
                                     Column(Modifier.weight(1f)) {
                                         Text(u.login, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                                        u.bio?.let { Text(it, fontSize = 11.sp, color = GH.muted, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                                        u.bio?.let { Text(it, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                                     }
-                                    Text("${u.public_repos} 仓库", fontSize = 11.sp, color = GH.muted)
+                                    Text(if (u.public_repos > 0) "${u.public_repos} 仓库" else "查看主页", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
                         }
@@ -340,7 +357,7 @@ fun SearchScreen(nav: NavController) {
                             ) {
                                 Column(Modifier.padding(12.dp)) {
                                     Text(c.name, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                                    Text(c.path, fontSize = 11.sp, color = GH.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(c.path, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     c.repository?.let { Text(it.full_name, fontSize = 11.sp, color = GH.blue) }
                                 }
                             }
@@ -362,7 +379,7 @@ fun SearchScreen(nav: NavController) {
                     if (loadingMore) item { LoadingBox("加载更多…") }
                     if (!loading && !hasNext && currentCount(repos, users, codes, issues) > 0) item {
                         Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                            Text("已全部加载（GitHub 搜索最多返回前 1000 条）", fontSize = 11.sp, color = GH.muted)
+                            Text("已全部加载（GitHub 搜索最多返回前 1000 条）", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                     item { Spacer(Modifier.height(40.dp)) }
