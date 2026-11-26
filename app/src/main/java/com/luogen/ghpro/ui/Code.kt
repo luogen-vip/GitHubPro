@@ -1,5 +1,6 @@
 package com.luogen.ghpro.ui
 
+import android.graphics.Typeface
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -31,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -40,6 +42,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Bus
 import com.luogen.ghpro.data.Cfg
@@ -348,23 +352,71 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
     var confirmDelete by remember { mutableStateOf(false) }
     var isFile by remember { mutableStateOf(true) }
     var lfsRef by remember { mutableStateOf<LfsRef?>(null) }
+    var knownSize by remember { mutableStateOf(0L) }
+    var previewKind by remember { mutableStateOf("text") }
+    var imageUrl by remember { mutableStateOf<String?>(null) }
+    var fontFamily by remember { mutableStateOf<FontFamily?>(null) }
     val snackbar = remember { SnackbarHostState() }
 
     fun load(silent: Boolean = false) {
         if (isNew) { loading = false; return }
         scope.launch {
-            if (!silent) loading = true
+            if (!silent) { loading = true; previewKind = "text"; imageUrl = null; fontFamily = null }
             try {
                 val l = Api.contents(owner, name, path, branch)
                 val f = l.file
                 if (f == null || l.items.size > 1) { isFile = false; error = "这是一个目录，请返回列表" }
                 else {
                     sha = f.sha
+                    fileName = f.name
+                    knownSize = f.size
+                    val ext = f.name.substringAfterLast('.', "").lowercase()
+                    // 图片直接走 raw 地址给 Coil，不再把二进制当文本解码；
+                    // 字体先下载到缓存再 Typeface 预览。两者都只请求 contents 一次。
+                    if (ext in setOf("png", "jpg", "jpeg", "webp", "gif", "bmp") && f.size in 1..20_000_000) {
+                        val raw = f.download_url ?: "https://raw.githubusercontent.com/$owner/$name/${Uri.encode(branch)}/${Api.encPath(path)}"
+                        imageUrl = raw
+                        previewKind = "image"
+                        isFile = true
+                        fontFamily = null
+                        error = null
+                        lfsRef = null
+                        loading = false
+                        return@launch
+                    }
+                    if (ext in setOf("ttf", "otf") && f.size in 1..20_000_000) {
+                        val bytes = Api.fileRaw(owner, name, path, branch)
+                        val ptr = parseLfsPointer(String(bytes, Charsets.UTF_8))
+                        if (ptr != null) {
+                            lfsRef = ptr
+                            error = "这是 Git LFS 大文件（${ptr.size / 1024 / 1024} MB），不能当字体预览，请点“直接下载文件”"
+                            loading = false
+                            return@launch
+                        }
+                        val cache = java.io.File(ctx.cacheDir, "font-preview-${f.sha.take(12)}.${ext}")
+                        if (!cache.exists() || cache.length() != f.size.toLong()) cache.writeBytes(bytes)
+                        fontFamily = FontFamily(Typeface.createFromFile(cache))
+                        imageUrl = null
+                        previewKind = "font"
+                        isFile = true
+                        error = null
+                        lfsRef = null
+                        loading = false
+                        return@launch
+                    }
+                    previewKind = "text"
+                    imageUrl = null
+                    fontFamily = null
+                    isFile = true
                     val text = if (f.size <= 20_000_000) {
-                        val bytes = if (f.size <= 1_000_000) {
+                        // contents 接口在 1MB 以内已经带回 base64 内容，直接用，
+                        // 不再第二次请求同一个文件；大文件才走 raw。
+                        val bytes = if (f.content != null && f.encoding == "base64" && f.size <= 1_000_000) {
+                            android.util.Base64.decode(f.content.replace("\n", ""), android.util.Base64.DEFAULT)
+                        } else if (f.size <= 1_000_000) {
                             Api.fileContent(owner, name, path, branch).toByteArray(Charsets.UTF_8)
                         } else Api.fileRaw(owner, name, path, branch)
-                        if (looksBinary(bytes)) throw java.io.IOException("这是二进制文件（${f.size / 1024} KB），不能当源码显示，请点“直接下载文件”")
+                        if (looksBinary(bytes)) throw java.io.IOException("这是二进制文件（${f.size / 1024} KB），App 不能当文本显示；可以点右上角下载，下载完成后用系统打开")
                         String(bytes, Charsets.UTF_8)
                     } else {
                         throw java.io.IOException("文件较大（${f.size / 1024 / 1024} MB），不自动加载，请点“直接下载文件”")
@@ -390,6 +442,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
     }
 
     LaunchedEffect(path) {
+        previewKind = "text"; imageUrl = null; fontFamily = null
         if (!isNew) {
             val cached = UiCache.fileContent[fileKey]
             if (cached != null) { content = cached; original = cached; loading = false; runCatching { load(true) } } else load()
@@ -398,7 +451,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
     LaunchedEffect(path) {
         if (!isNew) while (isActive) {
             delay(3_000L)
-            if (!editing && !loading) runCatching { load(true) }
+            if (previewKind == "text" && !editing && !loading) runCatching { load(true) }
         }
     }
 
@@ -410,6 +463,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                 try {
                     val href = Api.lfsDownloadHref(owner, name, ref.oid, ref.size)
                     Downloader.startDownload(ctx, href, fileName, source = "仓库文件", repo = "$owner/$name",
+                        expectedSize = ref.size,
                         onDone = { },
                         onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
                 } catch (e: Exception) { Toast.makeText(ctx, "下载失败：${e.message}", Toast.LENGTH_LONG).show() }
@@ -418,7 +472,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
         }
         Toast.makeText(ctx, "开始下载 $fileName…", Toast.LENGTH_SHORT).show()
         Downloader.startDownload(ctx, "https://raw.githubusercontent.com/$owner/$name/$branch/${Api.encPath(path)}", fileName,
-            source = "仓库文件", repo = "$owner/$name",
+            source = "仓库文件", repo = "$owner/$name", expectedSize = knownSize,
             onDone = { },
             onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
     }
@@ -454,7 +508,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                                 }
                             }) { Icon(Icons.Filled.Save, "保存", tint = GH.green) }
                         } else {
-                            IconButton({ editing = true }) { Icon(Icons.Filled.Edit, "编辑") }
+                            if (previewKind == "text") IconButton({ editing = true }) { Icon(Icons.Filled.Edit, "编辑") }
                         }
                         IconButton({ downloadFile(path.substringAfterLast('/')) }) { Icon(Icons.Filled.Download, "下载") }
                         if (!isNew) {
@@ -471,12 +525,32 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                 loading -> LoadingBox()
                 error != null -> Column {
                     ErrorBox(error)
-                    Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.Center) {
+                    Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { load() }) { Text("重新加载") }
                         OutlinedButton(onClick = { downloadFile(path.substringAfterLast('/')) }) { Text("直接下载文件") }
                     }
                 }
                 else -> {
-                    if (editing) {
+                    if (previewKind == "image" && imageUrl != null) {
+                        Box(Modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
+                            AsyncImage(
+                                model = ImageRequest.Builder(ctx).data(imageUrl)
+                                    .apply { Cfg.token?.let { addHeader("Authorization", "Bearer $it") } }
+                                    .crossfade(true).build(),
+                                contentDescription = fileName,
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                    } else if (previewKind == "font" && fontFamily != null) {
+                        Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
+                            Text("字体预览", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(Modifier.height(8.dp))
+                            Text("Aa 字体预览 0123456789", fontFamily = fontFamily, fontSize = 28.sp, lineHeight = 38.sp)
+                            Spacer(Modifier.height(12.dp))
+                            Text(fileName, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                    } else if (editing) {
                         OutlinedTextField(
                             value = fileName, onValueChange = { fileName = it },
                             label = { Text("文件路径（如 src/Main.kt）") },

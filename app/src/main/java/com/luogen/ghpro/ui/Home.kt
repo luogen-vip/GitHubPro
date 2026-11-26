@@ -31,6 +31,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.platform.ViewConfiguration
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -395,6 +397,15 @@ fun HomeScreen(nav: NavController) {
 fun RepoRow(repo: Repo, recent: Boolean = false, onClick: () -> Unit) {
     val ctx = LocalContext.current
     var showDesc by remember(repo.full_name) { mutableStateOf(false) }
+    // 单击描述必须和卡片其他区域一样快，但又要保留双击看全文。
+    // Compose 默认等 300ms 判断双击；这里只等 140ms，单手快速双击仍能识别，
+    // 单击进仓库的延迟缩到几乎感觉不到。
+    val baseVc = LocalViewConfiguration.current
+    val fastVc = remember(baseVc) {
+        object : ViewConfiguration by baseVc {
+            override val doubleTapTimeoutMillis: Long = 140L
+        }
+    }
     val issueCount = IssueCounts.get(repo.full_name) ?: repo.open_issues_count
     // 卡片一出现在可视区域就精确取一次 issue-only 数量；取到后全局缓存，滚动来回都不再请求
     LaunchedEffect(repo.full_name) { IssueCounts.ensure(repo.full_name) }
@@ -431,15 +442,17 @@ fun RepoRow(repo: Repo, recent: Boolean = false, onClick: () -> Unit) {
             repo.description?.takeIf { it.isNotBlank() }?.let { desc ->
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.Bottom) {
-                    Text(desc, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 16.sp,
-                        modifier = Modifier.weight(1f).pointerInput(repo.full_name) {
-                            detectTapGestures(
-                                // 点一下描述 = 正常进仓库；点两下才弹完整描述，避免误触打断“进仓库”
-                                onTap = { onClick() },
-                                onDoubleTap = { showDesc = true }
-                            )
-                        })
+                    CompositionLocalProvider(LocalViewConfiguration provides fastVc) {
+                        Text(desc, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 16.sp,
+                            modifier = Modifier.weight(1f).pointerInput(repo.full_name) {
+                                detectTapGestures(
+                                    // 点一下描述 = 正常进仓库；点两下才弹完整描述，避免误触打断“进仓库”
+                                    onTap = { onClick() },
+                                    onDoubleTap = { showDesc = true }
+                                )
+                            })
+                    }
                     if (desc.length > 46) {
                         Spacer(Modifier.width(6.dp))
                         Text("全文", fontSize = 10.sp, color = GH.blue,

@@ -44,7 +44,8 @@ data class DownloadState(
     val useMirror: Boolean = true,
     val completedAt: Long = 0L
 ) {
-    val percent: Int get() = if (total <= 0) 0 else ((done * 100) / total).toInt()
+    val percent: Int get() = if (total <= 0) 0 else ((done * 100) / total).toInt().coerceIn(0, 100)
+    val remaining: Long get() = if (total > 0) (total - done).coerceAtLeast(0L) else 0L
     val active: Boolean
         get() = status.startsWith("下载中") || status.startsWith("多线程下载") ||
             status.startsWith("已下载") || status.startsWith("切换下载线路") || status.startsWith("多线程失败") ||
@@ -106,6 +107,7 @@ object Downloader {
         source: String = "文件",
         repo: String? = null,
         release: String? = null,
+        expectedSize: Long = -1L,
         onDone: ((java.io.File) -> Unit)? = null,
         onError: ((String) -> Unit)? = null
     ): Job {
@@ -137,7 +139,7 @@ object Downloader {
             }
             runCatching { cm?.registerDefaultNetworkCallback(cb) }
             try {
-                val f = download(ctx, rawUrl, fileName, token, useMirror, epoch = epoch)
+                val f = download(ctx, rawUrl, fileName, token, useMirror, epoch = epoch, expectedTotal = expectedSize)
                 val st = stateOf(fileName)
                 record(ctx, DlRecord(
                     id = java.util.UUID.randomUUID().toString(),
@@ -172,7 +174,8 @@ object Downloader {
     }
 
     fun retryDownload(ctx: Context, rec: DlRecord, onDone: ((File) -> Unit)? = null): Job =
-        startDownload(ctx, rec.url, rec.name, Cfg.token, true, rec.source, rec.repo, rec.release, onDone = onDone)
+        startDownload(ctx, rec.url, rec.name, Cfg.token, true, rec.source, rec.repo, rec.release,
+            expectedSize = rec.size, onDone = onDone)
 
     // ---------------- 下载历史（持久化） ----------------
     private fun prefs(ctx: Context) = ctx.applicationContext.getSharedPreferences(HPREFS, Context.MODE_PRIVATE)
@@ -287,7 +290,8 @@ object Downloader {
         useMirror: Boolean = true,
         threads: Int = Cfg.downThreads,
         notify: Boolean = true,
-        epoch: Long = 0L
+        epoch: Long = 0L,
+        expectedTotal: Long = -1L
     ): File = withContext(Dispatchers.IO) {
         val safe = sanitize(fileName)
         val cur = state.value[safe]
@@ -306,16 +310,17 @@ object Downloader {
                 // 只有第一次显示“连接中”；切镜像时显示“切换线路”，不再重复两遍“连接中”
                 val phase = if (idx == 0) "连接中" else "切换下载线路 ${idx + 1}/${cands.size}"
                 updateE(DownloadState(safe, status = phase, mirrorUsed = c, url = rawUrl, useMirror = useMirror,
-                    done = outFile.takeIf { it.exists() }?.length() ?: 0), candEpoch)
+                    done = outFile.takeIf { it.exists() }?.length() ?: 0,
+                    total = expectedTotal.takeIf { it > 0 } ?: 0), candEpoch)
                 if (notify) Notifier.downloadStatus(ctx, safe, phase)
-                fetch(c, outFile, token, threads, safe, notify, candEpoch)
+                fetch(c, outFile, token, threads, safe, notify, candEpoch, expectedTotal)
                 if (isCancelled(safe)) throw kotlinx.coroutines.CancellationException("已取消")
                 val len = outFile.length()
                 if (len <= 0) throw IOException("下载到空文件")
                 // 关键：先把进度明确推到 100%，再花时间写入系统下载目录，避免条子永远差一点
                 updateE(DownloadState(safe, done = len, total = len, status = "已下载 100% · 正在保存…",
                     mirrorUsed = c, threads = threads), candEpoch)
-                if (notify) Notifier.downloadProgress(ctx, safe, 100, "已下载 100% · 正在保存…")
+                if (notify) Notifier.downloadProgress(ctx, safe, 100, "已下载 100% · 正在保存…", len, len)
                 val pub = publish(ctx, outFile, safe)
                 val doneState = DownloadState(safe, done = len, total = len,
                     status = "已完成", path = pub.first, publicPath = pub.first, localPath = outFile.absolutePath,
@@ -339,7 +344,8 @@ object Downloader {
         } else rawMsg
         val kept = outFile.takeIf { it.exists() }?.length() ?: 0L
         // 候选线路每次都会刷新 epoch；失败落状态必须用当前 epoch，否则会永远停在「重试中」
-        updateE(DownloadState(safe, status = "失败", error = msg, done = kept, total = 0, url = rawUrl, useMirror = useMirror),
+        updateE(DownloadState(safe, status = "失败", error = msg, done = kept,
+            total = expectedTotal.takeIf { it > 0 } ?: 0, url = rawUrl, useMirror = useMirror),
             epochs[safe] ?: epoch)
         if (notify) Notifier.downloadFailed(ctx, safe, msg)
         throw IOException(msg)
@@ -427,14 +433,16 @@ object Downloader {
         else -> "application/octet-stream"
     }
 
-    private fun fetch(url: String, outFile: File, token: String?, threadsWanted: Int, name: String, notify: Boolean, epoch: Long) {
+    private fun fetch(url: String, outFile: File, token: String?, threadsWanted: Int, name: String, notify: Boolean, epoch: Long, expectedTotal: Long = -1L) {
         val host = runCatching { java.net.URI(url).host ?: "" }.getOrDefault("")
         val sendAuth = token != null && (host.contains("github.com") || host.contains("githubusercontent.com"))
         val head = Request.Builder().url(url)
             .header("User-Agent", "GitHubPro/1.0")
             .apply { if (sendAuth) header("Authorization", "Bearer $token") }
             .head().build()
-        var total = -1L
+        // 发行版附件/工作流产物在 API 里已经有真实大小，先拿来当总大小；
+        // HEAD 拿不到 Content-Length（例如动态打包的源码 ZIP）时也不会显示成 0。
+        var total = expectedTotal.takeIf { it > 0 } ?: -1L
         var acceptRanges = false
         try {
             client.newCall(head).execute().use { r ->
@@ -511,10 +519,12 @@ object Downloader {
                     if (now - last > 400) {
                         val speed = (done - lastBytes) * 1000 / max(1, now - last)
                         updateE(DownloadState(name, done = done, total = total, speed = speed,
-                            status = if (total > 0) "下载中 ${done * 100 / total}%" else "下载中 ${done / 1024}KB",
+                            status = if (total > 0) "下载中 ${done * 100 / total}%" else "下载中",
                             threads = 1), epoch)
-                        if (notify && total > 0) Notifier.downloadProgress(
-                            com.luogen.ghpro.AppCtx.get(), name, (done * 100 / total).toInt().coerceIn(0, 99), "单线程下载"
+                        if (notify) Notifier.downloadProgress(
+                            com.luogen.ghpro.AppCtx.get(), name,
+                            if (total > 0) (done * 100 / total).toInt().coerceIn(0, 99) else 0,
+                            "单线程下载", done, total
                         )
                         last = now
                         lastBytes = done
@@ -551,7 +561,7 @@ object Downloader {
                 val speed = (d - lastBytes) * 1000 / max(1, now - last)
                 updateE(DownloadState(name, done = d, total = total, speed = speed,
                     status = "多线程下载 ${d * 100 / total}%", threads = threads), epoch)
-                if (notify) Notifier.downloadProgress(com.luogen.ghpro.AppCtx.get(), name, (d * 100 / total).toInt(), "多线程 $threads 线程")
+                if (notify) Notifier.downloadProgress(com.luogen.ghpro.AppCtx.get(), name, (d * 100 / total).toInt(), "多线程 $threads 线程", d, total)
                 last = now
                 lastBytes = d
             }

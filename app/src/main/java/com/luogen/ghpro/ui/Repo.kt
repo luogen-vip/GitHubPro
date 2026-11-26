@@ -311,55 +311,55 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
             val r = repo ?: return@Column
 
             Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)
-                .padding(horizontal = 14.dp, vertical = 7.dp)) {
+                .padding(horizontal = 14.dp, vertical = 5.dp)) {
+                // 紧凑头部：作者、Star/复刻/关注/议题合成一行横向滚动，描述只占一行；
+                // 语言百分比改由下面的语言条图例显示，不再单独占一行。这样切页签高度不变，
+                // 下面的代码/议题/概览可滑动区域能多出约 40dp。
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Avatar(r.owner?.avatar_url, 22, Modifier.clickable { r.owner?.login?.let { nav.navigate("user/$it") } }, name = r.owner?.login)
-                    Spacer(Modifier.width(6.dp))
+                    Avatar(r.owner?.avatar_url, 24, Modifier.clickable { r.owner?.login?.let { nav.navigate("user/$it") } }, name = r.owner?.login)
+                    Spacer(Modifier.width(7.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(r.full_name, fontSize = 15.sp, fontWeight = FontWeight.Bold,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.clickable { r.owner?.login?.let { nav.navigate("user/$it") } })
-                        Text("作者 ${r.owner?.login ?: owner}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(r.full_name, fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+                                .clickable { r.owner?.login?.let { nav.navigate("user/$it") } })
+                            if (r.isPrivate) { Spacer(Modifier.width(5.dp)); TinyTag("私有", GH.yellow) }
+                        }
+                        val issueCount = IssueCounts.get(r.full_name) ?: r.open_issues_count
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Text("作者 ${r.owner?.login ?: owner}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.clickable { r.owner?.login?.let { nav.navigate("user/$it") } })
+                            Text(" · Star ${r.stargazers_count}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { peopleDialog = 0 }.padding(horizontal = 2.dp))
+                            Text("· 复刻 ${r.forks_count}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { peopleDialog = 1 }.padding(horizontal = 2.dp))
+                            Text("· 关注 ${r.subscribers_count}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { peopleDialog = 2 }.padding(horizontal = 2.dp))
+                            Text("· 议题 $issueCount", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
-                    if (r.isPrivate) TinyTag("私有", GH.yellow)
                 }
                 r.description?.takeIf { it.isNotBlank() }?.let { desc ->
                     Spacer(Modifier.height(2.dp))
-                    Row(verticalAlignment = Alignment.Bottom,
+                    Row(verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.clickable { showDesc = true }) {
                         Text(desc, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                        if (desc.length > 60) {
+                            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        if (desc.length > 40) {
                             Spacer(Modifier.width(4.dp))
                             Text("全文", fontSize = 10.sp, color = GH.blue)
                         }
                     }
                 }
-                Spacer(Modifier.height(3.dp))
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Star ${r.stargazers_count}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { peopleDialog = 0 }.padding(end = 4.dp))
-                    Text("· 复刻 ${r.forks_count}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { peopleDialog = 1 }.padding(end = 4.dp))
-                    Text("· 关注 ${r.subscribers_count}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { peopleDialog = 2 }.padding(end = 4.dp))
-                    val issueCount = IssueCounts.get(r.full_name) ?: r.open_issues_count
-                    Text("· 议题 $issueCount", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    val top = languages.entries.maxByOrNull { it.value }
-                    Text(if (top != null && languages.isNotEmpty())
-                        "主要语言 " + top.key + " " + String.format("%.1f", top.value * 100.0 / languages.values.sum().coerceAtLeast(1)) + "%"
-                    else "这个仓库还没有语言统计", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
                 // 不论切到概览、代码还是议题，这一条都固定显示；各页签头部高度一致，
                 // 切页签时不会因为语言条突然消失而整页往上跳。
                 val langsShown = languages.ifEmpty { r.language?.let { mapOf(it to 1L) } ?: emptyMap() }
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(5.dp))
                 if (langsShown.isNotEmpty()) {
                     LanguageBar(langsShown, legend = true)
                 } else {
-                    Spacer(Modifier.height(5.dp))
+                    Text("这个仓库还没有语言统计", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
 
@@ -475,22 +475,22 @@ fun LanguageBar(languages: Map<String, Long>, legend: Boolean = true) {
     val total = languages.values.sum().coerceAtLeast(1)
     val entries = languages.entries.take(6)
     Column {
-        Row(Modifier.fillMaxWidth().height(7.dp).clip(RoundedCornerShape(4.dp)).background(MaterialTheme.colorScheme.surfaceVariant)) {
+        Row(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(4.dp)).background(MaterialTheme.colorScheme.surfaceVariant)) {
             entries.forEach { (k, v) ->
                 Box(Modifier.weight(v.toFloat().coerceAtLeast(0.01f)).fillMaxHeight().background(GH.langColor(k)))
             }
         }
         if (legend) {
-        Spacer(Modifier.height(5.dp))
+        Spacer(Modifier.height(3.dp))
         Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             entries.forEach { (k, v) ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(7.dp).clip(RoundedCornerShape(4.dp)).background(GH.langColor(k)))
                     Spacer(Modifier.width(3.dp))
-                    Text("$k ${String.format("%.1f", v * 100.0 / total)}%", fontSize = 10.sp, maxLines = 1,
+                    Text("$k ${String.format("%.1f", v * 100.0 / total)}%", fontSize = 9.sp, maxLines = 1,
                         softWrap = false, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
@@ -864,9 +864,10 @@ fun ActiveDownloadStrip(repoFilter: String? = null) {
                     progress = { if (d.total > 0) d.percent / 100f else 0f },
                     modifier = Modifier.fillMaxWidth().padding(top = 3.dp)
                 )
+                Text(downloadAmountText(d), fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (d.total <= 0) Text(d.status, fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
-                Text("已完成 · ${d.publicPath ?: ""}", fontSize = 10.sp, color = GH.green)
+                Text("已完成 · ${humanSize(d.total)} · ${d.publicPath ?: ""}", fontSize = 10.sp, color = GH.green)
             }
         }
     }

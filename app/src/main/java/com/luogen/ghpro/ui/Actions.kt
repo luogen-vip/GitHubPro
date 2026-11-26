@@ -295,8 +295,11 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                                         Text(a.name, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         Text("${humanSize(a.size_in_bytes)} · ${timeAgo(a.created_at)} · ${if (a.expired) "已过期" else "有效"}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         val ast = dlStates[Downloader.sanitize("${a.name}.zip")]
-                                        if (ast != null && ast.active) Text("${ast.status} · ${ast.percent}% · ${humanSize(ast.speed)}/s",
-                                            fontSize = 10.sp, color = GH.blue)
+                                        if (ast != null && ast.active) {
+                                            Text("${ast.status} · ${ast.percent}% · ${humanSize(ast.speed)}/s",
+                                                fontSize = 10.sp, color = GH.blue)
+                                            Text(downloadAmountText(ast), fontSize = 10.sp, color = GH.blue)
+                                        }
                                     }
                                     IconButton({
                                         val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
@@ -306,6 +309,7 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                                     IconButton(onClick = {
                                         Toast.makeText(ctx, "开始下载产物 ${a.name}…", Toast.LENGTH_SHORT).show()
                                         Downloader.startDownload(ctx, a.archive_download_url ?: return@IconButton, "${a.name}.zip", Cfg.token, useMirror = false,
+                                            expectedSize = a.size_in_bytes,
                                             onDone = { },
                                             onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
                                     }) { Icon(Icons.Filled.Download, null, Modifier.size(18.dp), tint = GH.blue) }

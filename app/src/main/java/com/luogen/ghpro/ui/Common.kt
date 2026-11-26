@@ -28,6 +28,7 @@ import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
 import coil.request.ImageRequest
 import com.luogen.ghpro.data.Label
+import com.luogen.ghpro.download.DownloadState
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
@@ -87,6 +88,17 @@ fun copyText(ctx: android.content.Context, text: String, tip: String = "已复�
         cm?.setPrimaryClip(android.content.ClipData.newPlainText("文本", text))
     } catch (e: Exception) { }
     android.widget.Toast.makeText(ctx, tip, android.widget.Toast.LENGTH_SHORT).show()
+}
+
+/** 下载卡片统一显示：已下载 / 总大小 / 还剩。总大小来自服务器 Content-Length 或 API 的 size，不估算。 */
+fun downloadAmountText(d: DownloadState): String {
+    val done = humanSize(d.done)
+    if (d.total > 0) {
+        val left = (d.total - d.done).coerceAtLeast(0L)
+        return if (d.done >= d.total) "$done / ${humanSize(d.total)}"
+        else "$done / ${humanSize(d.total)} · 还剩 ${humanSize(left)}"
+    }
+    return "已下载 $done · 总大小未知"
 }
 
 fun humanSize(bytes: Long): String = when {

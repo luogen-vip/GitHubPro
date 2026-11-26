@@ -19,6 +19,7 @@ import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Bus
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Repo
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -277,7 +278,12 @@ fun EditRepoScreen(nav: NavController, owner: String, name: String) {
                                     runCatching { Api.setTopics(owner, saved.name, topics.split(",").map { it.trim() }.filter { it.isNotBlank() }) }
                                 }
                                 Bus.poke()
-                                snackbar.showSnackbar("已保存，GitHub 上已生效")
+                                // 只让“已保存并生效”停留到能看清，随后立刻关闭编辑页；
+                                // 不再等 Snackbar 默认的几秒自动消失，避免保存按钮点了像没反应。
+                                snackbar.currentSnackbarData?.dismiss()
+                                scope.launch { snackbar.showSnackbar("已保存并生效", duration = SnackbarDuration.Short) }
+                                delay(700)
+                                snackbar.currentSnackbarData?.dismiss()
                                 if (newName != name) {
                                     // 改名后旧 URL 已经不存在，直接替换掉旧仓库页，避免返回后 404
                                     nav.popBackStack("repo/$owner/$name", inclusive = true)

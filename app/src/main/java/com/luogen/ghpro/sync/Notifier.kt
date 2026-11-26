@@ -98,12 +98,21 @@ object Notifier {
         safeNotify(ctx, n, name.hashCode())
     }
 
-    fun downloadProgress(ctx: Context, name: String, progress: Int, status: String = "下载中") {
+    fun downloadProgress(ctx: Context, name: String, progress: Int, status: String = "下载中",
+                         done: Long = 0L, total: Long = 0L) {
+        val doneText = fmtBytes(ctx, done)
+        val sizeLine = if (total > 0) {
+            val left = (total - done).coerceAtLeast(0L)
+            "$doneText / ${fmtBytes(ctx, total)} · 还剩 ${fmtBytes(ctx, left)}"
+        } else {
+            "已下载 $doneText · 服务器未返回总大小"
+        }
         val n = NotificationCompat.Builder(ctx, CH_DOWNLOAD)
             .setSmallIcon(R.drawable.ic_small)
             .setContentTitle("正在下载 $name")
-            .setContentText("$status · $progress%")
-            .setProgress(100, progress, progress <= 0)
+            .setContentText(if (total > 0) "$progress% · $doneText / ${fmtBytes(ctx, total)}" else "已下载 $doneText")
+            .setStyle(NotificationCompat.BigTextStyle().bigText(if (total > 0) "$status · $progress%\n$sizeLine" else "$status\n$sizeLine"))
+            .setProgress(100, progress, total <= 0)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -111,6 +120,9 @@ object Notifier {
             .build()
         safeNotify(ctx, n, name.hashCode())
     }
+
+    private fun fmtBytes(ctx: Context, bytes: Long): String =
+        android.text.format.Formatter.formatShortFileSize(ctx, bytes.coerceAtLeast(0L))
 
     fun downloadDone(ctx: Context, name: String, path: String, publicPath: String? = null) {
         // 点通知直接打开刚下好的文件：APK 弹安装器，图片/视频进 App 内预览

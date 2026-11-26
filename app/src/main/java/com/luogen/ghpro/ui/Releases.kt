@@ -182,10 +182,11 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                                                 }
                                             }
                                             Text("${humanSize(a.size)} · GitHub 累计下载 ${a.download_count} 次", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                            if (st != null && st.active) Text(
-                                                "${st.status} · ${st.percent}% · ${humanSize(st.speed)}/s · ${st.threads} 线程",
-                                                fontSize = 10.sp, color = GH.blue
-                                            ) else if (st?.status == "已完成") Text("已完成 · ${st.publicPath ?: ""}",
+                                            if (st != null && st.active) {
+                                                Text("${st.status} · ${st.percent}% · ${humanSize(st.speed)}/s · ${st.threads} 线程",
+                                                    fontSize = 10.sp, color = GH.blue)
+                                                Text(downloadAmountText(st), fontSize = 10.sp, color = GH.blue)
+                                            } else if (st?.status == "已完成") Text("已完成 · ${humanSize(st.total)} · ${st.publicPath ?: ""}",
                                                 fontSize = 10.sp, color = GH.green)
                                             Box(Modifier.fillMaxWidth().height(9.dp).padding(top = 3.dp)) {
                                                 if (st != null && st.active) {
@@ -213,6 +214,7 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                                             Toast.makeText(ctx, "开始下载 ${a.name}…", Toast.LENGTH_SHORT).show()
                                             Downloader.startDownload(ctx, url, a.name, source = "发行版附件",
                                                 repo = "$owner/$name", release = rel.tag_name,
+                                                expectedSize = a.size,
                                                 onDone = { /* 完成提示统一由白色系统通知 + 行内 100% 展示，不再弹黑色 Toast */ }, 
                                                 onError = { m ->
                                                     Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show()

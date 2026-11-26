@@ -107,7 +107,7 @@ fun DownloadsScreen(nav: NavController) {
                                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     if (!d.url.isNullOrBlank()) TextButton({
                                         Downloader.startDownload(ctx, d.url!!, d.fileName, Cfg.token, d.useMirror,
-                                            source = "重试下载")
+                                            source = "重试下载", expectedSize = d.total)
                                         Toast.makeText(ctx, "已继续下载（支持断点就接着下）", Toast.LENGTH_SHORT).show()
                                     }, contentPadding = PaddingValues(horizontal = 8.dp)) {
                                         Icon(Icons.Filled.Refresh, null, Modifier.size(14.dp)); Text("断点重试", fontSize = 11.sp)
@@ -142,6 +142,8 @@ fun DownloadsScreen(nav: NavController) {
                                     progress = { if (d.total > 0) d.percent / 100f else 0f },
                                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
                                 )
+                                Text(downloadAmountText(d), fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Text(listOfNotNull(d.status, d.speed.takeIf { it > 0 }?.let { humanSize(it) + "/s" }, Downloader.repoOf(d.fileName)).joinToString(" · "),
                                     fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
