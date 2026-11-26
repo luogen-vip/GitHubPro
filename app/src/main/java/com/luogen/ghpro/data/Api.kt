@@ -335,10 +335,56 @@ object Api {
     suspend fun deletePath(o: String, r: String, path: String, branch: String?): Int =
         deletePaths(o, r, listOf(path), branch)
 
+    /**
+     * 多选删除单独走 Contents API：单文件删除已经被真实仓库验证可用，
+     * 多选时不再先试整树提交。整树提交在部分仓库/分支会被 404/422 拒绝，
+     * 之前失败后虽然会回退，但一次失败会把整批文件还原，用户看到就是“多选删除失败”。
+     * 这里逐个选中项解析成文件再删：文件一项一个提交，文件夹递归收集后逐个删；
+     * 能删多少算多少，只有真的一个都没删才抛错。
+     */
+    private suspend fun deleteByContents(o: String, r: String, wanted: List<String>, branchName: String): Int {
+        var deleted = 0
+        var firstError: Exception? = null
+        var sawAny = false
+        wanted.forEach { p ->
+            try {
+                val head = contents(o, r, p, branchName)
+                if (head.isFile) {
+                    val sha = head.file?.sha
+                    if (sha.isNullOrBlank()) throw IOException("拿不到文件标识：$p")
+                    deleteFile(o, r, p, "delete $p", sha, branchName)
+                    deleted++
+                    sawAny = true
+                } else {
+                    val files = collectFiles(o, r, p, branchName)
+                    files.forEach { f ->
+                        val item = fileItem(o, r, f, branchName)
+                        val sha = item.sha
+                        if (sha.isNullOrBlank()) return@forEach
+                        deleteFile(o, r, f, "delete $f", sha, branchName)
+                        deleted++
+                        sawAny = true
+                    }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // 404 视为这一项已经不存在；其它错误先记下，继续删下一项，不让一个坏项拖垮整批。
+                if ((e as? ApiException)?.code != 404) firstError = firstError ?: e
+            }
+        }
+        if (!sawAny && firstError != null) throw firstError!!
+        return deleted
+    }
+
     suspend fun deletePaths(o: String, r: String, paths: List<String>, branch: String?): Int {
-        val wanted = paths.map { it.trim('/') }.filter { it.isNotBlank() }.distinct()
+        val wanted0 = paths.map { it.trim('/') }.filter { it.isNotBlank() }.distinct()
+        val branch0 = branch?.takeIf { it.isNotBlank() } ?: "main"
+        // 多选：按 Contents API 逐个删除。单文件已经验证可用，这条路不会再因整树提交失败而整批还原。
+        if (wanted0.size > 1) return deleteByContents(o, r, wanted0, branch0)
+        val wanted = wanted0
         if (wanted.isEmpty()) return 0
-        val branchName = branch ?: "main"
+        val branchName = branch0
         val ref = exec("/repos/$o/$r/git/ref/heads/${enc(branchName)}").body.let { JsonParser.parseString(it).asJsonObject }
         val commitSha = ref.getAsJsonObject("object").get("sha").asString
         val commit = exec("/repos/$o/$r/git/commits/$commitSha").body.let { JsonParser.parseString(it).asJsonObject }
@@ -544,6 +590,31 @@ object Api {
         val jo = JsonObject().apply { addProperty("body", body) }
         return parse(exec("/repos/$o/$r/issues/$n/comments", "POST", jo.toString()).body, Comment::class.java)
     }
+    suspend fun issueReactions(o: String, r: String, n: Int): List<JsonObject> {
+        val arr = runCatching {
+            JsonParser.parseString(exec("/repos/$o/$r/issues/$n/reactions", query = mapOf("per_page" to "100"),
+                accept = "application/vnd.github.squirrel-girl+json").body).asJsonArray
+        }.getOrNull() ?: return emptyList()
+        return arr.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
+    }
+
+    /** 点一下表态：已有的删除，没有的添加。返回操作后的反应列表。 */
+    suspend fun toggleIssueReaction(o: String, r: String, n: Int, content: String): List<JsonObject> {
+        val existing = issueReactions(o, r, n).firstOrNull {
+            it.get("content")?.asString == content && it.getAsJsonObject("user")?.get("login")?.asString == Cfg.login
+        }
+        val id = existing?.get("id")?.asLong
+        if (id != null) {
+            exec("/repos/$o/$r/issues/$n/reactions/$id", "DELETE", null, emptyMap(),
+                "application/vnd.github.squirrel-girl+json")
+        } else {
+            val jo = JsonObject().apply { addProperty("content", content) }
+            exec("/repos/$o/$r/issues/$n/reactions", "POST", jo.toString(), emptyMap(),
+                "application/vnd.github.squirrel-girl+json")
+        }
+        return issueReactions(o, r, n)
+    }
+
     suspend fun lockIssue(o: String, r: String, n: Int, lock: Boolean, reason: String = "resolved") {
         val jo = JsonObject().apply {
             addProperty("lock_reason", reason)
@@ -586,6 +657,18 @@ object Api {
         val jo = JsonObject().apply { addProperty("state", "open") }
         exec("/repos/$o/$r/pulls/$n", "PATCH", jo.toString())
     }
+    suspend fun requestReviewers(o: String, r: String, n: Int, reviewers: List<String>) {
+        val jo = JsonObject().apply {
+            add("reviewers", JsonArray().apply { reviewers.filter { it.isNotBlank() }.distinct().forEach { add(it.trim().removePrefix("@")) } })
+        }
+        exec("/repos/$o/$r/pulls/$n/requested_reviewers", "POST", jo.toString())
+    }
+
+    suspend fun prReviews(o: String, r: String, n: Int): List<JsonObject> {
+        val arr = runCatching { JsonParser.parseString(raw("/repos/$o/$r/pulls/$n/reviews", query = mapOf("per_page" to "50"))).asJsonArray }.getOrNull() ?: return emptyList()
+        return arr.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
+    }
+
     suspend fun prReview(o: String, r: String, n: Int, event: String, body: String?) {
         val jo = JsonObject().apply {
             addProperty("event", event)
@@ -871,6 +954,23 @@ object Api {
         }
         val newCommit = JsonParser.parseString(exec("/repos/$o/$r/git/commits", "POST", cb.toString()).body).asJsonObject.get("sha").asString
         exec("/repos/$o/$r/git/refs/heads/$branch", "PATCH", JsonObject().apply { addProperty("sha", newCommit) }.toString())
+    }
+
+    suspend fun createLabel(o: String, r: String, name: String, color: String, description: String?): JsonObject {
+        val jo = JsonObject().apply {
+            addProperty("name", name)
+            addProperty("color", color.removePrefix("#").take(6).ifBlank { "cccccc" })
+            if (!description.isNullOrBlank()) addProperty("description", description)
+        }
+        return JsonParser.parseString(exec("/repos/$o/$r/labels", "POST", jo.toString()).body).asJsonObject
+    }
+
+    suspend fun createMilestone(o: String, r: String, title: String, description: String?): JsonObject {
+        val jo = JsonObject().apply {
+            addProperty("title", title)
+            if (!description.isNullOrBlank()) addProperty("description", description)
+        }
+        return JsonParser.parseString(exec("/repos/$o/$r/milestones", "POST", jo.toString()).body).asJsonObject
     }
 
     // ---------------- 发行版 ----------------

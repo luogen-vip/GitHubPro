@@ -25,6 +25,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import com.google.gson.JsonObject
 import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Comment
@@ -136,6 +137,8 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
     var pr by remember { mutableStateOf<PullRequest?>(null) }
     var files by remember { mutableStateOf<List<PRFile>>(emptyList()) }
     var comments by remember { mutableStateOf<List<Comment>>(emptyList()) }
+    var reviews by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
+    var reviewerDialog by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var text by remember { mutableStateOf("") }
@@ -148,6 +151,7 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
             pr = Api.pull(owner, name, number)
             files = runCatching { Api.prFiles(owner, name, number) }.getOrDefault(emptyList())
             comments = runCatching { Api.prComments(owner, name, number) }.getOrDefault(emptyList())
+            reviews = runCatching { Api.prReviews(owner, name, number) }.getOrDefault(emptyList())
             error = null
         } catch (e: kotlinx.coroutines.CancellationException) { throw e }
         catch (e: Exception) { error = e.message }
@@ -186,6 +190,11 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
                             StateChip(pr!!.state, conclusion = if (pr!!.merged == true) "merged" else null)
                             Spacer(Modifier.width(8.dp))
                             Text("${pr!!.user?.login} · ${timeAgo(pr!!.created_at)}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (pr!!.draft) { Spacer(Modifier.width(5.dp)); TinyTag("草稿", GH.yellow) }
+                        }
+                        val waiting = pr!!.requested_reviewers.orEmpty().map { it.login ?: "" }.filter { it.isNotBlank() }
+                        if (waiting.isNotEmpty()) {
+                            Text("待审查：${waiting.joinToString("、")}", fontSize = 10.sp, color = GH.blue)
                         }
                         Spacer(Modifier.height(6.dp))
                         Text("${pr!!.head?.ref} → ${pr!!.base?.ref}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -221,6 +230,7 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
                                         catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
                                     }
                                 }) { Text("批准", fontSize = 12.sp) }
+                                OutlinedButton(onClick = { reviewerDialog = true }) { Text("请求审查", fontSize = 12.sp) }
                                 }
                             } else {
                                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -252,6 +262,23 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
                             }
                             Divider1()
                         }
+                        if (reviews.isNotEmpty()) {
+                            Spacer(Modifier.height(12.dp))
+                            Text("审查（${reviews.size}）", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            reviews.forEach { r ->
+                                val u = r.getAsJsonObject("user")?.get("login")?.asString ?: "reviewer"
+                                val state = r.get("state")?.asString ?: ""
+                                val body = r.get("body")?.asString ?: ""
+                                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                                    TinyTag(state.ifBlank { "REVIEW" }, if (state == "APPROVED") GH.green else GH.blue)
+                                    Spacer(Modifier.width(6.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text("$u · ${timeAgo(r.get("submitted_at")?.asString)}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        if (body.isNotBlank()) Text(body, fontSize = 12.sp, lineHeight = 18.sp)
+                                    }
+                                }
+                            }
+                        }
                         Spacer(Modifier.height(12.dp))
                         Text("评论（${comments.size}）", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         comments.forEach { c ->
@@ -281,6 +308,35 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
                 }
             }
         }
+    }
+    if (reviewerDialog) {
+        var login by remember { mutableStateOf("") }
+        var busy by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { if (!busy) reviewerDialog = false },
+            title = { Text("请求审查", fontSize = 15.sp) },
+            text = {
+                Column {
+                    Text("输入 GitHub 用户名（可多个，用逗号分隔）", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    OutlinedTextField(login, { login = it }, label = { Text("reviewer") }, singleLine = true)
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = !busy && login.isNotBlank(), onClick = {
+                    busy = true
+                    scope.launch {
+                        try {
+                            Api.requestReviewers(owner, name, number, login.split(',', '，').map { it.trim() })
+                            reviewerDialog = false
+                            snackbar.showSnackbar("已发送审查请求")
+                            load()
+                        } catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
+                        finally { busy = false }
+                    }
+                }) { Text(if (busy) "发送中…" else "发送请求") }
+            },
+            dismissButton = { TextButton({ if (!busy) reviewerDialog = false }) { Text("取消") } }
+        )
     }
 }
 

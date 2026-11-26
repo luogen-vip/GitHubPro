@@ -2,6 +2,7 @@ package com.luogen.ghpro.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -33,6 +34,7 @@ import com.luogen.ghpro.data.Bus
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Comment
 import com.luogen.ghpro.data.Issue
+import com.google.gson.JsonObject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -235,6 +237,8 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
     }
     var issue by remember { mutableStateOf<Issue?>(null) }
     var comments by remember { mutableStateOf<List<Comment>>(emptyList()) }
+    var reactions by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
+    var reactionBusy by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var text by remember { mutableStateOf("") }
@@ -250,6 +254,7 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
         try {
             issue = Api.issue(owner, name, number)
             comments = Api.issueComments(owner, name, number)
+            reactions = runCatching { Api.issueReactions(owner, name, number) }.getOrDefault(emptyList())
             error = null
         } catch (e: kotlinx.coroutines.CancellationException) { throw e }
         catch (e: Exception) { error = e.message }
@@ -290,6 +295,7 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
                             locked = ov.first.locked)
                     } else issue = fresh
                     comments = Api.issueComments(owner, name, number)
+                    reactions = runCatching { Api.issueReactions(owner, name, number) }.getOrDefault(reactions)
                 }
             }
         }
@@ -394,6 +400,36 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
                         issue!!.labels?.takeIf { it.isNotEmpty() }?.let {
                             Spacer(Modifier.height(6.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) { it.forEach { l -> LabelChip(l) } }
+                        }
+                        // 真实 reactions：点一下会调用 GitHub 添加/删除，不是本地假计数。
+                        val emojiMap = listOf(
+                            "+1" to "👍", "-1" to "👎", "laugh" to "😄", "hooray" to "🎉",
+                            "confused" to "😕", "heart" to "❤️", "rocket" to "🚀", "eyes" to "👀"
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            emojiMap.forEach { (content, emoji) ->
+                                val count = reactions.count { it.get("content")?.asString == content }
+                                val mine = reactions.any {
+                                    it.get("content")?.asString == content && it.getAsJsonObject("user")?.get("login")?.asString == Cfg.login
+                                }
+                                FilterChip(
+                                    selected = mine,
+                                    enabled = !reactionBusy,
+                                    onClick = {
+                                        reactionBusy = true
+                                        Bus.actions.launch {
+                                            try {
+                                                reactions = Api.toggleIssueReaction(owner, name, number, content)
+                                                Cfg.touchRepo("$owner/$name")
+                                            } catch (e: Exception) { quickToast("表态失败：${e.message}") }
+                                            finally { reactionBusy = false }
+                                        }
+                                    },
+                                    label = { Text("$emoji $count", fontSize = 11.sp, maxLines = 1, softWrap = false) }
+                                )
+                            }
                         }
                     }
                     Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(14.dp)) {

@@ -64,6 +64,7 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
     }
     var showCreate by rememberSaveable { mutableStateOf(false) }
     var uploadTargetId by rememberSaveable { mutableStateOf(-1L) }
+    var editTarget by remember { mutableStateOf<Release?>(null) }
     val snackbar = remember { SnackbarHostState() }
 
     suspend fun load(p: Int, replace: Boolean, silent: Boolean = false) {
@@ -187,9 +188,9 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                                     Text("这个发行版没有填写说明", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 Spacer(Modifier.height(8.dp))
-                                val dl by Downloader.state.collectAsState()
+                                // 下载进度统一只显示在仓库头部 ActiveDownloadStrip。
+                                // 这里不再复制一份进度/打开/取消，避免下方列表被撑高、页面来回跳动。
                                 rel.assets?.forEach { a ->
-                                    val st = dl[Downloader.sanitize(a.name)]
                                     Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                                         Column(Modifier.weight(1f)) {
                                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -201,29 +202,6 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                                                 }
                                             }
                                             Text("${humanSize(a.size)} · GitHub 累计下载 ${a.download_count} 次", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                            if (st != null && st.active) {
-                                                Text("${st.status} · ${st.percent}% · ${humanSize(st.speed)}/s · ${st.threads} 线程",
-                                                    fontSize = 10.sp, color = GH.blue)
-                                                Text(downloadAmountText(st), fontSize = 10.sp, color = GH.blue)
-                                            } else if (st?.status == "已完成") Text("已完成 · ${humanSize(st.total)} · ${st.publicPath ?: ""}",
-                                                fontSize = 10.sp, color = GH.green)
-                                            Box(Modifier.fillMaxWidth().height(9.dp).padding(top = 3.dp)) {
-                                                if (st != null && st.active) {
-                                                    LinearProgressIndicator(
-                                                        progress = { if (st.total > 0) st.percent / 100f else 0f },
-                                                        modifier = Modifier.fillMaxWidth().height(4.dp))
-                                                }
-                                            }
-                                        }
-                                        if (st != null && st.active) {
-                                            IconButton({ Downloader.cancelDownload(a.name) }) {
-                                                Icon(Icons.Filled.Cancel, "取消下载", Modifier.size(16.dp), tint = GH.red)
-                                            }
-                                        } else if (st != null && st.status == "已完成" && st.localPath != null) {
-                                            TextButton({ PreviewBus.open(ctx, java.io.File(st.localPath!!)) },
-                                                contentPadding = PaddingValues(horizontal = 6.dp)) {
-                                                Text("打开", fontSize = 11.sp, color = GH.blue)
-                                            }
                                         }
                                         IconButton({ copy(a.browser_download_url ?: "", "已复制下载链接") }) {
                                             Icon(Icons.Filled.ContentCopy, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -265,6 +243,7 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                                     }
                                     OutlinedButton(onClick = { openUrl(ctx, rel.html_url) }) { Text("浏览器", fontSize = 11.sp) }
                                     if (repo.permissions?.push == true) {
+                                        OutlinedButton(onClick = { editTarget = rel }) { Text("编辑发行版", fontSize = 11.sp) }
                                         OutlinedButton(onClick = {
                                             scope.launch {
                                                 try {
@@ -336,6 +315,48 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                 }) { Text(if (busy) "创建中…" else "创建") }
             },
             dismissButton = { TextButton({ if (!busy) showCreate = false }) { Text("取消") } }
+        )
+    }
+
+    editTarget?.let { rel ->
+        var ename by remember(rel.id) { mutableStateOf(rel.name ?: rel.tag_name) }
+        var ebody by remember(rel.id) { mutableStateOf(rel.body ?: "") }
+        var edraft by remember(rel.id) { mutableStateOf(rel.draft) }
+        var epre by remember(rel.id) { mutableStateOf(rel.prerelease) }
+        var ebusy by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { if (!ebusy) editTarget = null },
+            title = { Text("编辑发行版", fontSize = 15.sp) },
+            text = {
+                Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState())) {
+                    OutlinedTextField(ename, { ename = it }, label = { Text("标题") }, singleLine = true)
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(ebody, { ebody = it }, label = { Text("说明（Markdown）") }, minLines = 5)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(edraft, { edraft = it }); Text("草稿", fontSize = 12.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Checkbox(epre, { epre = it }); Text("预发行", fontSize = 12.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = !ebusy, onClick = {
+                    ebusy = true
+                    scope.launch {
+                        try {
+                            val updated = Api.patchRelease(owner, name, rel.id, mapOf(
+                                "name" to ename, "body" to ebody, "draft" to edraft, "prerelease" to epre
+                            ))
+                            list = list.map { if (it.id == rel.id) updated else it }
+                            UiCache.repoReleases[cacheKey] = list
+                            editTarget = null
+                            Toast.makeText(ctx, "发行版已更新", Toast.LENGTH_SHORT).show()
+                        } catch (e: Exception) { snackbar.showSnackbar("保存失败：${e.message}") }
+                        finally { ebusy = false }
+                    }
+                }) { Text(if (ebusy) "保存中…" else "保存") }
+            },
+            dismissButton = { TextButton({ if (!ebusy) editTarget = null }) { Text("取消") } }
         )
     }
 }

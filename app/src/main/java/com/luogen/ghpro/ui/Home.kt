@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -259,7 +260,8 @@ fun HomeScreen(nav: NavController) {
                             HomeAction(Icons.Filled.Search, "搜索") { nav.navigate("search") },
                             HomeAction(Icons.Filled.Explore, "精选") { nav.navigate("featured") },
                             HomeAction(Icons.Filled.Download, "下载") { nav.navigate("downloads") },
-                            HomeAction(Icons.Filled.Notifications, "通知") { nav.navigate("notifications") }
+                            HomeAction(Icons.Filled.Notifications, "通知") { nav.navigate("notifications") },
+                            HomeAction(Icons.Filled.Extension, "更多") { nav.navigate("more") }
                         ).forEach { a ->
                             Column(
                                 Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).clickable { a.go() }.padding(vertical = 4.dp),

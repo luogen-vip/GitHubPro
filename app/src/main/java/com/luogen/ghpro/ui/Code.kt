@@ -26,6 +26,10 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -36,7 +40,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -380,6 +390,37 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
     var imageUrl by remember { mutableStateOf<String?>(null) }
     var fontFamily by remember { mutableStateOf<FontFamily?>(null) }
     val snackbar = remember { SnackbarHostState() }
+    // 文件内搜索：只搜当前文件的内容，精确子串匹配；查看/编辑共用同一份命中列表。
+    var searchOpen by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    var searchIndex by remember { mutableStateOf(0) }
+    var editorValue by remember { mutableStateOf(TextFieldValue(content)) }
+    val searchFocus = remember { FocusRequester() }
+    val editorFocus = remember { FocusRequester() }
+    val codeScroll = rememberScrollState()
+    val codeHScroll = rememberScrollState()
+    val density = LocalDensity.current
+    val lineHeightPx = with(density) { 17.sp.toPx() }
+    val searchHits = remember(content, searchQuery) {
+        if (searchQuery.isBlank()) emptyList() else searchMatches(content, searchQuery)
+    }
+    fun jumpSearch(delta: Int) {
+        if (searchQuery.isBlank()) { Toast.makeText(ctx, "先输入要搜索的内容", Toast.LENGTH_SHORT).show(); return }
+        if (searchHits.isEmpty()) { Toast.makeText(ctx, "没有找到“$searchQuery”", Toast.LENGTH_SHORT).show(); return }
+        val next = ((searchIndex + delta) % searchHits.size + searchHits.size) % searchHits.size
+        searchIndex = next
+        val hit = searchHits[next]
+        if (editing) {
+            editorValue = editorValue.copy(selection = TextRange(hit, hit + searchQuery.length))
+            runCatching { editorFocus.requestFocus() }
+        } else {
+            val line = content.take(hit).count { it == '\n' }
+            scope.launch { codeScroll.animateScrollTo((line * lineHeightPx).toInt()) }
+        }
+    }
+    LaunchedEffect(content) {
+        if (!editing && editorValue.text != content) editorValue = TextFieldValue(content)
+    }
 
     fun load(silent: Boolean = false) {
         if (isNew) { loading = false; return }
@@ -533,6 +574,10 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                         } else {
                             if (previewKind == "text") IconButton({ editing = true }) { Icon(Icons.Filled.Edit, "编辑") }
                         }
+                        if (previewKind == "text") IconButton({
+                            searchOpen = !searchOpen
+                            if (!searchOpen) { searchQuery = ""; searchIndex = 0 }
+                        }) { Icon(if (searchOpen) Icons.Filled.Close else Icons.Filled.Search, "文件内搜索") }
                         IconButton({ downloadFile(path.substringAfterLast('/')) }) { Icon(Icons.Filled.Download, "下载") }
                         if (!isNew) {
                             IconButton({ confirmDelete = true }) { Icon(Icons.Filled.Delete, "删除", tint = GH.red) }
@@ -544,6 +589,29 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
         }
     ) { pad ->
         Column(Modifier.fillMaxSize().padding(pad)) {
+            if (previewKind == "text" && searchOpen && !loading && error == null) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it; searchIndex = 0 },
+                        modifier = Modifier.weight(1f).height(48.dp).focusRequester(searchFocus),
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp),
+                        placeholder = { Text("搜索此文件内容…", fontSize = 11.sp) },
+                        leadingIcon = { Icon(Icons.Filled.Search, null, Modifier.size(16.dp)) }
+                    )
+                    Text(if (searchQuery.isBlank()) "输入关键词" else "${searchHits.size} 个匹配",
+                        fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 4.dp))
+                    IconButton({ jumpSearch(-1) }, modifier = Modifier.size(34.dp)) {
+                        Icon(Icons.Filled.KeyboardArrowUp, "上一个", Modifier.size(18.dp))
+                    }
+                    IconButton({ jumpSearch(1) }, modifier = Modifier.size(34.dp)) {
+                        Icon(Icons.Filled.KeyboardArrowDown, "下一个", Modifier.size(18.dp))
+                    }
+                }
+            }
             when {
                 loading -> LoadingBox()
                 error != null -> Column {
@@ -587,13 +655,15 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                             singleLine = true
                         )
                         OutlinedTextField(
-                            value = content, onValueChange = { content = it },
-                            modifier = Modifier.fillMaxWidth().weight(1f).padding(10.dp),
-                            textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                            value = editorValue,
+                            onValueChange = { editorValue = it; content = it.text },
+                            modifier = Modifier.fillMaxWidth().weight(1f).padding(10.dp).focusRequester(editorFocus),
+                            textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 17.sp),
+                            visualTransformation = SyntaxTransformation(fileName, if (searchOpen) searchQuery else ""),
                             placeholder = { Text("文件内容…", fontSize = 12.sp) }
                         )
                     } else {
-                        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(8.dp)) {
+                        Column(Modifier.fillMaxSize().verticalScroll(codeScroll).padding(8.dp)) {
                             if (content.length > 200_000) {
                                 Text("文件较大，下面只预览前 20 万字符；点右上角下载可查看完整文件。",
                                     fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
@@ -617,8 +687,9 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         softWrap = false)
                                 }
-                                Box(Modifier.weight(1f).horizontalScroll(rememberScrollState())) {
-                                    Text(shown, style = codeStyle, softWrap = false)
+                                Box(Modifier.weight(1f).horizontalScroll(codeHScroll)) {
+                                    Text(highlightCode(shown, fileName, if (searchOpen) searchQuery else ""),
+                                        style = codeStyle, softWrap = false)
                                 }
                             }
                         }
@@ -627,7 +698,11 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
             }
             if (editing) {
                 Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { content = original; editing = false }) { Text("取消", fontSize = 12.sp) }
+                    OutlinedButton(onClick = {
+                        content = original
+                        editorValue = TextFieldValue(original)
+                        editing = false
+                    }) { Text("取消", fontSize = 12.sp) }
                     Text("已修改 ${(content.length - original.length)} 字符", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.align(Alignment.CenterVertically))
                 }

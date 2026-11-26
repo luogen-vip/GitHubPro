@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Refresh
@@ -261,6 +262,9 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                                 UiCache.fileContent.keys.filter { it.startsWith("$key|") }.forEach { UiCache.fileContent.remove(it) }
                                 refreshSeq++
                                 scope.launch { load(); Toast.makeText(ctx, "已刷新当前页面", Toast.LENGTH_SHORT).show() }
+                            })
+                            DropdownMenuItem(text = { Text("更多 GitHub 能力") }, leadingIcon = { Icon(Icons.Filled.Extension, null) }, onClick = {
+                                showMenu = false; nav.navigate("more/$owner/$name")
                             })
                             DropdownMenuItem(text = { Text("在浏览器打开") }, leadingIcon = { Icon(Icons.Filled.OpenInNew, null) }, onClick = {
                                 showMenu = false; openUrl(ctx, repo?.html_url)
