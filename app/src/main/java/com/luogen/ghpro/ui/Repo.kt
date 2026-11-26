@@ -66,6 +66,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
     var tab by remember { mutableStateOf(UiCache.repoTab[key] ?: 0) }
     var downloading by remember { mutableStateOf<String?>(null) }
     var latestReleaseAt by remember { mutableStateOf<String?>(null) }
+    var refreshSeq by remember { mutableStateOf(0) }
     var showMenu by rememberSaveable { mutableStateOf(false) }
     var confirmDelete by rememberSaveable { mutableStateOf(false) }
     var peopleDialog by rememberSaveable { mutableStateOf(-1) }  // 0 star 1 fork 2 watch 3 contributors
@@ -183,7 +184,13 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                         IconButton(onClick = { showMenu = true }) { Icon(Icons.Filled.MoreVert, "更多") }
                         DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                             DropdownMenuItem(text = { Text("刷新最新状态") }, leadingIcon = { Icon(Icons.Filled.Refresh, null) }, onClick = {
-                                showMenu = false; scope.launch { load(); Toast.makeText(ctx, "已刷新", Toast.LENGTH_SHORT).show() }
+                                showMenu = false
+                                UiCache.repoData.remove(key); UiCache.repoRuns.remove(key); UiCache.repoIssues.remove(key)
+                                UiCache.repoPulls.remove(key); UiCache.repoReleases.remove(key); UiCache.repoCommits.remove(key)
+                                UiCache.codeListing.keys.filter { it.startsWith("$key|") }.forEach { UiCache.codeListing.remove(it) }
+                                UiCache.fileContent.keys.filter { it.startsWith("$key|") }.forEach { UiCache.fileContent.remove(it) }
+                                refreshSeq++
+                                scope.launch { load(); Toast.makeText(ctx, "已刷新当前页面", Toast.LENGTH_SHORT).show() }
                             })
                             DropdownMenuItem(text = { Text("在浏览器打开") }, leadingIcon = { Icon(Icons.Filled.OpenInNew, null) }, onClick = {
                                 showMenu = false; openUrl(ctx, repo?.html_url)
@@ -277,6 +284,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
             ActiveDownloadStrip(repo?.full_name)
 
             Box(Modifier.weight(1f)) {
+                key(refreshSeq) {
                 when (tab) {
                     0 -> OverviewTab(nav, owner, name, r, languages, latestReleaseAt)
                     1 -> CodeTab(nav, owner, name, r)
@@ -287,6 +295,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                     6 -> CommitsTab(nav, owner, name, r)
                     7 -> DiscussionsTab(nav, owner, name, r)
                     8 -> ContributorsTab(nav, owner, name)
+                }
                 }
             }
         }
