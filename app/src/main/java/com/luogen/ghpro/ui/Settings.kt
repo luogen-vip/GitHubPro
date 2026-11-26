@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.luogen.ghpro.data.Api
+import com.luogen.ghpro.data.Bus
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.download.Downloader
 import com.luogen.ghpro.sync.CrashReporter
@@ -38,6 +39,7 @@ import kotlinx.coroutines.launch
 fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
+    val profileVer by Bus.statusPoke.collectAsState()
     var mirrorOn by remember { mutableStateOf(Cfg.useMirror) }
     var mt by remember { mutableStateOf(Cfg.multiThread) }
     var threads by remember { mutableStateOf(Cfg.downThreads) }
@@ -86,7 +88,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
         item {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                 Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Avatar(Cfg.avatar, 46)
+                    Avatar(remember(profileVer) { Cfg.avatar }, 46)
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text(Cfg.userName ?: Cfg.login ?: "未登录", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
@@ -101,6 +103,9 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
             }
             Spacer(Modifier.height(14.dp))
         }
+
+        item { MyStatusCard(); Spacer(Modifier.height(10.dp)) }
+        item { AvatarCard(); Spacer(Modifier.height(14.dp)) }
 
         item {
             SectionTitle("同步与通知")
@@ -296,7 +301,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
 
         item {
             Spacer(Modifier.height(40.dp))
-            Text("GitHub Pro 1.0.17 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("GitHub Pro 1.0.18 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("数据全部来自 GitHub 官方 REST / GraphQL API", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(30.dp))
         }

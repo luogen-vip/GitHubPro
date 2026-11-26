@@ -11,6 +11,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.WrapText
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -395,12 +397,18 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
     var searchQuery by remember { mutableStateOf("") }
     var searchIndex by remember { mutableStateOf(0) }
     var editorValue by remember { mutableStateOf(TextFieldValue(content)) }
+    var codeWrap by remember { mutableStateOf(Cfg.codeWrap) }
+    val wrapState = rememberLazyListState()
     val searchFocus = remember { FocusRequester() }
     val editorFocus = remember { FocusRequester() }
     val codeScroll = rememberScrollState()
     val codeHScroll = rememberScrollState()
     val density = LocalDensity.current
     val lineHeightPx = with(density) { 17.sp.toPx() }
+    val previewLineCount = remember(content) {
+        safePreview(content.replace("\r\n", "\n").replace('\r', '\n'), 200_000)
+            .trimEnd('\n').ifEmpty { " " }.count { it == '\n' } + 1
+    }
     val searchHits = remember(content, searchQuery) {
         if (searchQuery.isBlank()) emptyList() else searchMatches(content, searchQuery)
     }
@@ -415,7 +423,8 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
             runCatching { editorFocus.requestFocus() }
         } else {
             val line = content.take(hit).count { it == '\n' }
-            scope.launch { codeScroll.animateScrollTo((line * lineHeightPx).toInt()) }
+            if (codeWrap) scope.launch { wrapState.animateScrollToItem(line.coerceIn(0, (previewLineCount - 1).coerceAtLeast(0))) }
+            else scope.launch { codeScroll.animateScrollTo((line * lineHeightPx).toInt()) }
         }
     }
     LaunchedEffect(content) {
@@ -663,33 +672,54 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                             placeholder = { Text("文件内容…", fontSize = 12.sp) }
                         )
                     } else {
-                        Column(Modifier.fillMaxSize().verticalScroll(codeScroll).padding(8.dp)) {
-                            if (content.length > 200_000) {
-                                Text("文件较大，下面只预览前 20 万字符；点右上角下载可查看完整文件。",
-                                    fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
-                            }
-                            // 末尾换行在编辑器里会多出一个空行，但 Compose 的 Text 不会把它画出来，
-                            // 于是行号会比代码多 1~2 个。这里按“真正能看见的代码行”统一两边。
-                            val display = safePreview(content.replace("\r\n", "\n").replace('\r', '\n'), 200_000)
-                                .trimEnd('\n')
-                            val shown = display.ifEmpty { " " }
-                            val lineCount = shown.count { it == '\n' } + 1
-                            val codeStyle = androidx.compose.ui.text.TextStyle(
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 12.sp,
-                                lineHeight = 17.sp
-                            )
-                            Row(Modifier.fillMaxWidth()) {
-                                Column(Modifier.padding(end = 8.dp)) {
-                                    // 行号列和代码列使用同一 TextStyle、同一行高，行数也只按 shown 算。
-                                    Text((1..lineCount).joinToString("\n") { "$it" },
-                                        style = codeStyle,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        softWrap = false)
+                        // 自动换行是默认开启的，并持久化；换行模式逐行渲染，行号与代码首行严格同行。
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(if (codeWrap) "自动换行：开" else "自动换行：关", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(Modifier.weight(1f))
+                            Switch(checked = codeWrap, onCheckedChange = { codeWrap = it; Cfg.codeWrap = it },
+                                modifier = Modifier.height(30.dp))
+                        }
+                        val display = safePreview(content.replace("\r\n", "\n").replace('\r', '\n'), 200_000)
+                            .trimEnd('\n')
+                        val shown = display.ifEmpty { " " }
+                        val lines = shown.split('\n')
+                        val codeStyle = androidx.compose.ui.text.TextStyle(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp
+                        )
+                        if (content.length > 200_000) {
+                            Text("文件较大，下面只预览前 20 万字符；点右上角下载可查看完整文件。",
+                                fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp))
+                        }
+                        if (codeWrap) {
+                            LazyColumn(state = wrapState, modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
+                                items(lines.size) { idx ->
+                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                                        Text("${idx + 1}",
+                                            style = codeStyle,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.widthIn(min = 32.dp).padding(end = 8.dp),
+                                            textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                                            softWrap = false)
+                                        Text(highlightCode(lines[idx].ifEmpty { " " }, fileName, if (searchOpen) searchQuery else ""),
+                                            style = codeStyle, softWrap = true, modifier = Modifier.weight(1f))
+                                    }
                                 }
-                                Box(Modifier.weight(1f).horizontalScroll(codeHScroll)) {
-                                    Text(highlightCode(shown, fileName, if (searchOpen) searchQuery else ""),
-                                        style = codeStyle, softWrap = false)
+                            }
+                        } else {
+                            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(codeScroll).padding(8.dp)) {
+                                Row(Modifier.fillMaxWidth()) {
+                                    Column(Modifier.padding(end = 8.dp)) {
+                                        Text((1..lines.size).joinToString("\n") { "$it" },
+                                            style = codeStyle,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            softWrap = false)
+                                    }
+                                    Box(Modifier.weight(1f).horizontalScroll(codeHScroll)) {
+                                        Text(highlightCode(shown, fileName, if (searchOpen) searchQuery else ""),
+                                            style = codeStyle, softWrap = false)
+                                    }
                                 }
                             }
                         }

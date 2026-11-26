@@ -74,6 +74,7 @@ fun HomeScreen(nav: NavController) {
     val tick by Bus.tick.collectAsState()
     val starVer by Bus.starPoke.collectAsState()
     val activityVer by Bus.activityPoke.collectAsState()
+    val statusVer by Bus.statusPoke.collectAsState()
     val safeMode = Cfg.safeMode
     val recent = Cfg.recentRepos.filter { Cfg.activityAt(it) > 0 }
 
@@ -180,6 +181,7 @@ fun HomeScreen(nav: NavController) {
     LaunchedEffect(repos) { if (!safeMode && repos.isNotEmpty()) IssueCounts.loadBatch(repos) }
 
     LaunchedEffect(Unit) {
+        if (!Cfg.token.isNullOrBlank()) runCatching { Api.myStatus() }.onSuccess { Cfg.saveStatus(it); Bus.statusChanged() }
         if (me == null) runCatching { Api.me() }.onSuccess { me = it; UiCache.homeMe = it }
         if (safeMode) return@LaunchedEffect
         while (isActive) {
@@ -245,9 +247,10 @@ fun HomeScreen(nav: NavController) {
                         Column(Modifier.weight(1f)) {
                             Text(me?.name ?: me?.login ?: Cfg.userName ?: "GitHub", fontSize = 15.sp,
                                 fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text("@" + (me?.login ?: Cfg.login ?: ""), fontSize = 11.sp,
-                                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            val statusLine = remember(statusVer) { myStatusLine() }
+                            Text("@" + (me?.login ?: Cfg.login ?: "") + if (statusLine.isNullOrBlank()) "" else "  ·  $statusLine",
+                                fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                color = if (statusLine.isNullOrBlank()) MaterialTheme.colorScheme.onSurfaceVariant else GH.blue)
                         }
                         IconButton({ nav.navigate("settings") }) { Icon(Icons.Filled.Settings, "设置") }
                     }

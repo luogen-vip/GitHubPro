@@ -437,3 +437,10 @@ data class LicenseTpl(
     val spdx_id: String? = null,
     val url: String? = null
 )
+
+data class UserStatus(
+    val emoji: String? = null,
+    val message: String? = null,
+    val limitedAvailability: Boolean = false,
+    val expiresAt: String? = null
+)

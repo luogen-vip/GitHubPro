@@ -27,6 +27,7 @@ import coil.compose.AsyncImagePainter
 import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
 import coil.request.ImageRequest
+import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Label
 import com.luogen.ghpro.download.DownloadState
 import java.time.Duration
@@ -51,6 +52,37 @@ fun timeAgo(iso: String?): String {
         sec < 86400 * 30L -> "${sec / (86400 * 7)} 周前"
         sec < 86400 * 365L -> "${sec / (86400 * 30)} 个月前"
         else -> "${sec / (86400 * 365)} 年前"
+    }
+}
+
+private val STATUS_EMOJI = mapOf(
+    ":test_tube:" to "🧪", ":wave:" to "👋", ":house:" to "🏠", ":office:" to "🏢",
+    ":rocket:" to "🚀", ":dart:" to "🎯", ":zzz:" to "💤", ":ramen:" to "🍜",
+    ":video_game:" to "🎮", ":books:" to "📚", ":hammer_and_wrench:" to "🛠️",
+    ":eyes:" to "👀", ":white_check_mark:" to "✅", ":x:" to "❌", ":fire:" to "🔥",
+    ":heart:" to "❤️", ":coffee:" to "☕", ":airplane:" to "✈️", ":palm_tree:" to "🌴"
+)
+
+fun prettyStatusEmoji(raw: String?): String {
+    val v = raw?.trim().orEmpty()
+    if (v.isBlank()) return ""
+    return STATUS_EMOJI[v] ?: v
+}
+
+/** 头像旁的我的状态；没有设置时返回 null，不占额外一行。 */
+fun myStatusLine(): String? {
+    val expired = Cfg.statusExpiresAt?.let { raw ->
+        runCatching { java.time.Instant.parse(raw).isBefore(java.time.Instant.now()) }.getOrDefault(false)
+    } ?: false
+    if (expired) return null
+    val emoji = prettyStatusEmoji(Cfg.statusEmoji)
+    val msg = Cfg.statusMessage?.trim().orEmpty()
+    val busy = Cfg.statusBusy
+    if (emoji.isBlank() && msg.isBlank() && !busy) return null
+    return buildString {
+        if (emoji.isNotBlank()) append(emoji)
+        if (msg.isNotBlank()) { if (isNotEmpty()) append(" "); append(msg) }
+        if (busy) { if (isNotEmpty()) append(" · "); append("忙碌") }
     }
 }
 

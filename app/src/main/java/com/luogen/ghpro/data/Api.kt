@@ -1019,6 +1019,43 @@ object Api {
     suspend fun markThreadRead(threadId: String) { exec("/notifications/threads/$threadId", "PATCH", "{}") }
     suspend fun markAllRead() { exec("/notifications", "PUT", "{}") }
 
+    // ---------------- 用户状态（GraphQL） ----------------
+    /** GitHub 状态：真实写回服务端，别人在个人主页/头像悬浮卡能看到。 */
+    suspend fun myStatus(): UserStatus? {
+        val q = "query{viewer{status{emoji message indicatesLimitedAvailability expiresAt}}}"
+        val body = JsonObject().apply { addProperty("query", q) }
+        val root = JsonParser.parseString(raw("/graphql", "POST", body.toString())).asJsonObject
+        root.getAsJsonObject("data")?.getAsJsonObject("viewer")?.get("status")?.takeIf { it.isJsonObject }?.asJsonObject?.let { return parseStatus(it) }
+        val err = root.getAsJsonArray("errors")?.firstOrNull()?.asJsonObject?.get("message")?.asString
+        if (!err.isNullOrBlank()) throw IOException(err)
+        return null
+    }
+
+    suspend fun changeMyStatus(emoji: String, message: String, limited: Boolean, expiresAt: String?): UserStatus? {
+        val q = "mutation(\$input:ChangeUserStatusInput!){changeUserStatus(input:\$input){status{emoji message indicatesLimitedAvailability expiresAt}}}"
+        val input = JsonObject().apply {
+            addProperty("emoji", emoji)
+            addProperty("message", message.take(80))
+            addProperty("limitedAvailability", limited)
+            if (expiresAt.isNullOrBlank()) add("expiresAt", com.google.gson.JsonNull.INSTANCE) else addProperty("expiresAt", expiresAt)
+        }
+        val body = JsonObject().apply {
+            addProperty("query", q)
+            add("variables", JsonObject().apply { add("input", input) })
+        }
+        val root = JsonParser.parseString(raw("/graphql", "POST", body.toString())).asJsonObject
+        root.getAsJsonArray("errors")?.firstOrNull()?.asJsonObject?.get("message")?.asString?.let { throw IOException(it) }
+        val st = root.getAsJsonObject("data")?.getAsJsonObject("changeUserStatus")?.get("status")
+        return if (st != null && st.isJsonObject) parseStatus(st.asJsonObject) else null
+    }
+
+    private fun parseStatus(o: JsonObject): UserStatus = UserStatus(
+        emoji = o.get("emoji")?.takeIf { !it.isJsonNull }?.asString,
+        message = o.get("message")?.takeIf { !it.isJsonNull }?.asString,
+        limitedAvailability = o.get("indicatesLimitedAvailability")?.takeIf { !it.isJsonNull }?.asBoolean ?: false,
+        expiresAt = o.get("expiresAt")?.takeIf { !it.isJsonNull }?.asString
+    )
+
     // ---------------- 搜索 ---------------- ----------------
     suspend fun searchRepos(q: String, page: Int = 1, sort: String? = null, order: String? = null, perPage: Int = 30): SearchRepos {
         val query = mapOf("q" to q, "page" to "$page", "per_page" to "$perPage", "sort" to sort, "order" to order)

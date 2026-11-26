@@ -129,6 +129,35 @@ object Cfg {
         get() = sp.getInt("theme", 0)
         set(v) { sp.edit().putInt("theme", v).apply() }
 
+    /** 代码自动换行默认开启；关掉后恢复左右滑动，选择会保存在本地。 */
+    var codeWrap: Boolean
+        get() = sp.getBoolean("code_wrap", true)
+        set(v) { sp.edit().putBoolean("code_wrap", v).apply() }
+
+    /** 我的 GitHub 状态本地缓存：设置后立即显示，重启 App 仍保留，同时服务端是真实生效的。 */
+    var statusEmoji: String?
+        get() = sp.getString("my_status_emoji", null)
+        set(v) { sp.edit().putString("my_status_emoji", v).apply() }
+
+    var statusMessage: String?
+        get() = sp.getString("my_status_message", null)
+        set(v) { sp.edit().putString("my_status_message", v).apply() }
+
+    var statusBusy: Boolean
+        get() = sp.getBoolean("my_status_busy", false)
+        set(v) { sp.edit().putBoolean("my_status_busy", v).apply() }
+
+    var statusExpiresAt: String?
+        get() = sp.getString("my_status_expires", null)
+        set(v) { sp.edit().putString("my_status_expires", v).apply() }
+
+    fun saveStatus(s: com.luogen.ghpro.data.UserStatus?) {
+        statusEmoji = s?.emoji
+        statusMessage = s?.message
+        statusBusy = s?.limitedAvailability ?: false
+        statusExpiresAt = s?.expiresAt
+    }
+
     /** 本地已读的通知 id：即使刷新时服务端还没来得及更新，也不会再冒到“未读”里。 */
     var notifReadIds: Set<String>
         get() = sp.getStringSet("notif_read_ids", emptySet())?.toSet() ?: emptySet()
