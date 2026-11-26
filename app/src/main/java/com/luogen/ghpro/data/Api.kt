@@ -213,8 +213,13 @@ object Api {
     suspend fun me(): User = callObj("/user", User::class.java)
     suspend fun user(login: String): User = callObj("/users/$login", User::class.java)
     suspend fun myRepos(page: Int, perPage: Int = 60, sort: String = "updated", type: String? = null): Page<Repo> {
-        // /user/repos 只认 created/updated/pushed/full_name，stars 由客户端排序
-        val apiSort = if (sort == "stars") "updated" else sort
+        // “最近更新”用 pushed（最后一次代码推送）；GitHub 的 updated 会把改描述、改设置也算进去。
+        // stars 由客户端排序，这里先按 pushed 拉取，避免顺序混乱。
+        val apiSort = when (sort) {
+            "stars" -> "pushed"
+            "updated" -> "pushed"
+            else -> sort
+        }
         val dir = if (apiSort == "full_name") "asc" else "desc"
         return callList("/user/repos", mapOf("page" to "$page", "per_page" to "$perPage",
             "sort" to apiSort, "direction" to dir,
@@ -619,7 +624,15 @@ object Api {
                 .header("Authorization", "Bearer $token")
                 .build()
             http.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
+                if (!resp.isSuccessful) {
+                    // Actions 日志默认只保留 90 天；过期后 GitHub 会回 410，不是 App 网络错误
+                    when (resp.code) {
+                        410 -> throw IOException("这次运行的日志已被 GitHub 自动清理（Actions 日志默认只保留 90 天），不是 App 出错")
+                        404 -> throw IOException("日志还没生成，或已经被清理掉了")
+                        403 -> throw IOException("当前登录账号没有读取这个仓库日志的权限")
+                        else -> throw IOException("HTTP ${resp.code}")
+                    }
+                }
                 val bytes = resp.body?.bytes() ?: throw IOException("日志为空")
                 val all = StringBuilder()
                 var matched: String? = null

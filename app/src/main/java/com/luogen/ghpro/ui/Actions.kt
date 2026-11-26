@@ -257,7 +257,7 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                                     Toast.makeText(ctx, "开始下载本次日志…", Toast.LENGTH_SHORT).show()
                                     Downloader.startDownload(ctx,
                                         "https://api.github.com/repos/$owner/$name/actions/runs/$runId/logs",
-                                        "logs-$runId.zip", Cfg.token, useMirror = false,
+                                        "logs-$runId.log", Cfg.token, useMirror = false,
                                         source = "工作流日志", repo = "$owner/$name",
                                         onDone = { },
                                         onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
@@ -362,7 +362,7 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                                             Toast.makeText(ctx, "开始下载任务日志…", Toast.LENGTH_SHORT).show()
                                             Downloader.startDownload(ctx,
                                                 "https://api.github.com/repos/$owner/$name/actions/jobs/${job.id}/logs",
-                                                "job-${job.id}-${job.name.take(12)}.zip", Cfg.token, useMirror = false,
+                                                "job-${job.id}-${job.name.take(12)}.log", Cfg.token, useMirror = false,
                                                 source = "工作流日志", repo = "$owner/$name",
                                                 onDone = { },
                                                 onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
@@ -396,7 +396,12 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                     Spacer(Modifier.height(8.dp))
                     when {
                         stepLogLoading -> LoadingBox("正在读取这一步的日志…")
-                        stepLogError != null -> Text("读取失败：${messageOf(stepLogError)}", fontSize = 11.sp, color = GH.red)
+                        stepLogError != null -> {
+                            val em = messageOf(stepLogError)
+                            val expired = em.contains("90 天") || em.contains("清理") || em.contains("410")
+                            Text(if (expired) em else "读取失败：$em", fontSize = 11.sp,
+                                color = if (expired) MaterialTheme.colorScheme.onSurfaceVariant else GH.red)
+                        }
                         stepLog.isBlank() -> Text("这一步没有日志输出", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         else -> Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
                             Text(stepLog, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
@@ -409,7 +414,7 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                     Toast.makeText(ctx, "开始下载任务日志…", Toast.LENGTH_SHORT).show()
                     Downloader.startDownload(ctx,
                         "https://api.github.com/repos/$owner/$name/actions/jobs/${job.id}/logs",
-                        "job-${job.id}-${job.name.take(12)}.zip", Cfg.token, useMirror = false,
+                        "job-${job.id}-${job.name.take(12)}.log", Cfg.token, useMirror = false,
                                                 source = "工作流日志", repo = "$owner/$name",
                         onDone = { },
                         onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })

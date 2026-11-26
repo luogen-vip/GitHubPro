@@ -41,7 +41,8 @@ data class DownloadState(
     val publicPath: String? = null,
     val localPath: String? = null,
     val url: String? = null,
-    val useMirror: Boolean = true
+    val useMirror: Boolean = true,
+    val completedAt: Long = 0L
 ) {
     val percent: Int get() = if (total <= 0) 0 else ((done * 100) / total).toInt()
     val active: Boolean
@@ -166,6 +167,7 @@ object Downloader {
         val j = jobs.remove(key)
         j?.cancel()
         update(DownloadState(key, status = "已取消"))
+        runCatching { Notifier.downloadCanceled(com.luogen.ghpro.AppCtx.get(), key) }
         return j != null
     }
 
@@ -305,6 +307,7 @@ object Downloader {
                 val phase = if (idx == 0) "连接中" else "切换下载线路 ${idx + 1}/${cands.size}"
                 updateE(DownloadState(safe, status = phase, mirrorUsed = c, url = rawUrl, useMirror = useMirror,
                     done = outFile.takeIf { it.exists() }?.length() ?: 0), candEpoch)
+                if (notify) Notifier.downloadStatus(ctx, safe, phase)
                 fetch(c, outFile, token, threads, safe, notify, candEpoch)
                 if (isCancelled(safe)) throw kotlinx.coroutines.CancellationException("已取消")
                 val len = outFile.length()
@@ -312,12 +315,15 @@ object Downloader {
                 // 关键：先把进度明确推到 100%，再花时间写入系统下载目录，避免条子永远差一点
                 updateE(DownloadState(safe, done = len, total = len, status = "已下载 100% · 正在保存…",
                     mirrorUsed = c, threads = threads), candEpoch)
+                if (notify) Notifier.downloadProgress(ctx, safe, 100, "已下载 100% · 正在保存…")
                 val pub = publish(ctx, outFile, safe)
-                if (notify) Notifier.downloadDone(ctx, safe, outFile.absolutePath)
-                if (c != rawUrl) Cfg.preferredMirror = c.substringBefore("/https://").substringBefore("/http://")
-                updateE(DownloadState(safe, done = len, total = len,
+                val doneState = DownloadState(safe, done = len, total = len,
                     status = "已完成", path = pub.first, publicPath = pub.first, localPath = outFile.absolutePath,
-                    mirrorUsed = c, threads = threads), candEpoch)
+                    mirrorUsed = c, threads = threads, url = rawUrl, useMirror = useMirror,
+                    completedAt = System.currentTimeMillis())
+                updateE(doneState, candEpoch)
+                if (c != rawUrl) Cfg.preferredMirror = c.substringBefore("/https://").substringBefore("/http://")
+                if (notify) Notifier.downloadDone(ctx, safe, outFile.absolutePath, pub.first)
                 return@withContext outFile
             } catch (e: Exception) {
                 lastError = e
@@ -332,7 +338,10 @@ object Downloader {
             "网络已断开，下载已停止。已经下好的部分保留着，联网后在下载管理点“重试”会从断点继续。"
         } else rawMsg
         val kept = outFile.takeIf { it.exists() }?.length() ?: 0L
-        updateE(DownloadState(safe, status = "失败", error = msg, done = kept, total = 0, url = rawUrl, useMirror = useMirror), epoch)
+        // 候选线路每次都会刷新 epoch；失败落状态必须用当前 epoch，否则会永远停在「重试中」
+        updateE(DownloadState(safe, status = "失败", error = msg, done = kept, total = 0, url = rawUrl, useMirror = useMirror),
+            epochs[safe] ?: epoch)
+        if (notify) Notifier.downloadFailed(ctx, safe, msg)
         throw IOException(msg)
     }
 
@@ -403,9 +412,17 @@ object Downloader {
         "apk" -> "application/vnd.android.package-archive"
         "zip" -> "application/zip"
         "json" -> "application/json"
-        "txt", "log" -> "text/plain"
+        "txt", "log", "md" -> "text/plain"
         "png" -> "image/png"
         "jpg", "jpeg" -> "image/jpeg"
+        "webp" -> "image/webp"
+        "gif" -> "image/gif"
+        "mp4" -> "video/mp4"
+        "mkv" -> "video/x-matroska"
+        "webm" -> "video/webm"
+        "mp3" -> "audio/mpeg"
+        "wav" -> "audio/wav"
+        "flac" -> "audio/flac"
         "pdf" -> "application/pdf"
         else -> "application/octet-stream"
     }
@@ -497,7 +514,7 @@ object Downloader {
                             status = if (total > 0) "下载中 ${done * 100 / total}%" else "下载中 ${done / 1024}KB",
                             threads = 1), epoch)
                         if (notify && total > 0) Notifier.downloadProgress(
-                            com.luogen.ghpro.AppCtx.get(), name, (done * 100 / total).toInt().coerceIn(0, 99)
+                            com.luogen.ghpro.AppCtx.get(), name, (done * 100 / total).toInt().coerceIn(0, 99), "单线程下载"
                         )
                         last = now
                         lastBytes = done
@@ -534,7 +551,7 @@ object Downloader {
                 val speed = (d - lastBytes) * 1000 / max(1, now - last)
                 updateE(DownloadState(name, done = d, total = total, speed = speed,
                     status = "多线程下载 ${d * 100 / total}%", threads = threads), epoch)
-                if (notify) Notifier.downloadProgress(com.luogen.ghpro.AppCtx.get(), name, (d * 100 / total).toInt())
+                if (notify) Notifier.downloadProgress(com.luogen.ghpro.AppCtx.get(), name, (d * 100 / total).toInt(), "多线程 $threads 线程")
                 last = now
                 lastBytes = d
             }
@@ -600,6 +617,20 @@ object Downloader {
             val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)
             val i = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            ctx.startActivity(i)
+        } catch (e: Exception) {
+            share(ctx, file)
+        }
+    }
+
+    /** 其他格式（PDF、压缩包等）用系统打开；图片/视频/文本由 App 内预览，不走这里。 */
+    fun openExternal(ctx: Context, file: File) {
+        try {
+            val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)
+            val i = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, mimeOf(file.name))
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             ctx.startActivity(i)

@@ -3,6 +3,7 @@ package com.luogen.ghpro.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -28,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -209,13 +211,15 @@ fun HomeScreen(nav: NavController) {
         if (v.isNullOrBlank()) return 0L
         return runCatching { java.time.Instant.parse(v).toEpochMilli() }.getOrDefault(0L)
     }
-    fun activityScore(r: com.luogen.ghpro.data.Repo): Long =
-        maxOf(Cfg.activityAt(r.full_name), stamp(r.pushed_at), stamp(r.updated_at))
+    // “最近更新”只按 GitHub 的 pushed_at（真正有代码推送）排序。
+    // 不能用 updated_at（改个描述/Star 设置也会变），也不能混入本机浏览/下载记录，
+    // 否则会出现“没更新过的仓库显示更新于 5 分钟前并排到最上面”。
+    fun pushedScore(r: com.luogen.ghpro.data.Repo): Long =
+        stamp(r.pushed_at).takeIf { it > 0 } ?: stamp(r.updated_at)
 
     val byLang = if (lang == null) repos else repos.filter { it.language == lang }
     val sorted = when (sort) {
-        "updated" -> byLang.sortedByDescending { activityScore(it) }
-        "pushed" -> byLang.sortedByDescending { it.pushed_at ?: it.updated_at ?: "" }
+        "updated", "pushed" -> byLang.sortedByDescending { pushedScore(it) }
         "full_name" -> byLang.sortedBy { it.full_name.lowercase() }
         "stars" -> byLang.sortedByDescending { it.stargazers_count }
         else -> byLang
@@ -429,7 +433,13 @@ fun RepoRow(repo: Repo, recent: Boolean = false, onClick: () -> Unit) {
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text(desc, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 16.sp,
-                        modifier = Modifier.weight(1f).clickable { showDesc = true })
+                        modifier = Modifier.weight(1f).pointerInput(repo.full_name) {
+                            detectTapGestures(
+                                // 点一下描述 = 正常进仓库；点两下才弹完整描述，避免误触打断“进仓库”
+                                onTap = { onClick() },
+                                onDoubleTap = { showDesc = true }
+                            )
+                        })
                     if (desc.length > 46) {
                         Spacer(Modifier.width(6.dp))
                         Text("全文", fontSize = 10.sp, color = GH.blue,
@@ -448,7 +458,7 @@ fun RepoRow(repo: Repo, recent: Boolean = false, onClick: () -> Unit) {
                 Text("⑂ ${repo.forks_count}", fontSize = 11.sp, maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.width(8.dp))
                 // 这一格负责吃掉所有剩余宽度，过长的“更新 x 分钟前”只会省略，不会把右边议题徽章挤成竖排
-                Text("更新 ${timeAgo(repo.updated_at ?: repo.pushed_at)}", fontSize = 11.sp,
+                Text("更新 ${timeAgo(repo.pushed_at ?: repo.updated_at)}", fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1,
                     overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 if (issueCount > 0) {

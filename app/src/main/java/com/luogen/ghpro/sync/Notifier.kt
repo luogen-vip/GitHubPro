@@ -17,6 +17,7 @@ object Notifier {
     const val CH_ACTION = "gh_action"
     const val CH_NOTIF = "gh_notif"
     const val CH_DOWNLOAD = "gh_download"
+    const val CH_DOWNLOAD_DONE = "gh_download_done"
     const val CH_SERVICE = "gh_service"
 
     fun createChannels(ctx: Context) {
@@ -30,6 +31,10 @@ object Notifier {
         })
         nm.createNotificationChannel(NotificationChannel(CH_DOWNLOAD, "下载", NotificationManager.IMPORTANCE_LOW).apply {
             description = "发行版/源码/产物下载进度"
+        })
+        nm.createNotificationChannel(NotificationChannel(CH_DOWNLOAD_DONE, "下载完成", NotificationManager.IMPORTANCE_DEFAULT).apply {
+            description = "下载成功或失败，带提示音"
+            enableVibration(true)
         })
         nm.createNotificationChannel(NotificationChannel(CH_SERVICE, "后台监听", NotificationManager.IMPORTANCE_MIN).apply {
             description = "实时同步服务常驻通知"
@@ -79,26 +84,71 @@ object Notifier {
         safeNotify(ctx, n, id)
     }
 
-    fun downloadProgress(ctx: Context, name: String, progress: Int) {
+    fun downloadStatus(ctx: Context, name: String, status: String) {
         val n = NotificationCompat.Builder(ctx, CH_DOWNLOAD)
             .setSmallIcon(R.drawable.ic_small)
             .setContentTitle("正在下载 $name")
-            .setProgress(100, progress, progress <= 0)
+            .setContentText(status)
+            .setProgress(0, 0, true)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(contentIntent(ctx))
             .build()
         safeNotify(ctx, n, name.hashCode())
     }
 
-    fun downloadDone(ctx: Context, name: String, path: String) {
+    fun downloadProgress(ctx: Context, name: String, progress: Int, status: String = "下载中") {
         val n = NotificationCompat.Builder(ctx, CH_DOWNLOAD)
             .setSmallIcon(R.drawable.ic_small)
-            .setContentTitle("下载完成")
-            .setContentText(name)
-            .setAutoCancel(true)
+            .setContentTitle("正在下载 $name")
+            .setContentText("$status · $progress%")
+            .setProgress(100, progress, progress <= 0)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(contentIntent(ctx))
             .build()
         safeNotify(ctx, n, name.hashCode())
+    }
+
+    fun downloadDone(ctx: Context, name: String, path: String, publicPath: String? = null) {
+        // 点通知直接打开刚下好的文件：APK 弹安装器，图片/视频进 App 内预览
+        val open = Intent(ctx, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("open_file", path)
+        }
+        val openPi = PendingIntent.getActivity(ctx, name.hashCode(), open,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val n = NotificationCompat.Builder(ctx, CH_DOWNLOAD_DONE)
+            .setSmallIcon(R.drawable.ic_small)
+            .setContentTitle("下载完成 · 100%")
+            .setContentText("点这里打开 · " + (publicPath?.takeIf { it.isNotBlank() } ?: name))
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$name\n已保存到 ${publicPath ?: path}\n点按通知可直接打开"))
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_VIBRATE)
+            .setContentIntent(openPi)
+            .build()
+        safeNotify(ctx, n, name.hashCode())
+    }
+
+    fun downloadFailed(ctx: Context, name: String, reason: String) {
+        val n = NotificationCompat.Builder(ctx, CH_DOWNLOAD_DONE)
+            .setSmallIcon(R.drawable.ic_small)
+            .setContentTitle("下载失败")
+            .setContentText(name)
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$name\n$reason"))
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_VIBRATE)
+            .setContentIntent(contentIntent(ctx))
+            .build()
+        safeNotify(ctx, n, name.hashCode())
+    }
+
+    fun downloadCanceled(ctx: Context, name: String) {
+        runCatching { NotificationManagerCompat.from(ctx).cancel(name.hashCode()) }
     }
 
     fun serviceNotification(ctx: Context, text: String): Notification =

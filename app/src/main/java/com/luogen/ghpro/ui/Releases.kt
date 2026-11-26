@@ -199,6 +199,11 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                                             IconButton({ Downloader.cancelDownload(a.name) }) {
                                                 Icon(Icons.Filled.Cancel, "取消下载", Modifier.size(16.dp), tint = GH.red)
                                             }
+                                        } else if (st != null && st.status == "已完成" && st.localPath != null) {
+                                            TextButton({ PreviewBus.open(ctx, java.io.File(st.localPath!!)) },
+                                                contentPadding = PaddingValues(horizontal = 6.dp)) {
+                                                Text("打开", fontSize = 11.sp, color = GH.blue)
+                                            }
                                         }
                                         IconButton({ copy(a.browser_download_url ?: "", "已复制下载链接") }) {
                                             Icon(Icons.Filled.ContentCopy, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)

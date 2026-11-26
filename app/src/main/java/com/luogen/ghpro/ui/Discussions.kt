@@ -37,6 +37,19 @@ fun DiscussionsTab(nav: NavController, owner: String, name: String, repo: Repo) 
     var msg by remember { mutableStateOf<String?>(null) }
     var canDiscuss by remember { mutableStateOf(repo.has_discussions) }
 
+    // 编辑仓库设置后 repo 会立刻换成新对象：这里同帧刷新开关状态。
+    // 关闭时马上显示“未开启”，不再反复请求两三次才变。
+    LaunchedEffect(repo.has_discussions, owner, name) {
+        canDiscuss = repo.has_discussions
+        if (!repo.has_discussions) {
+            list = emptyList()
+            error = null
+            msg = null
+            loading = false
+            UiCache.repoDiscussions.remove(dk)
+        }
+    }
+
     suspend fun load() {
         loading = true
         try {
@@ -44,21 +57,25 @@ fun DiscussionsTab(nav: NavController, owner: String, name: String, repo: Repo) 
             UiCache.repoDiscussions[dk] = list
             error = null
             msg = null
-            if (!canDiscuss) {
-                // 用户可能刚在网页端开启，仓库缓存还是旧值：这里真实复查一次 has_discussions
-                runCatching { Api.repo(owner, name) }.onSuccess {
-                    canDiscuss = it.has_discussions
-                    UiCache.repoData[dk] = it
-                }
-            }
+            canDiscuss = true
         } catch (e: Exception) {
             val notEnabled = e.message?.contains("discussions", true) == true || e.message?.contains("Could not resolve", true) == true
             if (notEnabled) {
-                // 没开启不是“网络错误”，直接进入“去开启”状态，避免红字吓人
-                canDiscuss = false
-                list = emptyList()
-                error = null
-                msg = "GitHub 返回：这个仓库还没有开启 Discussions"
+                // 新仓库刚开启、GitHub 的讨论区可能还在初始化：真实复查仓库开关，
+                // 开了就显示“已开启但这次没读到”，不要误报成“没开启”。
+                val fresh = runCatching { Api.repo(owner, name) }.getOrNull()
+                if (fresh != null) UiCache.repoData[dk] = fresh
+                if (fresh?.has_discussions == true) {
+                    canDiscuss = true
+                    list = emptyList()
+                    error = null
+                    msg = "讨论区已开启，但这次没有读到列表；点“刷新讨论”再试一次"
+                } else {
+                    canDiscuss = false
+                    list = emptyList()
+                    error = null
+                    msg = "GitHub 返回：这个仓库还没有开启 Discussions"
+                }
             } else {
                 error = e.message
                 msg = null
@@ -66,9 +83,28 @@ fun DiscussionsTab(nav: NavController, owner: String, name: String, repo: Repo) 
         }
         loading = false
     }
-    LaunchedEffect(owner, name) { if (list.isEmpty()) load() else loading = false }
+    LaunchedEffect(owner, name, repo.has_discussions) {
+        if (repo.has_discussions && list.isEmpty()) load() else loading = false
+    }
 
     when {
+        !canDiscuss -> Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("这个仓库还没有开启 Discussions", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(6.dp))
+            Text("开启后，讨论会显示在这里；和“议题”不是同一个功能。议题用来报 Bug / 提需求，讨论更像论坛帖子。",
+                fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(12.dp))
+            Button({ openUrl(ctx, (repo.html_url ?: "https://github.com/$dk") + "/settings") }) {
+                Text("去网页端开启", fontSize = 12.sp)
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton({ scope.launch { load() } }) { Text("我已开启，重新检查", fontSize = 12.sp) }
+            msg?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
         loading -> LoadingBox()
         error != null -> Column {
             ErrorBox(error) { scope.launch { load() } }
@@ -76,32 +112,20 @@ fun DiscussionsTab(nav: NavController, owner: String, name: String, repo: Repo) 
         }
         list.isEmpty() -> Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 28.dp),
             horizontalAlignment = Alignment.CenterHorizontally) {
-            if (canDiscuss) {
-                Text("还没有讨论", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(6.dp))
-                Text("Discussions 已开启，只是还没有人发帖。网页端新建的讨论刷新后会出现在这里。",
-                    fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.height(12.dp))
-                OutlinedButton({ scope.launch { load() } }) { Text("刷新讨论", fontSize = 12.sp) }
-                Spacer(Modifier.height(8.dp))
-                TextButton({ openUrl(ctx, (repo.html_url ?: "https://github.com/$dk") + "/discussions") }) {
-                    Text("去网页端看讨论区", fontSize = 12.sp)
-                }
-            } else {
-                Text("这个仓库还没有开启 Discussions", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(6.dp))
-                Text("开启后，讨论会显示在这里；和“议题”不是同一个功能。议题用来报 Bug / 提需求，讨论更像论坛帖子。",
-                    fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.height(12.dp))
-                Button({ openUrl(ctx, (repo.html_url ?: "https://github.com/$dk") + "/settings") }) {
-                    Text("去网页端开启", fontSize = 12.sp)
-                }
-                Spacer(Modifier.height(8.dp))
-                OutlinedButton({ scope.launch { load() } }) { Text("我已开启，重新检查", fontSize = 12.sp) }
+            Text("还没有讨论", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(6.dp))
+            Text("Discussions 已开启，只是还没有人发帖。网页端新建的讨论刷新后会出现在这里。",
+                fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton({ scope.launch { load() } }) { Text("刷新讨论", fontSize = 12.sp) }
+            Spacer(Modifier.height(8.dp))
+            TextButton({ openUrl(ctx, (repo.html_url ?: "https://github.com/$dk") + "/discussions") }) {
+                Text("去网页端看讨论区", fontSize = 12.sp)
             }
             msg?.let {
                 Spacer(Modifier.height(8.dp))
-                Text(it, fontSize = 10.sp, color = GH.red)
+                Text(it, fontSize = 10.sp,
+                    color = if (canDiscuss) MaterialTheme.colorScheme.onSurfaceVariant else GH.red)
             }
         }
         else -> LazyColumn(Modifier.fillMaxSize()) {

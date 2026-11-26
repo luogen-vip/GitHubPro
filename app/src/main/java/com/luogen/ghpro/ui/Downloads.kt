@@ -170,8 +170,8 @@ fun DownloadsScreen(nav: NavController) {
                                 val local = r.localPath?.let { File(it) }
                                 if (local != null && local.exists()) {
                                     TextButton(onClick = {
-                                        if (r.name.endsWith(".apk", true)) Downloader.installApk(ctx, local)
-                                        else Downloader.share(ctx, local)
+                                        // APK 走安装器；图片/视频/文本在 App 内全屏预览，其余交系统
+                                        PreviewBus.open(ctx, local)
                                     }, contentPadding = PaddingValues(horizontal = 8.dp)) {
                                         Icon(Icons.Filled.OpenInNew, null, Modifier.size(14.dp)); Text("打开", fontSize = 11.sp)
                                     }

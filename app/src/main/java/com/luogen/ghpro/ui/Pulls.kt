@@ -72,17 +72,24 @@ fun PullListTab(nav: NavController, owner: String, name: String) {
     }
 
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            FilterChip(selected = state == "open", onClick = { state = "open" }, label = { Text("打开中", fontSize = 12.sp) })
-            Spacer(Modifier.width(6.dp))
-            FilterChip(selected = state == "closed", onClick = { state = "closed" }, label = { Text("已关闭", fontSize = 12.sp) })
-            Spacer(Modifier.width(6.dp))
-            FilterChip(selected = state == "all", onClick = { state = "all" }, label = { Text("全部", fontSize = 12.sp) })
-            Spacer(Modifier.weight(1f))
-            Button(onClick = { showCreate = true }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) {
+        Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                FilterChip(selected = state == "open", onClick = { state = "open" }, label = { Text("打开中", fontSize = 12.sp) })
+                FilterChip(selected = state == "closed", onClick = { state = "closed" }, label = { Text("已关闭", fontSize = 12.sp) })
+                FilterChip(selected = state == "all", onClick = { state = "all" }, label = { Text("全部", fontSize = 12.sp) })
+            }
+            Spacer(Modifier.width(8.dp))
+            // 固定高度、单行不换字：不会再把整行撑成两行高，也不会把“新建 PR”挤成竖排
+            FilledTonalButton(
+                onClick = { showCreate = true },
+                modifier = Modifier.height(32.dp),
+                contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp)
+            ) {
                 Icon(Icons.Filled.Add, null, Modifier.size(15.dp))
                 Spacer(Modifier.width(3.dp))
-                Text("新建 PR", fontSize = 11.sp)
+                Text("新建 PR", fontSize = 11.sp, maxLines = 1, softWrap = false)
             }
         }
         when {

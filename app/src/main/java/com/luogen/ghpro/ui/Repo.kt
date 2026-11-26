@@ -133,7 +133,8 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
     LaunchedEffect(tab) { UiCache.repoTab[key] = tab }
     val issueVer by Bus.issuePoke.collectAsState()
     val issueLocalVer by Bus.issueLocalPoke.collectAsState()
-    LaunchedEffect(issueVer, issueLocalVer) {
+    val repoVer by Bus.repoPoke.collectAsState()
+    LaunchedEffect(issueVer, issueLocalVer, repoVer) {
         UiCache.repoData[key]?.let { repo = it }
     }
     // 仓库统计（Star/复刻/关注/议题）自动追最新，别人操作也能看到
@@ -351,14 +352,14 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                         "主要语言 " + top.key + " " + String.format("%.1f", top.value * 100.0 / languages.values.sum().coerceAtLeast(1)) + "%"
                     else "这个仓库还没有语言统计", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                if (tab == 0) {
-                    val langsShown = languages.ifEmpty { r.language?.let { mapOf(it to 1L) } ?: emptyMap() }
-                    if (langsShown.isNotEmpty()) {
-                        Spacer(Modifier.height(6.dp))
-                        LanguageBar(langsShown, legend = false)
-                    } else {
-                        Spacer(Modifier.height(13.dp))
-                    }
+                // 不论切到概览、代码还是议题，这一条都固定显示；各页签头部高度一致，
+                // 切页签时不会因为语言条突然消失而整页往上跳。
+                val langsShown = languages.ifEmpty { r.language?.let { mapOf(it to 1L) } ?: emptyMap() }
+                Spacer(Modifier.height(6.dp))
+                if (langsShown.isNotEmpty()) {
+                    LanguageBar(langsShown, legend = true)
+                } else {
+                    Spacer(Modifier.height(5.dp))
                 }
             }
 
@@ -518,19 +519,15 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
     }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
-        if (languages.isNotEmpty()) {
-            Text("语言占比", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(4.dp))
-            LanguageBar(languages)
-            Spacer(Modifier.height(10.dp))
-        }
+        // 语言条已经固定在仓库头部，所有页签都能看到，这里不再重复一条
         KeyValue("分支", r.default_branch ?: "main", onClick = { })
         KeyValue("语言", r.language ?: "—")
         KeyValue("许可", r.license?.name ?: "未声明")
         KeyValue("创建", fullTime(r.created_at))
-        val latest = listOfNotNull(r.updated_at, r.pushed_at, latestReleaseAt).maxOrNull()
-        KeyValue("最近更新", "${timeAgo(latest ?: r.updated_at)} · ${fullTime(latest ?: r.updated_at)}")
-        KeyValue("最近推送", timeAgo(r.pushed_at))
+        // 分开显示：updated_at 只是仓库资料（描述/设置/Star 等）变化，pushed_at 才是真的有代码推送
+        KeyValue("仓库资料更新", timeAgo(r.updated_at))
+        KeyValue("最近代码推送", timeAgo(r.pushed_at))
+        latestReleaseAt?.let { KeyValue("最近发布", timeAgo(it)) }
         KeyValue("体积", humanSize(r.size * 1024))
         KeyValue("主页", r.homepage, onClick = { openUrl(ctx, r.homepage) })
         r.topics?.takeIf { it.isNotEmpty() }?.let { ts ->
@@ -827,28 +824,50 @@ fun PeopleDialog(nav: NavController, owner: String, name: String, kind: Int, onC
 
 @Composable
 fun ActiveDownloadStrip(repoFilter: String? = null) {
+    val ctx = LocalContext.current
     val map by Downloader.state.collectAsState()
     val active = map.values.filter {
         it.active &&
             (repoFilter == null || Downloader.repoOf(it.fileName) == repoFilter)
     }
-    if (active.isEmpty()) return
+    // 完成后还留一张最近的卡片，带“打开”：APK 直接安装，图片/视频就地预览
+    val done = map.values.filter {
+        it.status == "已完成" && (repoFilter == null || Downloader.repoOf(it.fileName) == repoFilter) &&
+            it.localPath?.let { p -> java.io.File(p).exists() } == true
+    }.sortedByDescending { it.completedAt }.take(1)
+    val shown = active + done
+    if (shown.isEmpty()) return
     Column(
         Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant)
             .padding(horizontal = 12.dp, vertical = 6.dp)
     ) {
-        active.take(2).forEach { d ->
+        shown.take(3).forEach { d ->
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(d.fileName, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                Text(if (d.total > 0) "${d.percent}%" else d.status, fontSize = 11.sp, color = GH.blue)
-                IconButton({ Downloader.cancelDownload(d.fileName) }, modifier = Modifier.size(26.dp)) {
-                    Icon(Icons.Filled.Close, "取消下载", Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (d.status == "已完成") {
+                    TextButton(onClick = { d.localPath?.let { PreviewBus.open(ctx, java.io.File(it)) } },
+                        contentPadding = PaddingValues(horizontal = 6.dp)) {
+                        Text("打开", fontSize = 11.sp, color = GH.blue)
+                    }
+                    IconButton({ Downloader.clearState(d.fileName) }, modifier = Modifier.size(26.dp)) {
+                        Icon(Icons.Filled.Close, "收起", Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                } else {
+                    Text(if (d.total > 0) "${d.percent}%" else d.status, fontSize = 11.sp, color = GH.blue)
+                    IconButton({ Downloader.cancelDownload(d.fileName) }, modifier = Modifier.size(26.dp)) {
+                        Icon(Icons.Filled.Close, "取消下载", Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
-            LinearProgressIndicator(
-                progress = { if (d.total > 0) d.percent / 100f else 0f },
-                modifier = Modifier.fillMaxWidth().padding(top = 3.dp)
-            )
+            if (d.status != "已完成") {
+                LinearProgressIndicator(
+                    progress = { if (d.total > 0) d.percent / 100f else 0f },
+                    modifier = Modifier.fillMaxWidth().padding(top = 3.dp)
+                )
+                if (d.total <= 0) Text(d.status, fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                Text("已完成 · ${d.publicPath ?: ""}", fontSize = 10.sp, color = GH.green)
+            }
         }
     }
 }

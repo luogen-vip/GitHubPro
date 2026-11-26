@@ -256,7 +256,7 @@ fun EditRepoScreen(nav: NavController, owner: String, name: String) {
                             busy = true
                             try {
                                 if (newName != name) Api.renameRepo(owner, name, newName.trim())
-                                Api.patchRepo(owner, newName.trim(),
+                                val saved = Api.patchRepo(owner, newName.trim(),
                                     mapOf(
                                         "description" to desc,
                                         "homepage" to homepage,
@@ -267,12 +267,24 @@ fun EditRepoScreen(nav: NavController, owner: String, name: String) {
                                         "has_projects" to hasProjects,
                                         "has_discussions" to hasDiscussions
                                     ))
+                                // 保存成功后立刻写回内存缓存：返回仓库页马上就是新开关，不靠再刷新几次
+                                val savedKey = (saved.owner?.login ?: owner) + "/" + saved.name
+                                UiCache.repoData[savedKey] = saved
+                                if (newName != name) UiCache.repoData.remove("$owner/$name")
+                                if (!saved.has_discussions) UiCache.repoDiscussions.remove(savedKey)
+                                Bus.repoChanged()
                                 if (topics.isNotBlank()) {
-                                    runCatching { Api.setTopics(owner, newName.trim(), topics.split(",").map { it.trim() }.filter { it.isNotBlank() }) }
+                                    runCatching { Api.setTopics(owner, saved.name, topics.split(",").map { it.trim() }.filter { it.isNotBlank() }) }
                                 }
                                 Bus.poke()
                                 snackbar.showSnackbar("已保存，GitHub 上已生效")
-                                nav.popBackStack()
+                                if (newName != name) {
+                                    // 改名后旧 URL 已经不存在，直接替换掉旧仓库页，避免返回后 404
+                                    nav.popBackStack("repo/$owner/$name", inclusive = true)
+                                    nav.navigate("repo/$owner/${saved.name}")
+                                } else {
+                                    nav.popBackStack()
+                                }
                             } catch (e: Exception) { snackbar.showSnackbar("保存失败：${e.message}") }
                             busy = false
                         }
