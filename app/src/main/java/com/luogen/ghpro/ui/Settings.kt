@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -48,8 +49,15 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
     var watch by remember { mutableStateOf(Cfg.watchRepos.toList()) }
     var newMirror by remember { mutableStateOf("") }
     var newWatch by remember { mutableStateOf("") }
+    var muteTick by remember { mutableStateOf(0) }
+    var showRepoPicker by remember { mutableStateOf(false) }
+    var pickerMine by remember { mutableStateOf<List<com.luogen.ghpro.data.Repo>>(emptyList()) }
+    var pickerStar by remember { mutableStateOf<List<com.luogen.ghpro.data.Repo>>(emptyList()) }
+    var pickerLoading by remember { mutableStateOf(false) }
     var watching by remember { mutableStateOf(Cfg.watchEnabled) }
     var rate by remember { mutableStateOf<String?>(null) }
+    var mirrorProbe by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var probing by remember { mutableStateOf(false) }
     var rateLoading by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         while (isActive) {
@@ -111,17 +119,24 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
             }
             if (watch.isEmpty()) Text("还没有监听仓库：新建仓库会自动加入，也可以下面手动添加", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             watch.forEach { w ->
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                val muted = remember(w, muteTick) { Cfg.isRepoMuted(w) }
+                Row(Modifier.fillMaxWidth()
+                    .background(if (muted) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f) else Color.Transparent)
+                    .padding(vertical = 1.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(w, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    // 当前真实状态直接写在行里，不靠会排队的 Toast
+                    Text(if (muted) "已静音" else "通知中", fontSize = 10.sp,
+                        color = if (muted) GH.muted else GH.green, modifier = Modifier.padding(end = 4.dp))
                     IconButton(onClick = {
-                        Cfg.setRepoMuted(w, !Cfg.isRepoMuted(w))
-                        Toast.makeText(ctx, if (Cfg.isRepoMuted(w)) "已静音 $w" else "已恢复 $w 的通知", Toast.LENGTH_SHORT).show()
+                        Cfg.setRepoMuted(w, !muted)
+                        muteTick++          // 立刻重组，图标和文字同一帧切换
                     }) {
-                        Icon(if (Cfg.isRepoMuted(w)) Icons.Filled.NotificationsOff else Icons.Filled.Notifications,
-                            "通知开关", Modifier.size(16.dp), tint = if (Cfg.isRepoMuted(w)) GH.muted else GH.green)
+                        Icon(if (muted) Icons.Filled.NotificationsOff else Icons.Filled.Notifications,
+                            if (muted) "已静音，点一下恢复" else "通知中，点一下静音",
+                            Modifier.size(18.dp), tint = if (muted) GH.muted else GH.green)
                     }
                     IconButton(onClick = {
-                        val s = Cfg.watchRepos; s.remove(w); Cfg.watchRepos = s; watch = s.toList()
+                        val s = Cfg.watchRepos; s.remove(w); Cfg.watchRepos = s; watch = s.toList(); muteTick++
                     }) { Icon(Icons.Filled.Delete, null, Modifier.size(16.dp), tint = GH.red) }
                 }
             }
@@ -129,12 +144,18 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
                 OutlinedTextField(newWatch, { newWatch = it }, Modifier.weight(1f),
                     label = { Text("owner/repo") }, singleLine = true)
                 IconButton(onClick = {
-                    if (newWatch.contains("/")) {
-                        val s = Cfg.watchRepos; s.add(newWatch.trim()); Cfg.watchRepos = s
-                        watch = s.toList(); newWatch = ""
+                    val v = newWatch.trim().trimEnd('/')
+                    if (v.contains("/") && v.substringBefore("/").isNotBlank() && v.substringAfter("/").isNotBlank()) {
+                        val s = Cfg.watchRepos; s.add(v); Cfg.watchRepos = s
+                        watch = s.toList(); newWatch = ""; muteTick++
+                    } else {
+                        // 空输入 / 只写了半截：直接打开真实仓库选择器
+                        showRepoPicker = true
                     }
-                }) { Icon(Icons.Filled.Add, null, tint = GH.green) }
+                }) { Icon(Icons.Filled.Add, "添加监听仓库", tint = GH.green) }
             }
+            Text("点右边的 + 可以从你的仓库和已 Star 的仓库里直接选；输入框只用于手动填 owner/repo。",
+                fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
             Spacer(Modifier.height(14.dp))
         }
 
@@ -142,12 +163,33 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
             SectionTitle("下载加速（镜像）")
             SwitchRow("启用加速镜像", mirrorOn) { mirrorOn = it; Cfg.useMirror = it }
             SwitchRow("多线程分片下载", mt) { mt = it; Cfg.multiThread = it }
-            SliderRow("线程数", threads, 1f..16f, "$threads 线程") { threads = it; Cfg.downThreads = it }
-            Text("镜像只用于 github.com / raw / codeload 的文件下载；工作流产物与日志走官方 API 原地址。",
+            SliderRow("线程数（默认 64，最高 128）", threads, 1f..128f, "$threads 线程") { threads = it; Cfg.downThreads = it }
+            Text("小文件会自动少开线程；多线程被服务器拒绝或连续失败时，会自动降级单线程并断点续传，不需要你手动改。",
+                fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
+            Text("当前内置的 3 个镜像都实测可用；已失效的 gitmirror / moeyy / llkk 会自动清理。镜像只用于 github.com / raw / codeload 的文件下载，工作流产物与日志必须走官方 API 原地址。",
                 fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 6.dp))
+            Row {
+                TextButton(enabled = !probing, onClick = {
+                    scope.launch {
+                        probing = true
+                        val res = HashMap<String, String>()
+                        mirrors.forEach { m ->
+                            val (ok, detail) = Downloader.probeMirror(m)
+                            res[m] = (if (ok) "✓ " else "✗ ") + detail
+                            mirrorProbe = HashMap(res)
+                        }
+                        probing = false
+                    }
+                }) { Text(if (probing) "正在检测…" else "检测这些镜像", fontSize = 12.sp) }
+            }
             mirrors.forEach { m ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(m, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    Column(Modifier.weight(1f)) {
+                        Text(m, fontSize = 12.sp)
+                        mirrorProbe[m]?.let {
+                            Text(it, fontSize = 9.sp, color = if (it.startsWith("✓")) GH.green else GH.red)
+                        }
+                    }
                     IconButton(onClick = {
                         val s = Cfg.mirrors; s.remove(m); Cfg.mirrors = s; mirrors = s.toList()
                     }) { Icon(Icons.Filled.Delete, null, Modifier.size(16.dp), tint = GH.red) }
@@ -166,7 +208,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
             Row {
                 TextButton(onClick = {
                     val s = Cfg.mirrors; s.addAll(Cfg.DEFAULT_MIRRORS.split("|")); Cfg.mirrors = s; mirrors = s.toList()
-                }) { Text("恢复默认镜像") }
+                }) { Text("恢复可用默认镜像") }
             }
             Spacer(Modifier.height(14.dp))
         }
@@ -254,12 +296,70 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
 
         item {
             Spacer(Modifier.height(40.dp))
-            Text("GitHub Pro 1.0.11 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("GitHub Pro 1.0.12 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("数据全部来自 GitHub 官方 REST / GraphQL API", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(30.dp))
         }
     }
     if (showCrash && crash != null) CrashDialog(crash!!) { showCrash = false }
+
+    LaunchedEffect(showRepoPicker) {
+        if (!showRepoPicker) return@LaunchedEffect
+        pickerLoading = true
+        runCatching { Api.myRepos(1, 100).items }.onSuccess { pickerMine = it }
+        runCatching { Api.starred(1).items }.onSuccess { pickerStar = it }
+        pickerLoading = false
+    }
+
+    if (showRepoPicker) {
+        AlertDialog(
+            onDismissRequest = { showRepoPicker = false },
+            title = { Text("选择要监听的仓库", fontSize = 15.sp) },
+            text = {
+                Column(Modifier.heightIn(max = 500.dp).verticalScroll(rememberScrollState())) {
+                    if (pickerLoading) LoadingBox("正在读取你的仓库…")
+                    else {
+                        val mine = pickerMine.filter { it.full_name !in watch }
+                        val star = pickerStar.filter { it.full_name !in watch && it.full_name !in pickerMine.map { p -> p.full_name } }
+                        Text("我的仓库（${mine.size}）", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        if (mine.isEmpty()) Text("没有可添加的仓库", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        mine.take(50).forEach { r ->
+                            Row(Modifier.fillMaxWidth().clickable {
+                                val s = Cfg.watchRepos; s.add(r.full_name); Cfg.watchRepos = s
+                                watch = s.toList(); muteTick++
+                            }.padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Avatar(r.owner?.avatar_url, 24, name = r.owner?.login ?: r.full_name.substringBefore("/"))
+                                Spacer(Modifier.width(8.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(r.full_name, fontSize = 12.sp, maxLines = 1)
+                                    r.description?.let { Text(it, fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1) }
+                                }
+                                Icon(Icons.Filled.Add, "添加", Modifier.size(17.dp), tint = GH.green)
+                            }
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        Text("已 Star 的仓库（${star.size}）", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        if (star.isEmpty()) Text("没有额外的 Star 仓库", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        star.take(50).forEach { r ->
+                            Row(Modifier.fillMaxWidth().clickable {
+                                val s = Cfg.watchRepos; s.add(r.full_name); Cfg.watchRepos = s
+                                watch = s.toList(); muteTick++
+                            }.padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Avatar(r.owner?.avatar_url, 24, name = r.owner?.login ?: r.full_name.substringBefore("/"))
+                                Spacer(Modifier.width(8.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(r.full_name, fontSize = 12.sp, maxLines = 1)
+                                    r.description?.let { Text(it, fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1) }
+                                }
+                                Icon(Icons.Filled.Add, "添加", Modifier.size(17.dp), tint = GH.green)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton({ showRepoPicker = false }) { Text("完成") } }
+        )
+    }
 }
 
 @Composable

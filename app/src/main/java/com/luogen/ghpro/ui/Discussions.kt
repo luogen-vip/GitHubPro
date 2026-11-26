@@ -29,11 +29,13 @@ import kotlinx.coroutines.launch
 @Composable
 fun DiscussionsTab(nav: NavController, owner: String, name: String, repo: Repo) {
     val scope = rememberCoroutineScope()
+    val ctx = LocalContext.current
     val dk = "$owner/$name"
     var list by remember { mutableStateOf(UiCache.repoDiscussions[dk] ?: emptyList()) }
     var loading by remember { mutableStateOf(list.isEmpty()) }
     var error by remember { mutableStateOf<String?>(null) }
     var msg by remember { mutableStateOf<String?>(null) }
+    var canDiscuss by remember { mutableStateOf(repo.has_discussions) }
 
     suspend fun load() {
         loading = true
@@ -42,11 +44,24 @@ fun DiscussionsTab(nav: NavController, owner: String, name: String, repo: Repo) 
             UiCache.repoDiscussions[dk] = list
             error = null
             msg = null
+            if (!canDiscuss) {
+                // 用户可能刚在网页端开启，仓库缓存还是旧值：这里真实复查一次 has_discussions
+                runCatching { Api.repo(owner, name) }.onSuccess {
+                    canDiscuss = it.has_discussions
+                    UiCache.repoData[dk] = it
+                }
+            }
         } catch (e: Exception) {
-            error = e.message
-            msg = when {
-                e.message?.contains("discussions", true) == true -> "这个仓库没有开启 Discussions 讨论区（仓库设置里可开启）"
-                else -> null
+            val notEnabled = e.message?.contains("discussions", true) == true || e.message?.contains("Could not resolve", true) == true
+            if (notEnabled) {
+                // 没开启不是“网络错误”，直接进入“去开启”状态，避免红字吓人
+                canDiscuss = false
+                list = emptyList()
+                error = null
+                msg = "GitHub 返回：这个仓库还没有开启 Discussions"
+            } else {
+                error = e.message
+                msg = null
             }
         }
         loading = false
@@ -59,7 +74,36 @@ fun DiscussionsTab(nav: NavController, owner: String, name: String, repo: Repo) 
             ErrorBox(error) { scope.launch { load() } }
             msg?.let { Text(it, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(20.dp)) }
         }
-        list.isEmpty() -> EmptyBox("还没有讨论，去网页端开启 Discussions 后即可在这里看到")
+        list.isEmpty() -> Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally) {
+            if (canDiscuss) {
+                Text("还没有讨论", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                Text("Discussions 已开启，只是还没有人发帖。网页端新建的讨论刷新后会出现在这里。",
+                    fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton({ scope.launch { load() } }) { Text("刷新讨论", fontSize = 12.sp) }
+                Spacer(Modifier.height(8.dp))
+                TextButton({ openUrl(ctx, (repo.html_url ?: "https://github.com/$dk") + "/discussions") }) {
+                    Text("去网页端看讨论区", fontSize = 12.sp)
+                }
+            } else {
+                Text("这个仓库还没有开启 Discussions", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                Text("开启后，讨论会显示在这里；和“议题”不是同一个功能。议题用来报 Bug / 提需求，讨论更像论坛帖子。",
+                    fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(12.dp))
+                Button({ openUrl(ctx, (repo.html_url ?: "https://github.com/$dk") + "/settings") }) {
+                    Text("去网页端开启", fontSize = 12.sp)
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton({ scope.launch { load() } }) { Text("我已开启，重新检查", fontSize = 12.sp) }
+            }
+            msg?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, fontSize = 10.sp, color = GH.red)
+            }
+        }
         else -> LazyColumn(Modifier.fillMaxSize()) {
             items(list, key = { it.number }) { d ->
                 Column(Modifier.fillMaxWidth().clickable { nav.navigate("discussion/$owner/$name/${d.number}") }.padding(14.dp)) {

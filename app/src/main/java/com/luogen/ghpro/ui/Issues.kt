@@ -265,8 +265,13 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
             UiCache.repoIssues[k] = if (st == "all" || st == up.state) listOf(up) + rest else rest
         }
         if (adjustCount) UiCache.repoData["$owner/$name"]?.let { r ->
-            if (up.state == "open") UiCache.repoData["$owner/$name"] = r.copy(open_issues_count = r.open_issues_count + 1)
-            else UiCache.repoData["$owner/$name"] = r.copy(open_issues_count = (r.open_issues_count - 1).coerceAtLeast(0))
+            if (up.state == "open") {
+                UiCache.repoData["$owner/$name"] = r.copy(open_issues_count = r.open_issues_count + 1)
+                IssueCounts.adjust("$owner/$name", 1)
+            } else {
+                UiCache.repoData["$owner/$name"] = r.copy(open_issues_count = (r.open_issues_count - 1).coerceAtLeast(0))
+                IssueCounts.adjust("$owner/$name", -1)
+            }
         }
     }
 
@@ -481,7 +486,10 @@ fun NewIssueScreen(nav: NavController, owner: String, name: String) {
                                     UiCache.repoIssues[k] = if (st == "all" || st == created.state) listOf(created) + oldList else oldList
                                 }
                                 UiCache.repoData["$owner/$name"]?.let { r ->
-                                    if (created.state == "open") UiCache.repoData["$owner/$name"] = r.copy(open_issues_count = r.open_issues_count + 1)
+                                    if (created.state == "open") {
+                                        UiCache.repoData["$owner/$name"] = r.copy(open_issues_count = r.open_issues_count + 1)
+                                        IssueCounts.adjust("$owner/$name", 1)
+                                    }
                                 }
                                 Bus.issueLocalChanged()
                                 Bus.issuesChanged()

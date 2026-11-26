@@ -6,8 +6,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CallMerge
 import androidx.compose.material.icons.filled.Comment
@@ -43,6 +45,7 @@ fun PullListTab(nav: NavController, owner: String, name: String) {
     var error by remember { mutableStateOf<String?>(null) }
     var page by remember { mutableStateOf(1) }
     var hasNext by remember { mutableStateOf(false) }
+    var showCreate by remember { mutableStateOf(false) }
 
     suspend fun load(p: Int, replace: Boolean, silent: Boolean = false) {
         if (p == 1 && !silent) loading = true
@@ -75,6 +78,12 @@ fun PullListTab(nav: NavController, owner: String, name: String) {
             FilterChip(selected = state == "closed", onClick = { state = "closed" }, label = { Text("已关闭", fontSize = 12.sp) })
             Spacer(Modifier.width(6.dp))
             FilterChip(selected = state == "all", onClick = { state = "all" }, label = { Text("全部", fontSize = 12.sp) })
+            Spacer(Modifier.weight(1f))
+            Button(onClick = { showCreate = true }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) {
+                Icon(Icons.Filled.Add, null, Modifier.size(15.dp))
+                Spacer(Modifier.width(3.dp))
+                Text("新建 PR", fontSize = 11.sp)
+            }
         }
         when {
             loading && list.isEmpty() -> LoadingBox()
@@ -104,6 +113,13 @@ fun PullListTab(nav: NavController, owner: String, name: String) {
             }
         }
     }
+    if (showCreate) {
+        CreatePrDialog(owner, name, { showCreate = false }) { pr ->
+            UiCache.repoPulls.clear()
+            showCreate = false
+            nav.navigate("pr/$owner/$name/${pr.number}")
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -117,6 +133,7 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
     var error by remember { mutableStateOf<String?>(null) }
     var text by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    var mergeMethod by remember { mutableStateOf("merge") }
     val snackbar = remember { SnackbarHostState() }
 
     suspend fun load() {
@@ -166,12 +183,19 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
                         Spacer(Modifier.height(6.dp))
                         Text("${pr!!.head?.ref} → ${pr!!.base?.ref}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             if (pr!!.state == "open") {
+                                if (canPush) Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    listOf("merge" to "合并", "squash" to "压缩", "rebase" to "变基").forEach { (k, v) ->
+                                        FilterChip(selected = mergeMethod == k, onClick = { mergeMethod = k },
+                                            label = { Text(v, fontSize = 10.sp) })
+                                    }
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 if (canPush) Button(enabled = !busy, onClick = {
                                     scope.launch {
                                         busy = true
-                                        try { Api.mergePr(owner, name, number, null); snackbar.showSnackbar("已合并"); load() }
+                                        try { Api.mergePr(owner, name, number, null, mergeMethod); snackbar.showSnackbar("已合并"); load() }
                                         catch (e: Exception) { snackbar.showSnackbar("合并失败：${e.message}") }
                                         busy = false
                                     }
@@ -190,10 +214,13 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
                                         catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
                                     }
                                 }) { Text("批准", fontSize = 12.sp) }
+                                }
                             } else {
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 if (canClosePr) OutlinedButton(onClick = {
                                     scope.launch { runCatching { Api.reopenPr(owner, name, number) }; load() }
                                 }) { Text("重新打开", fontSize = 12.sp) }
+                                }
                             }
                         }
                     }
@@ -248,4 +275,99 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
             }
         }
     }
+}
+
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CreatePrDialog(owner: String, name: String, onDismiss: () -> Unit, onCreated: (PullRequest) -> Unit) {
+    val scope = rememberCoroutineScope()
+    val login = Cfg.login
+    var useFork by remember { mutableStateOf(login != null && login != owner) }
+    var title by remember { mutableStateOf("") }
+    var body by remember { mutableStateOf("") }
+    var base by remember { mutableStateOf(UiCache.repoData["$owner/$name"]?.default_branch ?: "main") }
+    var headBranch by remember { mutableStateOf("") }
+    var draft by remember { mutableStateOf(false) }
+    var baseBranches by remember { mutableStateOf<List<String>>(emptyList()) }
+    var headBranches by remember { mutableStateOf<List<String>>(emptyList()) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val headOwner = if (useFork) (login ?: owner) else owner
+
+    LaunchedEffect(owner, name) {
+        runCatching { Api.branches(owner, name) }.onSuccess { baseBranches = it.map { b -> b.name } }
+    }
+    LaunchedEffect(headOwner, useFork) {
+        runCatching { Api.branches(headOwner, name) }.onSuccess { headBranches = it.map { b -> b.name } }
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("新建 Pull Request", fontSize = 15.sp) },
+        text = {
+            Column(Modifier.heightIn(max = 500.dp).verticalScroll(rememberScrollState())) {
+                Text("把你的分支提交给 $owner/$name，作者可以审核并合并。", fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilterChip(selected = !useFork, onClick = { useFork = false }, label = { Text("当前仓库分支", fontSize = 10.sp) })
+                    if (login != null && login != owner) {
+                        FilterChip(selected = useFork, onClick = { useFork = true }, label = { Text("我的复刻 @$login", fontSize = 10.sp) })
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                OutlinedTextField(base, { base = it.trim() }, Modifier.fillMaxWidth(),
+                    label = { Text("目标分支 base（合并到）") }, singleLine = true)
+                if (baseBranches.isNotEmpty()) {
+                    Row(Modifier.horizontalScroll(rememberScrollState())) {
+                        baseBranches.take(12).forEach { b ->
+                            FilterChip(selected = base == b, onClick = { base = b }, label = { Text(b, fontSize = 9.sp) })
+                            Spacer(Modifier.width(4.dp))
+                        }
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                OutlinedTextField(headBranch, { headBranch = it.trim() }, Modifier.fillMaxWidth(),
+                    label = { Text(if (useFork) "来源分支 head（@$headOwner 的分支）" else "来源分支 head") }, singleLine = true)
+                if (headBranches.isNotEmpty()) {
+                    Row(Modifier.horizontalScroll(rememberScrollState())) {
+                        headBranches.take(12).forEach { b ->
+                            FilterChip(selected = headBranch == b, onClick = { headBranch = b }, label = { Text(b, fontSize = 9.sp) })
+                            Spacer(Modifier.width(4.dp))
+                        }
+                    }
+                }
+                if (useFork) Text("跨复刻提交时，GitHub 实际发送 head=@$headOwner:$headBranch；分支必须先推到你的复刻仓库。",
+                    fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(),
+                    label = { Text("标题") }, singleLine = true)
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(body, { body = it }, Modifier.fillMaxWidth(),
+                    label = { Text("说明（可选）") }, minLines = 3, maxLines = 8)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("创建为草稿", fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    Switch(checked = draft, onCheckedChange = { draft = it })
+                }
+                error?.let { Text(it, fontSize = 11.sp, color = GH.red) }
+            }
+        },
+        confirmButton = {
+            Button(enabled = !busy && title.isNotBlank() && base.isNotBlank() && headBranch.isNotBlank(), onClick = {
+                scope.launch {
+                    busy = true; error = null
+                    try {
+                        val head = if (useFork) "$headOwner:$headBranch" else headBranch
+                        val pr = Api.createPull(owner, name, title.trim(), head, base.trim(), body.trim(), draft)
+                        onCreated(pr)
+                    } catch (e: Exception) {
+                        error = "创建失败：${e.message}"
+                    }
+                    busy = false
+                }
+            }) { Text(if (busy) "提交中…" else "提交合并请求", fontSize = 12.sp) }
+        },
+        dismissButton = { TextButton(enabled = !busy, onClick = onDismiss) { Text("取消") } }
+    )
 }

@@ -17,8 +17,12 @@ import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.GhEvent
 import com.luogen.ghpro.data.Run
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 object SyncEngine {
+
+    private val lock = Mutex()
 
     data class Change(val title: String, val body: String, val kind: String)
 
@@ -36,7 +40,11 @@ object SyncEngine {
     /**
      * 一次真实同步：拉取通知 / 我的仓库 Star 变化 / 关注仓库的工作流状态变化。
      */
-    suspend fun syncOnce(ctx: Context, notify: Boolean = true): List<Change> {
+    suspend fun syncOnce(ctx: Context, notify: Boolean = true): List<Change> = lock.withLock {
+        syncOnceLocked(ctx, notify)
+    }
+
+    private suspend fun syncOnceLocked(ctx: Context, notify: Boolean = true): List<Change> {
         val token = Cfg.token ?: return emptyList()
         Api.token = token
         val changes = ArrayList<Change>()
@@ -48,10 +56,11 @@ object SyncEngine {
         try {
             val list = Api.notifications(all = false)
             val seen = Cfg.lastSeenNotificationIds
+            val firstRun = seen.isEmpty()
             val fresh = list.filter { it.id !in seen && (it.repository?.full_name?.let { f -> !Cfg.isRepoMuted(f) } ?: true) }
             val newSeen = (seen + list.map { it.id }).toList().takeLast(300).toSet()
             Cfg.lastSeenNotificationIds = newSeen
-            if (notify && fresh.isNotEmpty()) {
+            if (notify && fresh.isNotEmpty() && !firstRun) {
                 fresh.take(5).forEach { n ->
                     val title = when (n.subject?.type) {
                         "Issue" -> "新议题"
@@ -63,11 +72,40 @@ object SyncEngine {
                         else -> "GitHub 通知"
                     }
                     val repo = n.repository?.full_name ?: ""
-                    val body = "${n.subject?.title ?: ""}\n$repo  ·  ${n.reason ?: ""}"
+                    val body = "${n.subject?.title ?: ""}\n$repo  ·  ${com.luogen.ghpro.ui.reasonCn(n.reason)}"
                     Notifier.generic(ctx, title, body)
                     changes.add(Change(title, body, "notification"))
                 }
             }
+        } catch (e: Exception) { }
+
+        // 1.5 已 Star 的仓库被作者删除 / 转私有 / 改名：真实复查，发现就通知，不是靠列表消失猜
+        try {
+            val starredNow = Api.starred(1).items.map { it.full_name }.toSet()
+            val old = Cfg.starredSnapshot
+            if (old.isNotEmpty()) {
+                (old - starredNow).take(3).forEach { gone ->
+                    val parts = gone.split("/")
+                    if (parts.size == 2) {
+                        val still = runCatching { Api.repo(parts[0], parts[1]) }
+                        val e = still.exceptionOrNull()
+                        if (still.isSuccess) {
+                            val fresh = still.getOrNull()
+                            if (fresh?.full_name != null && fresh.full_name != gone) {
+                                val body = "$gone 已改名为 ${fresh.full_name}"
+                                if (notify) Notifier.generic(ctx, "仓库改名了", body)
+                                changes.add(Change("仓库改名了", body, "repo_rename"))
+                            }
+                        } else if (e != null && (e.message?.contains("404") == true || e.message?.contains("Not Found", true) == true)) {
+                            val body = "$gone 已经不在 GitHub 上了（被作者删除或改成了私有仓库），已从 Star 列表移除"
+                            if (notify) Notifier.generic(ctx, "Star 的仓库已消失", body)
+                            changes.add(Change("Star 的仓库已消失", body, "repo_gone"))
+                        }
+                    }
+                }
+            }
+            Cfg.starredSnapshot = starredNow
+            Cfg.replaceStarred(starredNow)
         } catch (e: Exception) { }
 
         // 2. 我的仓库 Star / 更新时间变化

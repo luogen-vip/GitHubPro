@@ -7,6 +7,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -25,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -167,6 +171,8 @@ fun HomeScreen(nav: NavController) {
             UiCache.homeLoaded = true
         }
     }
+
+    LaunchedEffect(repos) { if (!safeMode && repos.isNotEmpty()) IssueCounts.loadBatch(repos) }
 
     LaunchedEffect(Unit) {
         if (me == null) runCatching { Api.me() }.onSuccess { me = it; UiCache.homeMe = it }
@@ -383,6 +389,11 @@ fun HomeScreen(nav: NavController) {
 /** 仓库卡片：一眼分得清"这是一个仓库"。 */
 @Composable
 fun RepoRow(repo: Repo, recent: Boolean = false, onClick: () -> Unit) {
+    val ctx = LocalContext.current
+    var showDesc by remember(repo.full_name) { mutableStateOf(false) }
+    val issueCount = IssueCounts.get(repo.full_name) ?: repo.open_issues_count
+    // 卡片一出现在可视区域就精确取一次 issue-only 数量；取到后全局缓存，滚动来回都不再请求
+    LaunchedEffect(repo.full_name) { IssueCounts.ensure(repo.full_name) }
     Card(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp).clickable { onClick() },
         shape = RoundedCornerShape(14.dp),
@@ -391,7 +402,7 @@ fun RepoRow(repo: Repo, recent: Boolean = false, onClick: () -> Unit) {
     ) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Avatar(repo.owner?.avatar_url, 30)
+                Avatar(repo.owner?.avatar_url, 30, name = repo.owner?.login ?: repo.full_name.substringBefore("/"))
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -413,34 +424,61 @@ fun RepoRow(repo: Repo, recent: Boolean = false, onClick: () -> Unit) {
                     Text("${repo.stargazers_count}", fontSize = 12.sp, fontWeight = FontWeight.Medium)
                 }
             }
-            repo.description?.takeIf { it.isNotBlank() }?.let {
+            repo.description?.takeIf { it.isNotBlank() }?.let { desc ->
                 Spacer(Modifier.height(8.dp))
-                Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 16.sp)
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(desc, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 16.sp,
+                        modifier = Modifier.weight(1f).clickable { showDesc = true })
+                    if (desc.length > 46) {
+                        Spacer(Modifier.width(6.dp))
+                        Text("全文", fontSize = 10.sp, color = GH.blue,
+                            modifier = Modifier.clickable { showDesc = true }.padding(bottom = 1.dp))
+                    }
+                }
             }
             Spacer(Modifier.height(9.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 repo.language?.let { l ->
                     Box(Modifier.size(9.dp).clip(CircleShape).background(GH.langColor(l)))
                     Spacer(Modifier.width(5.dp))
-                    Text(l, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.width(10.dp))
+                    Text(l, fontSize = 11.sp, maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.width(8.dp))
                 }
-                Text("⑂ ${repo.forks_count}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.width(10.dp))
-                Text("更新 ${timeAgo(repo.updated_at ?: repo.pushed_at)}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.weight(1f))
-                if (repo.open_issues_count > 0) {
+                Text("⑂ ${repo.forks_count}", fontSize = 11.sp, maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.width(8.dp))
+                // 这一格负责吃掉所有剩余宽度，过长的“更新 x 分钟前”只会省略，不会把右边议题徽章挤成竖排
+                Text("更新 ${timeAgo(repo.updated_at ?: repo.pushed_at)}", fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                if (issueCount > 0) {
+                    Spacer(Modifier.width(6.dp))
                     Box(
                         Modifier.clip(RoundedCornerShape(6.dp))
                             .background(GH.orange.copy(alpha = 0.14f))
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
-                        Text("${repo.open_issues_count} 议题", fontSize = 10.sp, color = GH.orange)
+                        Text("$issueCount 议题", fontSize = 10.sp, color = GH.orange,
+                            maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
         }
+    }
+    if (showDesc) {
+        AlertDialog(
+            onDismissRequest = { showDesc = false },
+            title = { Text("${repo.full_name} 的仓库描述", fontSize = 14.sp) },
+            text = {
+                SelectionContainer {
+                    Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
+                        Text(repo.description ?: "", fontSize = 13.sp, lineHeight = 20.sp)
+                    }
+                }
+            },
+            confirmButton = { TextButton({ showDesc = false }) { Text("关闭") } },
+            dismissButton = { TextButton({ copyText(ctx, repo.description ?: "", "已复制仓库描述") }) { Text("复制") } }
+        )
     }
 }
 

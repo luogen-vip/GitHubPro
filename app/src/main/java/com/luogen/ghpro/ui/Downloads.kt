@@ -30,6 +30,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.download.DlRecord
 import com.luogen.ghpro.download.Downloader
 import java.io.File
@@ -43,6 +44,7 @@ fun DownloadsScreen(nav: NavController) {
     val ver by Downloader.historyVersion.collectAsState()
     val states by Downloader.state.collectAsState()
     val active = states.values.filter { it.active }
+    val failed = states.values.filter { !it.active && it.status == "失败" }
     var cat by rememberSaveable { mutableStateOf("全部") }
     var list by remember { mutableStateOf<List<DlRecord>>(emptyList()) }
     val snackbar = remember { SnackbarHostState() }
@@ -83,6 +85,42 @@ fun DownloadsScreen(nav: NavController) {
             }
             val shown = if (cat == "全部") list else list.filter { Downloader.categoryOf(it.name) == cat }
             LazyColumn(Modifier.fillMaxSize()) {
+                    if (failed.isNotEmpty()) {
+                        item {
+                            Text("下载失败 ${failed.size}（可断点重试）", fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp), color = GH.red)
+                        }
+                        items(failed, key = { "failed-${it.fileName}" }) { d ->
+                            Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(12.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    TinyTag("失败", GH.red)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(d.fileName, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                    Text(if (d.done > 0) "已保留 ${humanSize(d.done)}" else "", fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                d.error?.let {
+                                    Text(it, fontSize = 10.sp, color = GH.red, maxLines = 3, overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.padding(top = 3.dp))
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    if (!d.url.isNullOrBlank()) TextButton({
+                                        Downloader.startDownload(ctx, d.url!!, d.fileName, Cfg.token, d.useMirror,
+                                            source = "重试下载")
+                                        Toast.makeText(ctx, "已继续下载（支持断点就接着下）", Toast.LENGTH_SHORT).show()
+                                    }, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                                        Icon(Icons.Filled.Refresh, null, Modifier.size(14.dp)); Text("断点重试", fontSize = 11.sp)
+                                    }
+                                    TextButton({ Downloader.clearState(d.fileName) },
+                                        contentPadding = PaddingValues(horizontal = 8.dp)) {
+                                        Text("清除提示", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                            }
+                            Divider1()
+                        }
+                    }
                     if (active.isNotEmpty()) {
                         item {
                             Text("正在下载 ${active.size}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
@@ -109,7 +147,7 @@ fun DownloadsScreen(nav: NavController) {
                             }
                         }
                     }
-                    if (shown.isEmpty() && active.isEmpty()) {
+                    if (shown.isEmpty() && active.isEmpty() && failed.isEmpty()) {
                         item { EmptyBox("还没有下载记录。下载发行版里的附件后会出现在这里") }
                     }
                     items(shown, key = { it.id + it.time }) { r ->
@@ -150,7 +188,7 @@ fun DownloadsScreen(nav: NavController) {
                                 }
                                 TextButton({
                                     Downloader.retryDownload(ctx, r,
-                                        onDone = { Toast.makeText(ctx, "已重新下载 ${r.name}", Toast.LENGTH_SHORT).show() })
+                                        onDone = { })
                                     Toast.makeText(ctx, "已开始重新下载", Toast.LENGTH_SHORT).show()
                                 }, contentPadding = PaddingValues(horizontal = 8.dp)) {
                                     Icon(Icons.Filled.Download, null, Modifier.size(14.dp)); Text("重新下载", fontSize = 11.sp)

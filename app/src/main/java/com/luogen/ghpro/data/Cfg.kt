@@ -7,7 +7,7 @@ object Cfg {
     private const val NAME = "ghpro_cfg"
     private lateinit var sp: SharedPreferences
 
-    const val DEFAULT_MIRRORS = "https://ghfast.top/|https://gh-proxy.com/|https://ghproxy.net/|https://hub.gitmirror.com/|https://github.moeyy.xyz/|https://gh.llkk.cc/"
+    const val DEFAULT_MIRRORS = "https://gh-proxy.com/|https://ghfast.top/|https://ghproxy.net/"
 
     fun init(ctx: Context) {
         if (::sp.isInitialized) return
@@ -19,6 +19,23 @@ object Cfg {
         // 之后只有新建/跑任务/发版/上传/Star/关注/议题等真实操作才会排到最上面。
         if (!sp.getBoolean("activity_clean_v11", false)) {
             sp.edit().remove("repo_activity").putBoolean("activity_clean_v11", true).apply()
+        }
+        // 旧默认镜像里有 3 个已失效（gitmirror / moeyy / llkk），只清理这几个，用户自己加的不动
+        if (!sp.getBoolean("mirrors_clean_v12", false)) {
+            val dead = setOf("https://hub.gitmirror.com/", "https://github.moeyy.xyz/", "https://gh.llkk.cc/")
+            val oldAll = (sp.getString("mirrors", DEFAULT_MIRRORS) ?: "").split("|")
+            val known = setOf("https://ghfast.top/", "https://gh-proxy.com/", "https://ghproxy.net/") + dead
+            val cur = oldAll.filter { it.isNotBlank() && it.trimEnd('/') + "/" !in dead }
+            // 如果只是旧的 6 个默认镜像，就按实测最快的顺序重置；用户自己加的镜像保持原样
+            val value = if (cur.isNotEmpty() && cur.all { it.trimEnd('/') + "/" in known }) DEFAULT_MIRRORS
+                        else cur.ifEmpty { DEFAULT_MIRRORS.split("|") }.joinToString("|")
+            sp.edit().putString("mirrors", value)
+                .putBoolean("mirrors_clean_v12", true).apply()
+        }
+        // 1.0.12 起默认 64 线程（可调到 128），多线程和加速镜像默认开启
+        if (!sp.getBoolean("download_cfg_v12", false)) {
+            sp.edit().putInt("threads", 64).putBoolean("mt", true).putBoolean("use_mirror", true)
+                .putBoolean("download_cfg_v12", true).apply()
         }
     }
 
@@ -38,6 +55,12 @@ object Cfg {
         (sp.getStringSet("starred_repos", emptySet()) ?: emptySet()).toMutableSet()
 
     fun isStarredCached(full: String): Boolean = starSet().contains(full)
+    fun replaceStarred(full: Set<String>) = sp.edit().putStringSet("starred_repos", full).apply()
+
+    /** 上次同步时真实 Star 名单；仓库被作者删除/转私有后，下一次同步就能发现并通知。 */
+    var starredSnapshot: Set<String>
+        get() = sp.getStringSet("starred_snapshot_v12", emptySet()) ?: emptySet()
+        set(v) = sp.edit().putStringSet("starred_snapshot_v12", v).apply()
 
     fun setStarredCached(full: String, on: Boolean) {
         val s = starSet()
@@ -70,7 +93,7 @@ object Cfg {
         set(v) { sp.edit().putBoolean("mt", v).apply() }
 
     var downThreads: Int
-        get() = sp.getInt("threads", 8)
+        get() = sp.getInt("threads", 64)
         set(v) { sp.edit().putInt("threads", v).apply() }
 
     var pollSeconds: Int
@@ -163,10 +186,17 @@ object Cfg {
         Api.token = null
     }
 
+    /** 上次真实下载成功的镜像排到第一，避免每次都先撞上刚好变慢的那一个。 */
+    var preferredMirror: String
+        get() = sp.getString("preferred_mirror", "") ?: ""
+        set(v) = sp.edit().putString("preferred_mirror", v).apply()
+
     fun mirrorOf(url: String): List<String> {
         val out = ArrayList<String>()
         if (!useMirror) return out
-        mirrors.forEach { m -> if (m.isNotBlank()) out.add(m.trimEnd('/') + "/" + url) }
+        val pref = preferredMirror.trimEnd('/')
+        mirrors.sortedByDescending { it.trimEnd('/') == pref && pref.isNotBlank() }
+            .forEach { m -> if (m.isNotBlank()) out.add(m.trimEnd('/') + "/" + url) }
         return out
     }
 }

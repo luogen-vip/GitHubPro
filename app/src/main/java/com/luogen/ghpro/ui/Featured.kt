@@ -65,6 +65,7 @@ fun FeaturedScreen(nav: NavController) {
     }
 
     LaunchedEffect(sort) { load() }
+    LaunchedEffect(list) { if (list.isNotEmpty()) IssueCounts.loadBatch(list) }
 
     // 每 40 秒自动刷新，排名变化自己更新
     LaunchedEffect(sort) {

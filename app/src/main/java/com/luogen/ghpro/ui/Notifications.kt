@@ -5,9 +5,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,21 +29,52 @@ import kotlinx.coroutines.launch
 fun NotificationsScreen(nav: NavController) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    var all by remember { mutableStateOf(false) }
-    var list by remember { mutableStateOf<List<Notification>>(emptyList()) }
-    var loading by remember { mutableStateOf(true) }
+    var all by remember { mutableStateOf(UiCache.notifAll) }
+    val firstSnap = UiCache.notifSnaps[all]
+    var list by remember { mutableStateOf<List<Notification>>(firstSnap?.list ?: emptyList()) }
+    var loading by remember { mutableStateOf(firstSnap == null) }
     var error by remember { mutableStateOf<String?>(null) }
     val snackbar = remember { SnackbarHostState() }
+    val listState = rememberLazyListState(firstSnap?.index ?: 0, firstSnap?.offset ?: 0)
 
-    suspend fun load() {
-        loading = true
+    fun savePos() {
+        UiCache.notifAll = all
+        UiCache.notifSnaps[all] = NotifSnap(list, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset)
+    }
+
+    suspend fun load(showLoading: Boolean = true) {
+        if (showLoading) loading = true
         try {
-            list = Api.notifications(all)
+            val data = Api.notifications(all)
+            list = data
             error = null
+            UiCache.notifAll = all
+            UiCache.notifSnaps[all] = NotifSnap(data, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset)
         } catch (e: Exception) { error = e.message }
         loading = false
     }
-    LaunchedEffect(all) { load() }
+
+    // 进入页面 / 切“未读、全部”时优先恢复上次快照；有快照就绝不重新请求，也不会跳回顶部
+    LaunchedEffect(all) {
+        UiCache.notifAll = all
+        val snap = UiCache.notifSnaps[all]
+        if (snap != null) {
+            list = snap.list
+            error = null
+            loading = false
+            if (snap.index > 0 || snap.offset > 0) listState.scrollToItem(snap.index, snap.offset)
+        } else {
+            list = emptyList()
+            load(true)
+        }
+    }
+    DisposableEffect(all) {
+        val tab = all
+        onDispose {
+            // 必须用离开时的 tab 保存；不能用可变状态 all，否则切页时会把旧列表存进新页签
+            UiCache.notifSnaps[tab] = NotifSnap(list, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset)
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -49,12 +82,17 @@ fun NotificationsScreen(nav: NavController) {
         topBar = {
             TopAppBar(
                 title = { Text(if (all) "全部通知" else "未读通知", fontSize = 15.sp) },
-                navigationIcon = { IconButton({ nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
+                navigationIcon = { IconButton({ savePos(); nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
                 actions = {
+                    IconButton({ scope.launch { load(true) } }) { Icon(Icons.Filled.Refresh, "刷新通知") }
                     IconButton({
                         scope.launch {
-                            try { Api.markAllRead(); load(); snackbar.showSnackbar("已全部标记为已读") }
-                            catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
+                            try {
+                                Api.markAllRead()
+                                list = list.map { it.copy(unread = false) }
+                                savePos()
+                                snackbar.showSnackbar("已全部标记为已读")
+                            } catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
                         }
                     }) { Icon(Icons.Filled.DoneAll, "全部已读") }
                 },
@@ -68,33 +106,35 @@ fun NotificationsScreen(nav: NavController) {
                 Spacer(Modifier.width(6.dp))
                 FilterChip(selected = all, onClick = { all = true }, label = { Text("全部", fontSize = 11.sp) })
                 Spacer(Modifier.weight(1f))
-                Text("${list.size} 条", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(if (all) "${list.size} 条" else "${list.count { it.unread }} 未读 / ${list.size} 条",
+                    fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             when {
                 loading -> LoadingBox()
-                error != null -> ErrorBox(error) { scope.launch { load() } }
+                error != null -> ErrorBox(error) { scope.launch { load(true) } }
                 list.isEmpty() -> EmptyBox("没有通知（GitHub 通知需要你在网页端 Watch 仓库）")
-                else -> LazyColumn(Modifier.fillMaxSize()) {
+                else -> LazyColumn(Modifier.fillMaxSize(), state = listState) {
                     items(list, key = { it.id }) { n ->
                         Column(
                             Modifier.fillMaxWidth()
                                 .background(if (n.unread) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.background)
                                 .clickable {
-                                    scope.launch {
-                                        runCatching { Api.markThreadRead(n.id) }
-                                        val url = n.subject?.url ?: ""
-                                        val repo = n.repository?.full_name ?: ""
-                                        val m = Regex("repos/(.+?)/(.+?)/(issues|pulls)/").find(url)
-                                        if (m != null) {
-                                            val (o, r, kind) = m.destructured
-                                            val num = url.substringAfterLast('/').toIntOrNull()
-                                            if (num != null) nav.navigate(if (kind == "issues") "issue/$o/$r/$num" else "pr/$o/$r/$num")
-                                        } else if (repo.isNotBlank()) {
-                                            nav.navigate("repo/$repo")
-                                        } else {
-                                            openUrl(ctx, n.subject?.url)
-                                        }
-                                        load()
+                                    // 先把当前位置存下来，再从“全部”点进某条：返回后仍是全部页签 + 原位置
+                                    savePos()
+                                    val clicked = n
+                                    list = list.map { if (it.id == clicked.id) it.copy(unread = false) else it }
+                                    scope.launch { runCatching { Api.markThreadRead(clicked.id) } }
+                                    val url = n.subject?.url ?: ""
+                                    val repo = n.repository?.full_name ?: ""
+                                    val m = Regex("repos/(.+?)/(.+?)/(issues|pulls)/").find(url)
+                                    if (m != null) {
+                                        val (o, r, kind) = m.destructured
+                                        val num = url.substringAfterLast('/').toIntOrNull()
+                                        if (num != null) nav.navigate(if (kind == "issues") "issue/$o/$r/$num" else "pr/$o/$r/$num")
+                                    } else if (repo.isNotBlank()) {
+                                        nav.navigate("repo/$repo")
+                                    } else {
+                                        openUrl(ctx, n.subject?.url)
                                     }
                                 }.padding(14.dp)
                         ) {
@@ -116,7 +156,7 @@ fun NotificationsScreen(nav: NavController) {
                                 if (n.unread) Box(Modifier.size(7.dp).background(GH.blue, androidx.compose.foundation.shape.CircleShape))
                             }
                             Spacer(Modifier.height(3.dp))
-                            Text("${n.repository?.full_name ?: ""} · ${n.reason ?: ""} · ${timeAgo(n.updated_at)}",
+                            Text("${n.repository?.full_name ?: ""} · ${reasonCn(n.reason)} · ${timeAgo(n.updated_at)}",
                                 fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Divider1()
@@ -126,4 +166,3 @@ fun NotificationsScreen(nav: NavController) {
         }
     }
 }
-

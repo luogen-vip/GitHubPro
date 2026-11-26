@@ -11,6 +11,7 @@ import com.luogen.ghpro.data.Job
 import com.luogen.ghpro.data.Artifact
 import com.luogen.ghpro.data.User
 import com.luogen.ghpro.data.Discussion
+import com.luogen.ghpro.data.Notification
 
 /**
  * 页面级内存缓存：从详情页返回、切到别的 App 再回来、横竖屏切换时，
@@ -19,7 +20,13 @@ import com.luogen.ghpro.data.Discussion
  */
 data class HomeSnap(val repos: List<Repo>, val page: Int, val hasNext: Boolean)
 
+data class NotifSnap(val list: List<Notification>, val index: Int, val offset: Int)
+
 object UiCache {
+
+    // ---------------- 通知 ----------------
+    var notifAll = false
+    val notifSnaps = HashMap<Boolean, NotifSnap>()
 
     // ---------------- 首页 ----------------
     var homeLoaded = false

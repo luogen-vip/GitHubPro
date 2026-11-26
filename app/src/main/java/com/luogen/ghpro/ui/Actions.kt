@@ -161,6 +161,7 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
     var run by remember { mutableStateOf<Run?>(UiCache.runData[runId]) }
     var jobs by remember { mutableStateOf(UiCache.runJobs[runId] ?: emptyList()) }
     var artifacts by remember { mutableStateOf(UiCache.runArtifacts[runId] ?: emptyList()) }
+    val dlStates by Downloader.state.collectAsState()
     var loading by remember { mutableStateOf(run == null) }
     var error by remember { mutableStateOf<String?>(null) }
     var auto by remember { mutableStateOf(true) }
@@ -258,7 +259,7 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                                         "https://api.github.com/repos/$owner/$name/actions/runs/$runId/logs",
                                         "logs-$runId.zip", Cfg.token, useMirror = false,
                                         source = "工作流日志", repo = "$owner/$name",
-                                        onDone = { Toast.makeText(ctx, "日志已保存到 下载/GitHubPro/logs-$runId.zip", Toast.LENGTH_LONG).show() },
+                                        onDone = { },
                                         onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
                                 })
                                 DropdownMenuItem(text = { Text("删除这次运行", fontSize = 13.sp, color = GH.red) }, onClick = {
@@ -293,6 +294,9 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                                     Column(Modifier.weight(1f)) {
                                         Text(a.name, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         Text("${humanSize(a.size_in_bytes)} · ${timeAgo(a.created_at)} · ${if (a.expired) "已过期" else "有效"}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        val ast = dlStates[Downloader.sanitize("${a.name}.zip")]
+                                        if (ast != null && ast.active) Text("${ast.status} · ${ast.percent}% · ${humanSize(ast.speed)}/s",
+                                            fontSize = 10.sp, color = GH.blue)
                                     }
                                     IconButton({
                                         val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
@@ -302,7 +306,7 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                                     IconButton(onClick = {
                                         Toast.makeText(ctx, "开始下载产物 ${a.name}…", Toast.LENGTH_SHORT).show()
                                         Downloader.startDownload(ctx, a.archive_download_url ?: return@IconButton, "${a.name}.zip", Cfg.token, useMirror = false,
-                                            onDone = { Toast.makeText(ctx, "产物已保存到 下载/GitHubPro/${a.name}.zip", Toast.LENGTH_LONG).show() },
+                                            onDone = { },
                                             onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
                                     }) { Icon(Icons.Filled.Download, null, Modifier.size(18.dp), tint = GH.blue) }
                                     IconButton(onClick = {
@@ -360,7 +364,7 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                                                 "https://api.github.com/repos/$owner/$name/actions/jobs/${job.id}/logs",
                                                 "job-${job.id}-${job.name.take(12)}.zip", Cfg.token, useMirror = false,
                                                 source = "工作流日志", repo = "$owner/$name",
-                                                onDone = { Toast.makeText(ctx, "日志已保存到下载/GitHubPro", Toast.LENGTH_LONG).show() },
+                                                onDone = { },
                                                 onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
                                         }) { Icon(Icons.Filled.Download, null, Modifier.size(14.dp)); Text("下载日志", fontSize = 10.sp) }
                                         OutlinedButton(onClick = {
@@ -407,7 +411,7 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                         "https://api.github.com/repos/$owner/$name/actions/jobs/${job.id}/logs",
                         "job-${job.id}-${job.name.take(12)}.zip", Cfg.token, useMirror = false,
                                                 source = "工作流日志", repo = "$owner/$name",
-                        onDone = { Toast.makeText(ctx, "日志已保存到 下载/GitHubPro/job-${job.id}.zip", Toast.LENGTH_LONG).show() },
+                        onDone = { },
                         onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
                 }) { Text("下载完整日志", fontSize = 12.sp) }
             },

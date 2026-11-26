@@ -206,7 +206,7 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
                                 Toast.makeText(ctx, "开始下载整包源码…", Toast.LENGTH_SHORT).show()
                                 Downloader.startDownload(ctx, "https://github.com/$owner/$name/archive/refs/heads/$branch.zip",
                                     "$name-$branch.zip", source = "源码 ZIP", repo = "$owner/$name",
-                                    onDone = { Toast.makeText(ctx, "源码包已保存到下载/GitHubPro", Toast.LENGTH_LONG).show() },
+                                    onDone = { },
                                     onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
                             }) { Icon(Icons.Filled.Download, null, Modifier.size(15.dp)); Spacer(Modifier.width(4.dp)); Text("整包下载", fontSize = 12.sp) }
                         }
@@ -410,10 +410,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                 try {
                     val href = Api.lfsDownloadHref(owner, name, ref.oid, ref.size)
                     Downloader.startDownload(ctx, href, fileName, source = "仓库文件", repo = "$owner/$name",
-                        onDone = {
-                            val where = Downloader.stateOf(fileName)?.publicPath ?: "下载/GitHubPro/$fileName"
-                            Toast.makeText(ctx, "已保存到 $where", Toast.LENGTH_LONG).show()
-                        },
+                        onDone = { },
                         onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
                 } catch (e: Exception) { Toast.makeText(ctx, "下载失败：${e.message}", Toast.LENGTH_LONG).show() }
             }
@@ -422,10 +419,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
         Toast.makeText(ctx, "开始下载 $fileName…", Toast.LENGTH_SHORT).show()
         Downloader.startDownload(ctx, "https://raw.githubusercontent.com/$owner/$name/$branch/${Api.encPath(path)}", fileName,
             source = "仓库文件", repo = "$owner/$name",
-            onDone = {
-                val where = Downloader.stateOf(fileName)?.publicPath ?: "下载/GitHubPro/$fileName"
-                Toast.makeText(ctx, "已保存到 $where", Toast.LENGTH_LONG).show()
-            },
+            onDone = { },
             onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
     }
 

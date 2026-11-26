@@ -23,6 +23,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
+import coil.compose.SubcomposeAsyncImage
+import coil.compose.SubcomposeAsyncImageContent
 import coil.request.ImageRequest
 import com.luogen.ghpro.data.Label
 import java.time.Duration
@@ -64,12 +67,26 @@ fun durationText(startIso: String?, endIso: String?): String {
     val h = d.toHours() % 24
     val m = d.toMinutes() % 60
     val sec = d.seconds % 60
+    // GitHub 时间戳只精确到秒；同一个秒内完成的步骤以前会显示“0秒”，现在显示真实的小数秒
+    val secText = if (d.seconds < 1) "不到1秒" else String.format("%.1f秒", d.toMillis() / 1000.0)
     return buildString {
         if (days > 0) append("${days}天")
         if (h > 0) append("${h}小时")
         if (m > 0) append("${m}分")
-        if (days == 0L && h == 0L) append("${sec}秒")
-    }.ifEmpty { "0秒" }
+        if (days > 0 || h > 0 || m > 0) {
+            if (sec > 0) append("${sec}秒")
+        } else {
+            append(secText)
+        }
+    }.ifEmpty { secText }
+}
+
+fun copyText(ctx: android.content.Context, text: String, tip: String = "已复制") {
+    try {
+        val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+        cm?.setPrimaryClip(android.content.ClipData.newPlainText("文本", text))
+    } catch (e: Exception) { }
+    android.widget.Toast.makeText(ctx, tip, android.widget.Toast.LENGTH_SHORT).show()
 }
 
 fun humanSize(bytes: Long): String = when {
@@ -77,6 +94,21 @@ fun humanSize(bytes: Long): String = when {
     bytes < 1024 * 1024 -> String.format("%.1f KB", bytes / 1024.0)
     bytes < 1024 * 1024 * 1024 -> String.format("%.1f MB", bytes / 1024.0 / 1024.0)
     else -> String.format("%.2f GB", bytes / 1024.0 / 1024.0 / 1024.0)
+}
+
+fun reasonCn(r: String?): String = when (r) {
+    "assign" -> "指派给你"
+    "mention" -> "提到了你"
+    "team_mention" -> "提到了你所在的团队"
+    "review_requested" -> "请你审核"
+    "author" -> "你创建的"
+    "comment" -> "你参与过"
+    "state_change" -> "状态变化"
+    "subscribed" -> "你关注的"
+    "manual" -> "手动关注"
+    "security_alert" -> "安全提醒"
+    "ci_activity" -> "工作流动态"
+    else -> r ?: ""
 }
 
 fun compactNum(n: Int?): String {
@@ -88,15 +120,32 @@ fun compactNum(n: Int?): String {
 }
 
 @Composable
-fun Avatar(url: String?, size: Int = 32, modifier: Modifier = Modifier) {
-    AsyncImage(
-        model = ImageRequest.Builder(LocalContext.current).data(url).crossfade(true).build(),
-        contentDescription = null,
-        contentScale = ContentScale.Crop,
-        modifier = modifier.size(size.dp).clip(CircleShape)
+fun Avatar(url: String?, size: Int = 32, modifier: Modifier = Modifier, name: String? = null) {
+    val letter = (name ?: "GitHub").trim().take(1).uppercase().ifBlank { "G" }
+    Box(
+        modifier.size(size.dp).clip(CircleShape)
             .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), CircleShape)
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-    )
+            .background(GH.blue.copy(alpha = 0.18f)),
+        contentAlignment = Alignment.Center
+    ) {
+        // GitHub 头像偶尔会 404 / 无头像 / 网络瞬断：底下永远有一层字母兜底，绝不会出现空白圆圈
+        Text(letter, fontSize = (size * 0.42f).sp, color = GH.blue, fontWeight = FontWeight.Bold)
+        SubcomposeAsyncImage(
+            model = ImageRequest.Builder(LocalContext.current)
+                .data(url)
+                .crossfade(true)
+                .memoryCacheKey(url)
+                .diskCachePolicy(coil.request.CachePolicy.ENABLED)
+                .build(),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            if (painter.state is AsyncImagePainter.State.Success) {
+                SubcomposeAsyncImageContent()
+            }
+        }
+    }
 }
 
 @Composable

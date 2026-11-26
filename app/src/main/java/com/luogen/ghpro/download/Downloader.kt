@@ -39,11 +39,14 @@ data class DownloadState(
     val mirrorUsed: String? = null,
     val threads: Int = 1,
     val publicPath: String? = null,
-    val localPath: String? = null
+    val localPath: String? = null,
+    val url: String? = null,
+    val useMirror: Boolean = true
 ) {
     val percent: Int get() = if (total <= 0) 0 else ((done * 100) / total).toInt()
     val active: Boolean
         get() = status.startsWith("下载中") || status.startsWith("多线程下载") ||
+            status.startsWith("已下载") || status.startsWith("切换下载线路") || status.startsWith("多线程失败") ||
             status in listOf("连接中", "重试中", "合并中", "准备中")
 }
 
@@ -88,7 +91,7 @@ object Downloader {
     private fun updateE(s: DownloadState, e: Long) { if (sameEpoch(s.fileName, e)) update(s) }
     private const val HPREFS = "ghpro_downloads"
 
-    fun stateOf(name: String): DownloadState? = state.value[name]
+    fun stateOf(name: String): DownloadState? = state.value[sanitize(name)]
 
     /** 不随页面销毁的下载作用域：切标签、切后台、分屏都不会把下载掐断。 */
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -112,6 +115,26 @@ object Downloader {
         if (!repo.isNullOrBlank()) repoMap[key] = repo
         lateinit var job: Job
         job = appScope.launch {
+            // 下载期间真实监听网络：切到流量只提示一次；真的断网立刻提示（断点会保留）
+            var warnedMobile = false
+            val cm = ctx.getSystemService(android.net.ConnectivityManager::class.java)
+            val cb = object : android.net.ConnectivityManager.NetworkCallback() {
+                override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) {
+                    if (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) && !warnedMobile) {
+                        warnedMobile = true
+                        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+                            Notifier.generic(ctx, "正在使用移动数据下载", "$fileName 正在用流量继续下载；不想用流量请到下载中心取消。")
+                        }
+                    }
+                }
+                override fun onLost(network: android.net.Network) {
+                    kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+                        kotlinx.coroutines.delay(1500)
+                        if (!networkOnline(ctx)) Notifier.generic(ctx, "网络已断开", "$fileName 已停止，已下载的部分会保留；联网后在下载管理点重试即可续传。")
+                    }
+                }
+            }
+            runCatching { cm?.registerDefaultNetworkCallback(cb) }
             try {
                 val f = download(ctx, rawUrl, fileName, token, useMirror, epoch = epoch)
                 val st = stateOf(fileName)
@@ -128,6 +151,7 @@ object Downloader {
             } catch (e: Exception) {
                 kotlinx.coroutines.withContext(Dispatchers.Main) { onError?.invoke(e.message ?: "下载失败") }
             } finally {
+                runCatching { cm?.unregisterNetworkCallback(cb) }
                 if (jobs[key] === job) jobs.remove(key)
             }
         }
@@ -206,6 +230,10 @@ object Downloader {
         if (cur.isNotEmpty()) state.value = cur
     }
 
+    fun clearState(name: String) {
+        state.value = state.value - sanitize(name)
+    }
+
     fun categoryOf(name: String): String {
         val n = name.lowercase()
         return when {
@@ -267,28 +295,75 @@ object Downloader {
         val outFile = File(dir(ctx), safe)
         val cands = candidates(rawUrl, useMirror)
         var lastError: Exception? = null
+        var idx = 0
         for (c in cands) {
             if (isCancelled(safe)) throw kotlinx.coroutines.CancellationException("已取消")
             // 每个镜像候选使用新的进度代号：上个候选残留线程的进度会被直接丢弃，绝不可能再闪回旧百分比
             val candEpoch = newEpoch(safe)
             try {
-                updateE(DownloadState(safe, status = "连接中", mirrorUsed = c), candEpoch)
+                // 只有第一次显示“连接中”；切镜像时显示“切换线路”，不再重复两遍“连接中”
+                val phase = if (idx == 0) "连接中" else "切换下载线路 ${idx + 1}/${cands.size}"
+                updateE(DownloadState(safe, status = phase, mirrorUsed = c, url = rawUrl, useMirror = useMirror,
+                    done = outFile.takeIf { it.exists() }?.length() ?: 0), candEpoch)
                 fetch(c, outFile, token, threads, safe, notify, candEpoch)
                 if (isCancelled(safe)) throw kotlinx.coroutines.CancellationException("已取消")
-                if (notify) Notifier.downloadDone(ctx, safe, outFile.absolutePath)
+                val len = outFile.length()
+                if (len <= 0) throw IOException("下载到空文件")
+                // 关键：先把进度明确推到 100%，再花时间写入系统下载目录，避免条子永远差一点
+                updateE(DownloadState(safe, done = len, total = len, status = "已下载 100% · 正在保存…",
+                    mirrorUsed = c, threads = threads), candEpoch)
                 val pub = publish(ctx, outFile, safe)
-                updateE(DownloadState(safe, done = outFile.length(), total = outFile.length(),
+                if (notify) Notifier.downloadDone(ctx, safe, outFile.absolutePath)
+                if (c != rawUrl) Cfg.preferredMirror = c.substringBefore("/https://").substringBefore("/http://")
+                updateE(DownloadState(safe, done = len, total = len,
                     status = "已完成", path = pub.first, publicPath = pub.first, localPath = outFile.absolutePath,
                     mirrorUsed = c, threads = threads), candEpoch)
                 return@withContext outFile
             } catch (e: Exception) {
                 lastError = e
-                outFile.delete()
-                if (!isCancelled(safe)) updateE(DownloadState(safe, status = "重试中", error = e.message, mirrorUsed = c), candEpoch)
+                // 镜像失败不清掉已下好的部分：下一个线路可以按 Range 断点续传
+                if (!isCancelled(safe)) updateE(DownloadState(safe, status = "重试中", error = e.message, mirrorUsed = c,
+                    done = outFile.takeIf { it.exists() }?.length() ?: 0, total = 0), candEpoch)
             }
+            idx++
         }
-        updateE(DownloadState(safe, status = "失败", error = lastError?.message ?: "下载失败"), epoch)
-        throw lastError ?: IOException("下载失败")
+        val rawMsg = lastError?.message ?: "下载失败"
+        val msg = if (!networkOnline(ctx)) {
+            "网络已断开，下载已停止。已经下好的部分保留着，联网后在下载管理点“重试”会从断点继续。"
+        } else rawMsg
+        val kept = outFile.takeIf { it.exists() }?.length() ?: 0L
+        updateE(DownloadState(safe, status = "失败", error = msg, done = kept, total = 0, url = rawUrl, useMirror = useMirror), epoch)
+        throw IOException(msg)
+    }
+
+    /** 真实探测镜像：用 Range 拉 GitHub raw 的 100 字节，200/206 才算可用。 */
+    suspend fun probeMirror(mirror: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val base = mirror.trim().trimEnd('/')
+        if (!base.startsWith("http")) return@withContext false to "地址格式不对"
+        val target = "$base/https://raw.githubusercontent.com/octocat/Hello-World/master/README"
+        val t0 = System.currentTimeMillis()
+        try {
+            val resp = client.newCall(
+                Request.Builder().url(target).header("User-Agent", "GitHubPro/1.0")
+                    .header("Range", "bytes=0-99").get().build()
+            ).execute()
+            resp.use {
+                val ms = System.currentTimeMillis() - t0
+                if (it.code == 200 || it.code == 206) true to "${it.code} · ${ms}ms"
+                else false to "HTTP ${it.code}"
+            }
+        } catch (e: Exception) {
+            false to (e.message ?: "连接失败")
+        }
+    }
+
+    fun networkOnline(ctx: Context): Boolean {
+        return try {
+            val cm = ctx.getSystemService(android.net.ConnectivityManager::class.java) ?: return false
+            val n = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(n) ?: return false
+            caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (e: Exception) { true }
     }
 
     /** 把下载好的文件放进系统「下载」目录，用户在文件管理器里直接能看到。 */
@@ -353,27 +428,61 @@ object Downloader {
             }
         } catch (e: Exception) { }
 
-        val useMulti = Cfg.multiThread && threadsWanted > 1 && total > 1024 * 1024 && acceptRanges
+        // 小文件不硬拆线程：2MB 一个分片，12MB 约 6 线程，1GB 才会拉满设置值
+        val effective = min(threadsWanted.coerceIn(1, 128), max(1, (total / (2L * 1024 * 1024)).toInt()))
+        val existingBytes = if (outFile.exists()) outFile.length() else 0L
+        // 已经有断点就优先单线程续传；从 0 开始才用多线程分片
+        val useMulti = Cfg.multiThread && effective > 1 && total > 1024 * 1024 && acceptRanges && existingBytes == 0L
         if (useMulti) {
-            multiThread(url, outFile, token, sendAuth, total, threadsWanted, name, notify, epoch)
+            // 先按设置值下；失败就自动降一半线程再试一次，最后才退单线程。
+            // 这个“智能降级”只影响本次下载，不会改用户在设置里填的默认线程数。
+            val tries = listOf(effective, maxOf(2, effective / 2)).distinct()
+            var lastMulti: Exception? = null
+            for ((i, n) in tries.withIndex()) {
+                try {
+                    if (i > 0) updateE(DownloadState(name, done = 0, total = total,
+                        status = "多线程失败，自动降为 $n 线程重试…", threads = n), epoch)
+                    outFile.delete()
+                    multiThread(url, outFile, token, sendAuth, total, n, name, notify, epoch)
+                    return
+                } catch (e: Exception) {
+                    if (isCancelled(name)) throw e
+                    lastMulti = e
+                }
+            }
+            updateE(DownloadState(name, done = 0, total = total,
+                status = "多线程均失败（${lastMulti?.message ?: "线路不支持"}），自动改单线程…", threads = 1), epoch)
+            outFile.delete()
+            single(url, outFile, token, sendAuth, total, name, notify, epoch)
         } else {
             single(url, outFile, token, sendAuth, total, name, notify, epoch)
         }
     }
 
     private fun single(url: String, outFile: File, token: String?, sendAuth: Boolean, totalHint: Long, name: String, notify: Boolean, epoch: Long) {
+        val existing = if (outFile.exists()) outFile.length() else 0L
+        val resume = totalHint > 0 && existing in 1 until totalHint
         val req = Request.Builder().url(url)
             .header("User-Agent", "GitHubPro/1.0")
-            .apply { if (sendAuth) header("Authorization", "Bearer $token") }
+            .apply {
+                if (sendAuth) header("Authorization", "Bearer $token")
+                if (resume) header("Range", "bytes=$existing-")
+            }
             .get().build()
         client.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
-            val total = resp.body?.contentLength()?.takeIf { it > 0 } ?: totalHint
-            val out = outFile.outputStream()
+            val isPartial = resp.code == 206 && resume
+            val total = when {
+                isPartial -> resp.header("Content-Range")?.substringAfterLast('/')?.toLongOrNull() ?: totalHint
+                else -> resp.body?.contentLength()?.takeIf { it > 0 } ?: totalHint
+            }
+            if (!isPartial && outFile.exists()) outFile.delete()
+            val startAt = if (isPartial) existing else 0L
+            val out = java.io.FileOutputStream(outFile, isPartial)
             val buf = ByteArray(64 * 1024)
-            var done = 0L
+            var done = startAt
             var last = System.currentTimeMillis()
-            var lastBytes = 0L
+            var lastBytes = startAt
             resp.body?.byteStream()?.use { input ->
                 while (true) {
                     if (isCancelled(name)) throw IOException("已取消")
@@ -388,7 +497,7 @@ object Downloader {
                             status = if (total > 0) "下载中 ${done * 100 / total}%" else "下载中 ${done / 1024}KB",
                             threads = 1), epoch)
                         if (notify && total > 0) Notifier.downloadProgress(
-                            com.luogen.ghpro.AppCtx.get(), name, (done * 100 / total).toInt()
+                            com.luogen.ghpro.AppCtx.get(), name, (done * 100 / total).toInt().coerceIn(0, 99)
                         )
                         last = now
                         lastBytes = done
@@ -396,6 +505,7 @@ object Downloader {
                 }
             }
             out.flush(); out.close()
+            if (total > 0 && done != total) throw IOException("下载不完整：$done/$total")
         }
     }
 
@@ -445,7 +555,9 @@ object Downloader {
                         .apply { if (sendAuth) header("Authorization", "Bearer $token") }
                         .get().build()
                     client.newCall(req).execute().use { resp ->
-                        if (!resp.isSuccessful && resp.code != 206) throw IOException("HTTP ${resp.code}")
+                        if (resp.code != 206) throw IOException("这个线路不支持分片（HTTP ${resp.code}），自动改单线程")
+                        val cr = resp.header("Content-Range") ?: ""
+                        if (!cr.startsWith("bytes $start-")) throw IOException("分片起点不符：$cr")
                         resp.body?.byteStream()?.use { input ->
                             RandomAccessFile(outFile, "rw").use { raf ->
                                 raf.seek(start)
@@ -459,6 +571,8 @@ object Downloader {
                                     pos += n
                                     done.addAndGet(n.toLong())
                                 }
+                                // 服务器提前断流也必须报错，否则会留下“大小对但有空洞”的坏文件
+                                if (pos <= end) throw IOException("分片不完整：${pos - start}/${end - start + 1}")
                             }
                         }
                     }

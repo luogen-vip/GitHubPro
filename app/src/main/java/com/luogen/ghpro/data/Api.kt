@@ -501,6 +501,18 @@ object Api {
         callList<PRFile>("/repos/$o/$r/pulls/$n/files", mapOf("per_page" to "100")).items
     suspend fun prComments(o: String, r: String, n: Int): List<Comment> =
         callList<Comment>("/repos/$o/$r/pulls/$n/comments", mapOf("per_page" to "50")).items
+    /** 真实创建 Pull Request。head 支持 "分支名"（同仓库）或 "用户名:分支名"（跨复刻仓库）。 */
+    suspend fun createPull(o: String, r: String, title: String, head: String, base: String, body: String? = null, draft: Boolean = false): PullRequest {
+        val jo = JsonObject().apply {
+            addProperty("title", title)
+            addProperty("head", head)
+            addProperty("base", base)
+            addProperty("body", body ?: "")
+            addProperty("draft", draft)
+        }
+        return parse(exec("/repos/$o/$r/pulls", "POST", jo.toString()).body, PullRequest::class.java)
+    }
+
     suspend fun mergePr(o: String, r: String, n: Int, message: String?, method: String = "merge"): JsonObject {
         val jo = JsonObject().apply {
             if (message != null) addProperty("commit_message", message)
@@ -858,6 +870,29 @@ object Api {
     suspend fun gitignoreTemplates(): List<String> =
         runCatching { parseList<String>(raw("/gitignore/templates"), TypeToken.getParameterized(List::class.java, String::class.java)) }
             .getOrDefault(emptyList())
+
+    /**
+     * 严格“只统计 Issue”的开放数。GraphQL 的 issues 连接不包含 Pull Request，
+     * 和 REST 的 open_issues_count（Issue + PR 混在一起）不一样，所以卡片上不会再虚高。
+     * 一次最多查 25 个仓库，批量别名查询，省额度也快。
+     */
+    suspend fun issueCounts(repos: List<Pair<String, String>>): Map<String, Int> {
+        if (repos.isEmpty()) return emptyMap()
+        val sb = StringBuilder("query{")
+        repos.forEachIndexed { i, (o, r) ->
+            val oo = o.replace("\\", "\\\\").replace("\"", "\\\"")
+            val rr = r.replace("\\", "\\\\").replace("\"", "\\\"")
+            sb.append("r$i:repository(owner:\"$oo\",name:\"$rr\"){issues(states:OPEN){totalCount}}")
+        }
+        sb.append("}")
+        val data = runCatching { graphql(sb.toString()) }.getOrNull() ?: return emptyMap()
+        val out = HashMap<String, Int>()
+        repos.forEachIndexed { i, (o, r) ->
+            val n = data.getAsJsonObject("r$i")?.getAsJsonObject("issues")?.get("totalCount")?.asInt
+            if (n != null) out["$o/$r"] = n
+        }
+        return out
+    }
 
     // ---------------- 讨论区 (GraphQL) ----------------
     suspend fun discussions(o: String, r: String, first: Int = 20): List<Discussion> {

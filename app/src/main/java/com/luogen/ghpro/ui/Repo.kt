@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -74,7 +75,8 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
     var refreshSeq by remember { mutableStateOf(0) }
     var showMenu by rememberSaveable { mutableStateOf(false) }
     var confirmDelete by rememberSaveable { mutableStateOf(false) }
-    var peopleDialog by rememberSaveable { mutableStateOf(-1) }  // 0 star 1 fork 2 watch 3 contributors
+    var peopleDialog by rememberSaveable { mutableStateOf(-1) }
+    var showDesc by rememberSaveable { mutableStateOf(false) }  // 0 star 1 fork 2 watch 3 contributors
     var msg by remember { mutableStateOf<String?>(null) }
     val snackbar = remember { SnackbarHostState() }
     var lastToast by remember { mutableStateOf<Toast?>(null) }
@@ -101,7 +103,9 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
             runCatching { languages = Api.languages(owner, name); UiCache.repoLangs[key] = languages }
             runCatching { Api.releases(owner, name).items.firstOrNull()?.published_at?.let { v -> latestReleaseAt = v } }
         } catch (e: Exception) {
-            error = e.message
+            error = if (e.message?.contains("404") == true || e.message?.contains("Not Found", true) == true)
+                "仓库不存在：作者可能已经删除、改名，或把它改成了私有仓库。\n如果它原本在你的 Star 列表里，会自动收到“仓库已消失”的通知。"
+            else e.message
         } finally { loading = false }
     }
 
@@ -125,6 +129,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
             }
         }
     }
+    LaunchedEffect(key) { IssueCounts.ensure(key) }
     LaunchedEffect(tab) { UiCache.repoTab[key] = tab }
     val issueVer by Bus.issuePoke.collectAsState()
     val issueLocalVer by Bus.issueLocalPoke.collectAsState()
@@ -152,10 +157,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
         Toast.makeText(ctx, "开始下载源码 ZIP…", Toast.LENGTH_SHORT).show()
         Downloader.startDownload(ctx, "https://github.com/${r.full_name}/archive/refs/heads/$branch.zip", fname,
             source = "源码 ZIP", repo = r.full_name,
-            onDone = {
-                val where = Downloader.stateOf(fname)?.publicPath ?: "下载/GitHubPro/$fname"
-                Toast.makeText(ctx, "已保存到 $where", Toast.LENGTH_LONG).show()
-            },
+            onDone = { },
             onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
         downloading = null
     }
@@ -310,7 +312,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
             Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)
                 .padding(horizontal = 14.dp, vertical = 7.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Avatar(r.owner?.avatar_url, 22, Modifier.clickable { r.owner?.login?.let { nav.navigate("user/$it") } })
+                    Avatar(r.owner?.avatar_url, 22, Modifier.clickable { r.owner?.login?.let { nav.navigate("user/$it") } }, name = r.owner?.login)
                     Spacer(Modifier.width(6.dp))
                     Column(Modifier.weight(1f)) {
                         Text(r.full_name, fontSize = 15.sp, fontWeight = FontWeight.Bold,
@@ -320,9 +322,17 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                     }
                     if (r.isPrivate) TinyTag("私有", GH.yellow)
                 }
-                r.description?.takeIf { it.isNotBlank() }?.let {
+                r.description?.takeIf { it.isNotBlank() }?.let { desc ->
                     Spacer(Modifier.height(2.dp))
-                    Text(it, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Row(verticalAlignment = Alignment.Bottom,
+                        modifier = Modifier.clickable { showDesc = true }) {
+                        Text(desc, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                        if (desc.length > 60) {
+                            Spacer(Modifier.width(4.dp))
+                            Text("全文", fontSize = 10.sp, color = GH.blue)
+                        }
+                    }
                 }
                 Spacer(Modifier.height(3.dp))
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
@@ -332,7 +342,8 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                         modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { peopleDialog = 1 }.padding(end = 4.dp))
                     Text("· 关注 ${r.subscribers_count}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { peopleDialog = 2 }.padding(end = 4.dp))
-                    Text("· 议题 ${r.open_issues_count}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    val issueCount = IssueCounts.get(r.full_name) ?: r.open_issues_count
+                    Text("· 议题 $issueCount", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     val top = languages.entries.maxByOrNull { it.value }
@@ -432,6 +443,22 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
     if (peopleDialog >= 0) {
         PeopleDialog(nav, owner, name, peopleDialog) { peopleDialog = -1 }
     }
+
+    if (showDesc) {
+        AlertDialog(
+            onDismissRequest = { showDesc = false },
+            title = { Text("仓库完整描述", fontSize = 14.sp) },
+            text = {
+                SelectionContainer {
+                    Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
+                        Text(repo?.description ?: "", fontSize = 13.sp, lineHeight = 20.sp)
+                    }
+                }
+            },
+            confirmButton = { TextButton({ showDesc = false }) { Text("关闭") } },
+            dismissButton = { TextButton({ copyText(ctx, repo?.description ?: "", "已复制仓库描述") }) { Text("复制") } }
+        )
+    }
 }
 
 @Composable
@@ -523,7 +550,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
                 Toast.makeText(ctx, "开始下载源码 ZIP…", Toast.LENGTH_SHORT).show()
                 Downloader.startDownload(ctx, "https://github.com/${r.full_name}/archive/refs/heads/$branch.zip", fname,
                     source = "源码 ZIP", repo = r.full_name,
-                    onDone = { Toast.makeText(ctx, "已保存到 " + (Downloader.stateOf(fname)?.publicPath ?: "下载/GitHubPro/$fname"), Toast.LENGTH_LONG).show() },
+                    onDone = { },
                     onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
             }) { Text("下载源码", fontSize = 12.sp) }
             OutlinedButton(onClick = { openUrl(ctx, r.html_url) }) { Text("浏览器", fontSize = 12.sp) }
