@@ -10,6 +10,7 @@ import com.luogen.ghpro.data.Run
 import com.luogen.ghpro.data.Job
 import com.luogen.ghpro.data.Artifact
 import com.luogen.ghpro.data.User
+import com.luogen.ghpro.data.Discussion
 
 /**
  * 页面级内存缓存：从详情页返回、切到别的 App 再回来、横竖屏切换时，
@@ -72,6 +73,8 @@ object UiCache {
     val repoIssues = HashMap<String, List<Issue>>()
     val repoPulls = HashMap<String, List<PullRequest>>()
     val repoReleases = HashMap<String, List<Release>>()
+    val repoContributors = HashMap<String, List<User>>()
+    val repoDiscussions = HashMap<String, List<Discussion>>()
     val repoCommits = HashMap<String, List<GitCommit>>()
     val repoIndex = HashMap<String, Int>()   // "tab|repo" -> 滚动位置
 

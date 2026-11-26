@@ -25,6 +25,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -40,6 +41,8 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+
+private class HomeAction(val icon: ImageVector, val label: String, val go: () -> Unit)
 
 @Composable
 fun HomeScreen(nav: NavController) {
@@ -58,6 +61,7 @@ fun HomeScreen(nav: NavController) {
     var langMenu by remember { mutableStateOf(false) }
     val listState = rememberLazyListState(UiCache.homeIndex, UiCache.homeOffset)
     val tick by Bus.tick.collectAsState()
+    val starVer by Bus.starPoke.collectAsState()
     val safeMode = Cfg.safeMode
     val recent = Cfg.recentRepos
 
@@ -118,6 +122,12 @@ fun HomeScreen(nav: NavController) {
     }
 
     LaunchedEffect(tick) { if (tick > 0 && !safeMode && Cfg.autoRefresh) refreshSilently() }
+    LaunchedEffect(starVer) {
+        if (starVer > 0 && tab == 1) {
+            repos = UiCache.homeRepos
+            UiCache.homeLoaded = true
+        }
+    }
 
     LaunchedEffect(Unit) {
         if (me == null) runCatching { Api.me() }.onSuccess { me = it; UiCache.homeMe = it }
@@ -171,20 +181,39 @@ fun HomeScreen(nav: NavController) {
             Surface(color = MaterialTheme.colorScheme.surface) {
                 Column {
                     Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                        Modifier.fillMaxWidth().padding(start = 14.dp, end = 4.dp, top = 8.dp, bottom = 0.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Avatar(me?.avatar_url ?: Cfg.avatar, 32)
+                        Avatar(me?.avatar_url ?: Cfg.avatar, 34)
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(me?.name ?: me?.login ?: Cfg.userName ?: "GitHub", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                            Text("@" + (me?.login ?: Cfg.login ?: ""), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(me?.name ?: me?.login ?: Cfg.userName ?: "GitHub", fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text("@" + (me?.login ?: Cfg.login ?: ""), fontSize = 11.sp,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        IconButton(onClick = { nav.navigate("search") }) { Icon(Icons.Filled.Search, "搜索") }
-                        IconButton(onClick = { nav.navigate("featured") }) { Icon(Icons.Filled.Explore, "精选仓库") }
-                        IconButton(onClick = { nav.navigate("downloads") }) { Icon(Icons.Filled.Download, "下载管理") }
-                        IconButton(onClick = { nav.navigate("notifications") }) { Icon(Icons.Filled.Notifications, "通知") }
-                        IconButton(onClick = { nav.navigate("settings") }) { Icon(Icons.Filled.Settings, "设置") }
+                        IconButton({ nav.navigate("settings") }) { Icon(Icons.Filled.Settings, "设置") }
+                    }
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        listOf(
+                            HomeAction(Icons.Filled.Search, "搜索") { nav.navigate("search") },
+                            HomeAction(Icons.Filled.Explore, "精选") { nav.navigate("featured") },
+                            HomeAction(Icons.Filled.Download, "下载") { nav.navigate("downloads") },
+                            HomeAction(Icons.Filled.Notifications, "通知") { nav.navigate("notifications") }
+                        ).forEach { a ->
+                            Column(
+                                Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).clickable { a.go() }.padding(vertical = 4.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Icon(a.icon, a.label, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(a.label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
                     }
                     Row(
                         Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp),
@@ -254,7 +283,8 @@ fun HomeScreen(nav: NavController) {
             }
         }
     ) { pad ->
-        LazyColumn(modifier = Modifier.fillMaxSize().padding(pad), state = listState) {
+        LazyColumn(modifier = Modifier.fillMaxSize().padding(pad), state = listState,
+        contentPadding = PaddingValues(top = 2.dp, bottom = 84.dp)) {
             if (safeMode) item {
                 Box(
                     Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)

@@ -72,7 +72,6 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
     var peopleDialog by rememberSaveable { mutableStateOf(-1) }  // 0 star 1 fork 2 watch 3 contributors
     var msg by remember { mutableStateOf<String?>(null) }
     val snackbar = remember { SnackbarHostState() }
-    val tick by Bus.tick.collectAsState()
 
     suspend fun load() {
         try {
@@ -80,7 +79,6 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
             repo = r
             UiCache.repoData[key] = r
             error = null
-            Cfg.watchRepos.let { s -> if (!s.contains(r.full_name)) { s.add(r.full_name); Cfg.watchRepos = s } }
             runCatching {
                 val st = Api.isStarred(owner, name)
                 starred = st
@@ -96,9 +94,10 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
         } finally { loading = false }
     }
 
-    // 有缓存就先用缓存渲染，再静默刷新
+    // 有缓存就直接用缓存，不再自动重复请求；需要最新数据用右上角刷新
     LaunchedEffect(owner, name) {
-        if (UiCache.repoData[key] == null) load() else runCatching { load() }
+        if (UiCache.repoData[key] == null) load()
+        else { repo = UiCache.repoData[key]; loading = false }
     }
     LaunchedEffect(tab) { UiCache.repoTab[key] = tab }
 
@@ -108,6 +107,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
         val fname = "${r.name}-$branch.zip"
         downloading = fname
         Cfg.touchRepo(r.full_name)
+        Toast.makeText(ctx, "开始下载源码 ZIP…", Toast.LENGTH_SHORT).show()
         Downloader.startDownload(ctx, "https://github.com/${r.full_name}/archive/refs/heads/$branch.zip", fname,
             source = "源码 ZIP", repo = r.full_name,
             onDone = {
@@ -117,19 +117,6 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
             onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
         downloading = null
     }
-    LaunchedEffect(tick) { if (tick > 0) runCatching { repo = Api.repo(owner, name) } }
-    LaunchedEffect(Unit) {
-        while (isActive) {
-            delay(25_000L)
-            if (Cfg.autoRefresh) {
-                runCatching {
-                    repo = Api.repo(owner, name)
-                    runCatching { languages = Api.languages(owner, name) }
-                }
-            }
-        }
-    }
-
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbar) },
@@ -156,10 +143,21 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                         val optimistic = base.copy(stargazers_count = (base.stargazers_count + if (target) 1 else -1).coerceAtLeast(0))
                         repo = optimistic
                         UiCache.repoData[key] = optimistic
+                        if (UiCache.homeTab == 1) {
+                            UiCache.homeRepos = if (target)
+                                (UiCache.homeRepos.filter { it.full_name != key } + optimistic)
+                            else UiCache.homeRepos.filter { it.full_name != key }
+                            Bus.starChanged()
+                        }
+                        Toast.makeText(ctx, if (target) "已 Star" else "已取消 Star", Toast.LENGTH_SHORT).show()
                         scope.launch {
                             Cfg.touchRepo(key)
                             runCatching { Api.star(owner, name, target) }
-                                .onSuccess { if (!target) { val wl = Cfg.watchRepos; wl.remove(key); Cfg.watchRepos = wl } }
+                                .onSuccess {
+                                    val wl = Cfg.watchRepos
+                                    if (target) wl.add(key) else wl.remove(key)
+                                    Cfg.watchRepos = wl
+                                }
                                 .onFailure {
                                     starred = !target; UiCache.repoStarred[key] = !target; repo = base
                                     Toast.makeText(ctx, "操作失败：${'$'}{it.message}", Toast.LENGTH_SHORT).show()
@@ -207,6 +205,12 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                                         .onFailure { snackbar.showSnackbar("复刻失败：${it.message}") }
                                 }
                             })
+                            DropdownMenuItem(text = { Text(if (Cfg.isRepoMuted(key)) "开启此仓库通知" else "关闭此仓库通知") }, onClick = {
+                                showMenu = false
+                                val muted = !Cfg.isRepoMuted(key)
+                                Cfg.setRepoMuted(key, muted)
+                                Toast.makeText(ctx, if (muted) "已关闭 $key 的通知" else "已开启 $key 的通知", Toast.LENGTH_SHORT).show()
+                            })
                             if (repo?.permissions?.push == true) {
                                 DropdownMenuItem(text = { Text("编辑仓库设置") }, leadingIcon = { Icon(Icons.Filled.Edit, null) }, onClick = {
                                     showMenu = false; nav.navigate("edit/$owner/$name")
@@ -247,17 +251,21 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                     Text(it, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 Spacer(Modifier.height(3.dp))
-                Text(
-                    buildString {
-                        append("Star ${compactNum(r.stargazers_count)} · 复刻 ${compactNum(r.forks_count)} · 关注 ${compactNum(r.subscribers_count)} · 议题 ${compactNum(r.open_issues_count)}")
-                        val top = languages.entries.maxByOrNull { it.value }
-                        if (top != null && languages.isNotEmpty()) {
-                            val pct = top.value * 100.0 / languages.values.sum().coerceAtLeast(1)
-                            append(" · ${top.key} ${String.format("%.1f", pct)}%")
-                        }
-                    },
-                    fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Star " + compactNum(r.stargazers_count), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { peopleDialog = 0 }.padding(2.dp))
+                    Text("· 复刻 " + compactNum(r.forks_count), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { peopleDialog = 1 }.padding(2.dp))
+                    Text("· 关注 " + compactNum(r.subscribers_count), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { peopleDialog = 2 }.padding(2.dp))
+                    Text("· 议题 " + compactNum(r.open_issues_count), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    val top = languages.entries.maxByOrNull { it.value }
+                    if (top != null && languages.isNotEmpty()) {
+                        val pct = top.value * 100.0 / languages.values.sum().coerceAtLeast(1)
+                        Text("· " + top.key + " " + String.format("%.1f", pct) + "%", fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
                 if (tab == 0) {
                     val langsShown = languages.ifEmpty { r.language?.let { mapOf(it to 1L) } ?: emptyMap() }
                     if (langsShown.isNotEmpty()) {
@@ -438,6 +446,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
             OutlinedButton(onClick = {
                 val branch = r.default_branch ?: "main"
                 val fname = "${r.name}-$branch.zip"
+                Toast.makeText(ctx, "开始下载源码 ZIP…", Toast.LENGTH_SHORT).show()
                 Downloader.startDownload(ctx, "https://github.com/${r.full_name}/archive/refs/heads/$branch.zip", fname,
                     source = "源码 ZIP", repo = r.full_name,
                     onDone = { Toast.makeText(ctx, "已保存到 " + (Downloader.stateOf(fname)?.publicPath ?: "下载/GitHubPro/$fname"), Toast.LENGTH_LONG).show() },
@@ -587,10 +596,14 @@ fun CommitsTab(nav: NavController, owner: String, name: String, repo: Repo) {
 
 @Composable
 fun ContributorsTab(nav: NavController, owner: String, name: String) {
-    var list by remember { mutableStateOf<List<User>>(emptyList()) }
-    var loading by remember { mutableStateOf(true) }
+    val ck = "$owner/$name"
+    var list by remember { mutableStateOf(UiCache.repoContributors[ck] ?: emptyList()) }
+    var loading by remember { mutableStateOf(list.isEmpty()) }
     LaunchedEffect(owner, name) {
-        list = runCatching { Api.contributors(owner, name) }.getOrDefault(emptyList())
+        if (list.isEmpty()) {
+            list = runCatching { Api.contributors(owner, name) }.getOrDefault(emptyList())
+            UiCache.repoContributors[ck] = list
+        }
         loading = false
     }
     if (loading) { LoadingBox(); return }

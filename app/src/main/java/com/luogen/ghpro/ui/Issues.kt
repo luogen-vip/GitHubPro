@@ -58,7 +58,7 @@ fun IssueListTab(nav: NavController, owner: String, name: String) {
 
     LaunchedEffect(state) {
         val cached = UiCache.repoIssues[listKey()]
-        if (cached != null && cached.isNotEmpty()) { list = cached; loading = false; load(1, true, silent = true) }
+        if (cached != null && cached.isNotEmpty()) { list = cached; loading = false }
         else load(1, true)
     }
 

@@ -117,9 +117,7 @@ object Downloader {
                     source = source, repo = repo, release = release,
                     publicPath = st?.publicPath, localPath = st?.localPath ?: f.absolutePath
                 ))
-                if (fileName.endsWith(".apk", true)) {
-                    kotlinx.coroutines.withContext(Dispatchers.Main) { installApk(ctx, f) }
-                }
+                // 不再自动拉起安装器：下载完成后在通知/下载管理里手动点安装，避免打断用户
                 kotlinx.coroutines.withContext(Dispatchers.Main) { onDone?.invoke(f) }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 if (sameEpoch(key, epoch)) update(DownloadState(key, status = "已取消"))
@@ -399,13 +397,15 @@ object Downloader {
             raf.setLength(total)
         }
         val done = AtomicLong(0)
+        val stop = java.util.concurrent.atomic.AtomicBoolean(false)
         val chunk = (total + threads - 1) / threads
         val errors = java.util.Collections.synchronizedList(ArrayList<Exception>())
         val progress = Thread {
             var last = System.currentTimeMillis()
             var lastBytes = 0L
-            while (true) {
+            while (!stop.get()) {
                 Thread.sleep(400)
+                if (stop.get()) break
                 val d = done.get()
                 if (d >= total) break
                 val now = System.currentTimeMillis()
@@ -457,9 +457,13 @@ object Downloader {
             t.start()
             workers.add(t)
         }
-        workers.forEach { it.join() }
-        if (errors.isNotEmpty()) throw IOException("分片下载失败：${errors.first().message}")
-        if (outFile.length() != total) throw IOException("文件大小不符")
+        try {
+            workers.forEach { it.join() }
+            if (errors.isNotEmpty()) throw IOException("分片下载失败：${errors.first().message}")
+            if (outFile.length() != total) throw IOException("文件大小不符")
+        } finally {
+            stop.set(true)
+        }
     }
 
     // 安装 / 分享

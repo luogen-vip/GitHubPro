@@ -29,8 +29,9 @@ import kotlinx.coroutines.launch
 @Composable
 fun DiscussionsTab(nav: NavController, owner: String, name: String, repo: Repo) {
     val scope = rememberCoroutineScope()
-    var list by remember { mutableStateOf<List<Discussion>>(emptyList()) }
-    var loading by remember { mutableStateOf(true) }
+    val dk = "$owner/$name"
+    var list by remember { mutableStateOf(UiCache.repoDiscussions[dk] ?: emptyList()) }
+    var loading by remember { mutableStateOf(list.isEmpty()) }
     var error by remember { mutableStateOf<String?>(null) }
     var msg by remember { mutableStateOf<String?>(null) }
 
@@ -38,6 +39,7 @@ fun DiscussionsTab(nav: NavController, owner: String, name: String, repo: Repo) 
         loading = true
         try {
             list = Api.discussions(owner, name)
+            UiCache.repoDiscussions[dk] = list
             error = null
             msg = null
         } catch (e: Exception) {
@@ -49,7 +51,7 @@ fun DiscussionsTab(nav: NavController, owner: String, name: String, repo: Repo) 
         }
         loading = false
     }
-    LaunchedEffect(owner, name) { load() }
+    LaunchedEffect(owner, name) { if (list.isEmpty()) load() else loading = false }
 
     when {
         loading -> LoadingBox()

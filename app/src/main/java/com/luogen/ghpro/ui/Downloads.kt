@@ -39,6 +39,8 @@ private val CATS = listOf("全部", "应用", "图片", "视频", "音频", "压
 fun DownloadsScreen(nav: NavController) {
     val ctx = LocalContext.current
     val ver by Downloader.historyVersion.collectAsState()
+    val states by Downloader.state.collectAsState()
+    val active = states.values.filter { it.active }
     var cat by rememberSaveable { mutableStateOf("全部") }
     var list by remember { mutableStateOf<List<DlRecord>>(emptyList()) }
     val snackbar = remember { SnackbarHostState() }
@@ -78,10 +80,36 @@ fun DownloadsScreen(nav: NavController) {
                 }
             }
             val shown = if (cat == "全部") list else list.filter { Downloader.categoryOf(it.name) == cat }
-            if (shown.isEmpty()) {
-                EmptyBox("还没有下载记录。下载发行版里的附件后会出现在这里")
-            } else {
-                LazyColumn(Modifier.fillMaxSize()) {
+            LazyColumn(Modifier.fillMaxSize()) {
+                    if (active.isNotEmpty()) {
+                        item {
+                            Text("正在下载 ${active.size}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp))
+                        }
+                        items(active, key = { "active-${it.fileName}" }) { d ->
+                            Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(12.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    TinyTag("进行中", GH.blue)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(d.fileName, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                    Text(if (d.total > 0) "${d.percent}%" else d.status, fontSize = 11.sp, color = GH.blue)
+                                    TextButton({ Downloader.cancelDownload(d.fileName) }, contentPadding = PaddingValues(horizontal = 6.dp)) {
+                                        Text("取消", fontSize = 11.sp, color = GH.red)
+                                    }
+                                }
+                                LinearProgressIndicator(
+                                    progress = { if (d.total > 0) d.percent / 100f else 0f },
+                                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                                )
+                                Text(listOfNotNull(d.status, d.speed.takeIf { it > 0 }?.let { humanSize(it) + "/s" }, Downloader.repoOf(d.fileName)).joinToString(" · "),
+                                    fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                    if (shown.isEmpty() && active.isEmpty()) {
+                        item { EmptyBox("还没有下载记录。下载发行版里的附件后会出现在这里") }
+                    }
                     items(shown, key = { it.id + it.time }) { r ->
                         Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(12.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -141,7 +169,6 @@ fun DownloadsScreen(nav: NavController) {
                         Divider1()
                     }
                 }
-            }
         }
     }
 }

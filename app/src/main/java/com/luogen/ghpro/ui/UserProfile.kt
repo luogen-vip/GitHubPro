@@ -1,5 +1,6 @@
 package com.luogen.ghpro.ui
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -110,9 +111,17 @@ fun UserScreen(nav: NavController, login: String) {
                                         }
                                     }
                                     if (!isMe) OutlinedButton(onClick = {
+                                        val target = !following
+                                        following = target
+                                        u = u?.copy(followers = (u!!.followers + if (target) 1 else -1).coerceAtLeast(0))
+                                        Toast.makeText(ctx, if (target) "已关注" else "已取消关注", Toast.LENGTH_SHORT).show()
                                         scope.launch {
-                                            try { Api.follow(login, !following); following = !following; snackbar.showSnackbar(if (following) "已关注" else "已取消关注") }
-                                            catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
+                                            try { Api.follow(login, target) }
+                                            catch (e: Exception) {
+                                                following = !target
+                                                u = u?.copy(followers = (u!!.followers + if (!target) 1 else -1).coerceAtLeast(0))
+                                                Toast.makeText(ctx, "操作失败：${e.message}", Toast.LENGTH_SHORT).show()
+                                            }
                                         }
                                     }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)) {
                                         Text(if (following) "已关注" else "关注", fontSize = 11.sp)

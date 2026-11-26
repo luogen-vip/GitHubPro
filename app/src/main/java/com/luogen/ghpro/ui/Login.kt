@@ -347,9 +347,11 @@ fun LoginScreen(onLoggedIn: (User) -> Unit) {
                             .clip(RoundedCornerShape(12.dp))
                             .background(if (cid.isNotBlank() && !polling && !busy) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent)
                             .border(1.dp, if (cid.isNotBlank()) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
-                            .clickable(enabled = cid.isNotBlank() && !polling && !busy) {
+                            .clickable(enabled = cid.isNotBlank() && !busy) {
                                 scope.launch {
                                     err = null
+                                    polling = false
+                                    device = null
                                     try {
                                         val j = Api.startDeviceFlow(cid)
                                         if (j.has("error")) { err = j.get("error").asString; return@launch }
@@ -361,14 +363,17 @@ fun LoginScreen(onLoggedIn: (User) -> Unit) {
                                         )
                                         device = d
                                         polling = true
+                                        val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                                        cm?.setPrimaryClip(ClipData.newPlainText("GitHub 设备码", d.userCode))
+                                        android.widget.Toast.makeText(ctx, "设备码已复制：${d.userCode}", android.widget.Toast.LENGTH_LONG).show()
                                         openUrl(ctx, d.uri)
-                                    } catch (e: Exception) { err = e.message }
+                                    } catch (e: Exception) { polling = false; err = e.message }
                                 }
                             },
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            if (polling) "等待网页授权…" else "获取设备码并打开授权页",
+                            if (polling) "重新生成设备码（当前等待中）" else "获取设备码并打开授权页",
                             fontSize = 13.sp,
                             color = if (cid.isNotBlank()) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -436,7 +441,7 @@ fun LoginScreen(onLoggedIn: (User) -> Unit) {
                                             polling = false
                                         }
                                     }
-                                } catch (e: Exception) { err = e.message }
+                                } catch (e: Exception) { err = e.message; polling = false }
                             }
                         }
                     }

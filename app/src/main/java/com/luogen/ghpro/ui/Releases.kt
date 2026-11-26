@@ -55,6 +55,10 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
     var page by remember { mutableStateOf(1) }
     var hasNext by remember { mutableStateOf(false) }
     var expanded by rememberSaveable { mutableStateOf(-1L) }
+    val dlVer by Downloader.historyVersion.collectAsState()
+    val downloadedNames = remember(dlVer) {
+        Downloader.history(ctx).filter { it.repo == cacheKey }.map { it.name }.toSet()
+    }
     var showCreate by rememberSaveable { mutableStateOf(false) }
     var uploadTargetId by rememberSaveable { mutableStateOf(-1L) }
     val snackbar = remember { SnackbarHostState() }
@@ -73,7 +77,7 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
     }
     LaunchedEffect(Unit) {
         val cached = UiCache.repoReleases[cacheKey]
-        if (cached != null && cached.isNotEmpty()) { list = cached; loading = false; load(1, true, silent = true) } else load(1, true)
+        if (cached != null && cached.isNotEmpty()) { list = cached; loading = false } else load(1, true)
     }
 
     fun copy(text: String, tip: String) {
@@ -159,8 +163,15 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                                     val st = dl[a.name]
                                     Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                                         Column(Modifier.weight(1f)) {
-                                            Text(a.name, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                            Text("${humanSize(a.size)} · 已下载 ${a.download_count} 次", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text(a.name, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier.weight(1f, fill = false))
+                                                if (a.name in downloadedNames) {
+                                                    Spacer(Modifier.width(5.dp))
+                                                    TinyTag("已下载", GH.green)
+                                                }
+                                            }
+                                            Text("${humanSize(a.size)} · GitHub 累计下载 ${a.download_count} 次", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                             Box(Modifier.fillMaxWidth().height(9.dp).padding(top = 3.dp)) {
                                                 if (st != null && st.active) {
                                                     LinearProgressIndicator(
@@ -179,6 +190,7 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                                         }
                                         IconButton(onClick = {
                                             val url = a.browser_download_url ?: return@IconButton
+                                            Toast.makeText(ctx, "开始下载 ${a.name}…", Toast.LENGTH_SHORT).show()
                                             Downloader.startDownload(ctx, url, a.name, source = "发行版附件",
                                                 repo = "$owner/$name", release = rel.tag_name,
                                                 onDone = { _ ->

@@ -1,5 +1,7 @@
 package com.luogen.ghpro.ui
 
+import android.widget.Toast
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -10,6 +12,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -104,6 +108,13 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
             watch.forEach { w ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(w, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    IconButton(onClick = {
+                        Cfg.setRepoMuted(w, !Cfg.isRepoMuted(w))
+                        Toast.makeText(ctx, if (Cfg.isRepoMuted(w)) "已静音 $w" else "已恢复 $w 的通知", Toast.LENGTH_SHORT).show()
+                    }) {
+                        Icon(if (Cfg.isRepoMuted(w)) Icons.Filled.NotificationsOff else Icons.Filled.Notifications,
+                            "通知开关", Modifier.size(16.dp), tint = if (Cfg.isRepoMuted(w)) GH.muted else GH.green)
+                    }
                     IconButton(onClick = {
                         val s = Cfg.watchRepos; s.remove(w); Cfg.watchRepos = s; watch = s.toList()
                     }) { Icon(Icons.Filled.Delete, null, Modifier.size(16.dp), tint = GH.red) }
@@ -238,7 +249,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
 
         item {
             Spacer(Modifier.height(40.dp))
-            Text("GitHub Pro 1.0.6 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("GitHub Pro 1.0.7 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("数据全部来自 GitHub 官方 REST / GraphQL API", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(30.dp))
         }

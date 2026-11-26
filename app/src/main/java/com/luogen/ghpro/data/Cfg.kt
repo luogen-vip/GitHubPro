@@ -72,6 +72,18 @@ object Cfg {
         get() = sp.getInt("poll_s", 20)
         set(v) { sp.edit().putInt("poll_s", v).apply() }
 
+    /** 单独关掉通知的仓库，默认全部开启。 */
+    private fun mutedSet(): MutableSet<String> =
+        (sp.getStringSet("muted_repos", emptySet()) ?: emptySet()).toMutableSet()
+
+    fun isRepoMuted(full: String): Boolean = mutedSet().contains(full)
+
+    fun setRepoMuted(full: String, muted: Boolean) {
+        val s = mutedSet()
+        if (muted) s.add(full) else s.remove(full)
+        sp.edit().putStringSet("muted_repos", s).apply()
+    }
+
     var notifyEnabled: Boolean
         get() = sp.getBoolean("notify", true)
         set(v) { sp.edit().putBoolean("notify", v).apply() }

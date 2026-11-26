@@ -1,6 +1,9 @@
 package com.luogen.ghpro.ui
 
 import android.net.Uri
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -20,6 +23,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -54,6 +58,22 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
     var loading by remember { mutableStateOf(listing == null) }
     var error by remember { mutableStateOf<String?>(null) }
     val snackbar = remember { SnackbarHostState() }
+    var pendingUpload by remember { mutableStateOf<Uri?>(null) }
+    var uploadTarget by remember { mutableStateOf("") }
+    var uploading by remember { mutableStateOf(false) }
+    val uploadPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            var name = "file.bin"
+            runCatching {
+                ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                    val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0 && c.moveToFirst()) name = c.getString(idx) ?: name
+                }
+            }
+            uploadTarget = (if (path.isBlank()) name else "$path/$name")
+            pendingUpload = uri
+        }
+    }
 
     suspend fun load(silent: Boolean = false) {
         if (!silent) loading = true
@@ -71,7 +91,7 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
     LaunchedEffect(branch, path) {
         UiCache.codePath["$owner/$name"] = path
         val cached = UiCache.codeListing["$owner/$name|$branch|$path"]
-        if (cached != null) { listing = cached; loading = false; runCatching { load(true) } } else load()
+        if (cached != null) { listing = cached; loading = false } else load()
     }
     LaunchedEffect(Unit) {
         branches = runCatching { Api.branches(owner, name).map { it.name } }.getOrDefault(emptyList())
@@ -99,6 +119,9 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             if (path.isNotEmpty()) {
                 TextButton(onClick = { path = path.substringBeforeLast('/', "") }) { Text("上级", fontSize = 11.sp) }
+            }
+            IconButton({ uploadPicker.launch("*/*") }, enabled = !uploading) {
+                Icon(Icons.Filled.Upload, "上传文件", tint = GH.blue)
             }
             IconButton(onClick = {
                 nav.navigate("file?owner=$owner&repo=$name&branch=${Uri.encode(branch)}&path=&isNew=1")
@@ -134,12 +157,11 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
                     item {
                         Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(onClick = {
-                                scope.launch {
-                                    runCatching {
-                                        Downloader.download(ctx, "https://github.com/$owner/$name/archive/refs/heads/$branch.zip", "$name-$branch.zip")
-                                    }
-                                    snackbar.showSnackbar("开始下载源码包")
-                                }
+                                Toast.makeText(ctx, "开始下载整包源码…", Toast.LENGTH_SHORT).show()
+                                Downloader.startDownload(ctx, "https://github.com/$owner/$name/archive/refs/heads/$branch.zip",
+                                    "$name-$branch.zip", source = "源码 ZIP", repo = "$owner/$name",
+                                    onDone = { Toast.makeText(ctx, "源码包已保存到下载/GitHubPro", Toast.LENGTH_LONG).show() },
+                                    onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
                             }) { Icon(Icons.Filled.Download, null, Modifier.size(15.dp)); Spacer(Modifier.width(4.dp)); Text("整包下载", fontSize = 12.sp) }
                         }
                     }
@@ -147,6 +169,52 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
             }
         }
     }
+
+    val pu = pendingUpload
+    if (pu != null) {
+        AlertDialog(
+            onDismissRequest = { if (!uploading) pendingUpload = null },
+            title = { Text("上传文件", fontSize = 15.sp) },
+            text = {
+                Column {
+                    Text("文件会直接提交到当前分支 $branch。路径可手动修改，留空则默认放在根目录。", fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(uploadTarget, { uploadTarget = it }, label = { Text("完整路径（含文件名）") },
+                        singleLine = true, modifier = Modifier.fillMaxWidth())
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = uploadTarget.isNotBlank() && !uploading, onClick = {
+                    val target = uploadTarget.trim().trim('/')
+                    if (target.isBlank()) return@TextButton
+                    scope.launch {
+                        uploading = true
+                        try {
+                            Toast.makeText(ctx, "开始上传…", Toast.LENGTH_SHORT).show()
+                            val bytes = ctx.contentResolver.openInputStream(pu)?.use { it.readBytes() }
+                                ?: throw java.io.IOException("读不到这个文件")
+                            if (bytes.size > 5 * 1024 * 1024) throw java.io.IOException("文件超过 5MB，GitHub 网页接口不适合传这么大的文件")
+                            val sha = runCatching { Api.fileItem(owner, name, target, branch).sha }.getOrNull()
+                            Api.putFile(owner, name, target, "upload ${target.substringAfterLast('/')}",
+                                android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP), sha, branch)
+                            UiCache.codeListing.keys.filter { it.startsWith("$owner/$name|") }.forEach { UiCache.codeListing.remove(it) }
+                            UiCache.fileContent.remove("$owner/$name|$branch|$target")
+                            Toast.makeText(ctx, "已上传 $target", Toast.LENGTH_LONG).show()
+                            pendingUpload = null
+                            uploadTarget = ""
+                            load(true)
+                        } catch (e: Exception) {
+                            Toast.makeText(ctx, "上传失败：${e.message}", Toast.LENGTH_LONG).show()
+                        }
+                        uploading = false
+                    }
+                }) { Text(if (uploading) "上传中…" else "上传", fontSize = 13.sp) }
+            },
+            dismissButton = { TextButton({ if (!uploading) pendingUpload = null }) { Text("取消") } }
+        )
+    }
+
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -230,7 +298,9 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                         }
                         IconButton({
                             val fileName2 = path.substringAfterLast('/')
+                            Toast.makeText(ctx, "开始下载 $fileName2…", Toast.LENGTH_SHORT).show()
                             Downloader.startDownload(ctx, "https://raw.githubusercontent.com/$owner/$name/$branch/${path}", fileName2,
+                                source = "仓库文件", repo = "$owner/$name",
                                 onDone = {
                                     val where = Downloader.stateOf(fileName2)?.publicPath ?: "下载/GitHubPro/$fileName2"
                                     Toast.makeText(ctx, "已保存到 $where", Toast.LENGTH_LONG).show()
@@ -254,7 +324,9 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                     Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.Center) {
                         OutlinedButton(onClick = {
                             val fileName2 = path.substringAfterLast('/')
+                            Toast.makeText(ctx, "开始下载 $fileName2…", Toast.LENGTH_SHORT).show()
                             Downloader.startDownload(ctx, "https://raw.githubusercontent.com/$owner/$name/$branch/$path", fileName2,
+                                source = "仓库文件", repo = "$owner/$name",
                                 onDone = {
                                     val where = Downloader.stateOf(fileName2)?.publicPath ?: "下载/GitHubPro/$fileName2"
                                     Toast.makeText(ctx, "已保存到 $where", Toast.LENGTH_LONG).show()

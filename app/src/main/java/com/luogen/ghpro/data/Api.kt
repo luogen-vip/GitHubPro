@@ -6,6 +6,7 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import java.io.IOException
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -471,6 +472,34 @@ object Api {
         exec("/repos/$o/$r/actions/workflows/$workflowId/dispatches", "POST", jo.toString())
     }
     suspend fun jobLogs(o: String, r: String, jobId: Long): String = raw("/repos/$o/$r/actions/jobs/$jobId/logs")
+
+    /** 取某个任务日志 zip 中对应步骤的纯文本（GitHub 日志接口本身返回 zip）。 */
+    suspend fun stepLogText(o: String, r: String, jobId: Long, stepNumber: Int, stepName: String): String =
+        withContext(Dispatchers.IO) {
+            val req = Request.Builder()
+                .url("$base/repos/$o/$r/actions/jobs/$jobId/logs")
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "GitHubPro/1.0")
+                .header("Authorization", "Bearer $token")
+                .build()
+            http.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
+                val bytes = resp.body?.bytes() ?: throw IOException("日志为空")
+                java.util.zip.ZipInputStream(bytes.inputStream()).use { zip ->
+                    var fallback = ""
+                    while (true) {
+                        val e = zip.nextEntry ?: break
+                        val n = e.name
+                        if (n.startsWith("${stepNumber}_") || n.contains(stepName.take(18))) {
+                            val txt = zip.readBytes().toString(Charsets.UTF_8)
+                            return@withContext txt.take(30000)
+                        }
+                        if (fallback.isBlank()) fallback = n
+                    }
+                    throw IOException("日志里没有找到第 $stepNumber 步（$fallback）")
+                }
+            }
+        }
 
     // ---------------- 发行版 ----------------
     suspend fun releases(o: String, r: String, page: Int = 1): Page<Release> =

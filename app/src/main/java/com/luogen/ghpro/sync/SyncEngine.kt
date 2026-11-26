@@ -106,6 +106,36 @@ object SyncEngine {
                 val parts = full.split("/")
                 if (parts.size != 2) return@forEach
                 val (o, r) = parts
+                val muted = Cfg.isRepoMuted(full)
+                if (!muted) {
+                    val repo = runCatching { Api.repo(o, r) }.getOrNull()
+                    val rel = runCatching { Api.releases(o, r).items.firstOrNull() }.getOrNull()
+                    val oldRepo = repoSnap.getAsJsonObject(full)
+                    if (repo != null && oldRepo != null) {
+                        val oldPushed = oldRepo.get("pushed")?.asString
+                        if (oldPushed != null && repo.pushed_at != null && oldPushed != repo.pushed_at) {
+                            val body = "$full 有新的代码推送到 ${repo.default_branch ?: "main"}"
+                            Notifier.generic(ctx, "仓库代码有更新", body)
+                            changes.add(Change("仓库代码有更新", body, "push"))
+                        }
+                        val oldTag = oldRepo.get("release")?.asString
+                        val newTag = rel?.tag_name ?: ""
+                        if (oldTag != null && oldTag != newTag && newTag.isNotBlank()) {
+                            val body = "$full 发布了新发行版 $newTag"
+                            Notifier.generic(ctx, "新发行版 $newTag", body)
+                            changes.add(Change("新发行版", body, "release"))
+                        }
+                    }
+                    if (repo != null) {
+                        val o3 = JsonObject().apply {
+                            addProperty("stars", repo.stargazers_count)
+                            addProperty("pushed", repo.pushed_at ?: "")
+                            addProperty("updated", repo.updated_at ?: "")
+                            addProperty("release", rel?.tag_name ?: "")
+                        }
+                        repoSnap.add(full, o3)
+                    }
+                }
                 val runs: List<Run> = try { Api.runs(o, r, 1).first } catch (e: Exception) { emptyList() }
                 runs.forEach { run ->
                     val key = run.id.toString()
@@ -116,13 +146,13 @@ object SyncEngine {
                         val ok = run.conclusion == "success"
                         val title = if (ok) "✅ 工作流成功" else "❌ 工作流${cnConclusion(run.conclusion)}"
                         val body = "${o}/${r} · ${run.display_title ?: run.name ?: ""}\n分支 ${run.head_branch ?: "-"} · 耗时 ${com.luogen.ghpro.ui.durationText(run.run_started_at, run.updated_at)}"
-                        if (notify) Notifier.actionDone(ctx, title, body, "$o/$r", run.html_url)
+                        if (notify && !muted) Notifier.actionDone(ctx, title, body, "$o/$r", run.html_url)
                         changes.add(Change(title, body, "run"))
                     } else if (old == null) {
                         if (run.status == "in_progress" || run.status == "queued") {
                             val body = "${o}/${r} · ${run.display_title ?: run.name ?: ""} 已开始运行"
                             changes.add(Change("工作流开始", body, "run_start"))
-                            if (notify) Notifier.generic(ctx, "🚀 工作流已开始", body)
+                            if (notify && !muted) Notifier.generic(ctx, "🚀 工作流已开始", body)
                         }
                     }
                     val o2 = JsonObject().apply {

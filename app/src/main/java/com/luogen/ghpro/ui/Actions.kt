@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -37,6 +38,7 @@ import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Job
 import com.luogen.ghpro.data.Repo
 import com.luogen.ghpro.data.Run
+import com.luogen.ghpro.data.Step
 import com.luogen.ghpro.data.Workflow
 import com.luogen.ghpro.download.Downloader
 import kotlinx.coroutines.delay
@@ -163,6 +165,10 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
     var error by remember { mutableStateOf<String?>(null) }
     var auto by remember { mutableStateOf(true) }
     var expanded by remember { mutableStateOf<Long?>(null) }
+    var stepSel by remember { mutableStateOf<Pair<Job, Step>?>(null) }
+    var stepLog by remember { mutableStateOf("") }
+    var stepLogLoading by remember { mutableStateOf(false) }
+    var stepLogError by remember { mutableStateOf<String?>(null) }
     val snackbar = remember { SnackbarHostState() }
 
     suspend fun load() {
@@ -247,9 +253,11 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                                 })
                                 DropdownMenuItem(text = { Text("下载本次日志", fontSize = 13.sp) }, onClick = {
                                     more = false
+                                    Toast.makeText(ctx, "开始下载本次日志…", Toast.LENGTH_SHORT).show()
                                     Downloader.startDownload(ctx,
                                         "https://api.github.com/repos/$owner/$name/actions/runs/$runId/logs",
                                         "logs-$runId.zip", Cfg.token, useMirror = false,
+                                        source = "工作流日志", repo = "$owner/$name",
                                         onDone = { Toast.makeText(ctx, "日志已保存到 下载/GitHubPro/logs-$runId.zip", Toast.LENGTH_LONG).show() },
                                         onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
                                 })
@@ -292,6 +300,7 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                                         scope.launch { snackbar.showSnackbar("已复制产物链接（需登录令牌）") }
                                     }) { Icon(Icons.Filled.ContentCopy, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                                     IconButton(onClick = {
+                                        Toast.makeText(ctx, "开始下载产物 ${a.name}…", Toast.LENGTH_SHORT).show()
                                         Downloader.startDownload(ctx, a.archive_download_url ?: return@IconButton, "${a.name}.zip", Cfg.token, useMirror = false,
                                             onDone = { Toast.makeText(ctx, "产物已保存到 下载/GitHubPro/${a.name}.zip", Toast.LENGTH_LONG).show() },
                                             onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
@@ -325,7 +334,15 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                                 if (expanded == job.id) {
                                     Spacer(Modifier.height(8.dp))
                                     job.steps?.forEach { s ->
-                                        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).clickable {
+                                            stepSel = job to s
+                                            stepLog = ""; stepLogError = null; stepLogLoading = true
+                                            scope.launch {
+                                                try { stepLog = Api.stepLogText(owner, name, job.id, s.number, s.name) }
+                                                catch (e: Exception) { stepLogError = e.message }
+                                                stepLogLoading = false
+                                            }
+                                        }.padding(vertical = 5.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                                             Box(Modifier.size(7.dp).clip(RoundedCornerShape(4.dp))
                                                 .background(GH.statusColor(s.status, s.conclusion)))
                                             Spacer(Modifier.width(6.dp))
@@ -338,14 +355,13 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                                     Spacer(Modifier.height(6.dp))
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         OutlinedButton(onClick = {
-                                            scope.launch {
-                                                try {
-                                                    Downloader.download(ctx,
-                                                        "https://api.github.com/repos/$owner/$name/actions/jobs/${job.id}/logs",
-                                                        "job-${job.id}-${job.name.take(12)}.zip", Cfg.token, useMirror = false)
-                                                    snackbar.showSnackbar("任务日志已下载")
-                                                } catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
-                                            }
+                                            Toast.makeText(ctx, "开始下载任务日志…", Toast.LENGTH_SHORT).show()
+                                            Downloader.startDownload(ctx,
+                                                "https://api.github.com/repos/$owner/$name/actions/jobs/${job.id}/logs",
+                                                "job-${job.id}-${job.name.take(12)}.zip", Cfg.token, useMirror = false,
+                                                source = "工作流日志", repo = "$owner/$name",
+                                                onDone = { Toast.makeText(ctx, "日志已保存到下载/GitHubPro", Toast.LENGTH_LONG).show() },
+                                                onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
                                         }) { Icon(Icons.Filled.Download, null, Modifier.size(14.dp)); Text("下载日志", fontSize = 10.sp) }
                                         OutlinedButton(onClick = {
                                             val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
@@ -363,5 +379,39 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                 }
             }
         }
+    }
+
+    stepSel?.let { (job, step) ->
+        AlertDialog(
+            onDismissRequest = { stepSel = null },
+            title = { Text("步骤 ${step.number} · ${step.name}", fontSize = 14.sp) },
+            text = {
+                Column(Modifier.heightIn(max = 420.dp)) {
+                    Text("${step.status}${step.conclusion?.let { " · $it" } ?: ""} · ${durationText(step.started_at, step.completed_at)}",
+                        fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(8.dp))
+                    when {
+                        stepLogLoading -> LoadingBox("正在读取这一步的日志…")
+                        stepLogError != null -> Text("读取失败：${messageOf(stepLogError)}", fontSize = 11.sp, color = GH.red)
+                        stepLog.isBlank() -> Text("这一步没有日志输出", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        else -> Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+                            Text(stepLog, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    Toast.makeText(ctx, "开始下载任务日志…", Toast.LENGTH_SHORT).show()
+                    Downloader.startDownload(ctx,
+                        "https://api.github.com/repos/$owner/$name/actions/jobs/${job.id}/logs",
+                        "job-${job.id}-${job.name.take(12)}.zip", Cfg.token, useMirror = false,
+                                                source = "工作流日志", repo = "$owner/$name",
+                        onDone = { Toast.makeText(ctx, "日志已保存到 下载/GitHubPro/job-${job.id}.zip", Toast.LENGTH_LONG).show() },
+                        onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
+                }) { Text("下载完整日志", fontSize = 12.sp) }
+            },
+            dismissButton = { TextButton({ stepSel = null }) { Text("关闭") } }
+        )
     }
 }
