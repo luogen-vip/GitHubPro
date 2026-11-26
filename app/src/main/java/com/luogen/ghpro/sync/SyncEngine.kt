@@ -48,7 +48,7 @@ object SyncEngine {
         try {
             val list = Api.notifications(all = false)
             val seen = Cfg.lastSeenNotificationIds
-            val fresh = list.filter { it.id !in seen }
+            val fresh = list.filter { it.id !in seen && (it.repository?.full_name?.let { f -> !Cfg.isRepoMuted(f) } ?: true) }
             val newSeen = (seen + list.map { it.id }).toList().takeLast(300).toSet()
             Cfg.lastSeenNotificationIds = newSeen
             if (notify && fresh.isNotEmpty()) {

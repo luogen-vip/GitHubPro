@@ -74,6 +74,9 @@ object Downloader {
     private val jobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
     private val epochs = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val repoMap = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val cancelFlags = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    private fun isCancelled(name: String): Boolean = cancelFlags[name] == true
 
     fun repoOf(name: String): String? = repoMap[sanitize(name)]
     private fun newEpoch(name: String): Long {
@@ -104,6 +107,7 @@ object Downloader {
     ): Job {
         val key = sanitize(fileName)
         jobs[key]?.takeIf { it.isActive }?.let { return it }
+        cancelFlags.remove(key)
         val epoch = newEpoch(key)
         if (!repo.isNullOrBlank()) repoMap[key] = repo
         lateinit var job: Job
@@ -124,7 +128,7 @@ object Downloader {
             } catch (e: Exception) {
                 kotlinx.coroutines.withContext(Dispatchers.Main) { onError?.invoke(e.message ?: "下载失败") }
             } finally {
-                jobs.remove(key)
+                if (jobs[key] === job) jobs.remove(key)
             }
         }
         jobs[key] = job
@@ -133,6 +137,7 @@ object Downloader {
 
     fun cancelDownload(name: String): Boolean {
         val key = sanitize(name)
+        cancelFlags[key] = true
         newEpoch(key)
         val j = jobs.remove(key)
         j?.cancel()
@@ -263,6 +268,7 @@ object Downloader {
         val cands = candidates(rawUrl, useMirror)
         var lastError: Exception? = null
         for (c in cands) {
+            if (isCancelled(safe)) throw kotlinx.coroutines.CancellationException("已取消")
             try {
                 updateE(DownloadState(safe, status = "连接中", mirrorUsed = c), epoch)
                 fetch(c, outFile, token, threads, safe, notify, epoch)
@@ -367,6 +373,7 @@ object Downloader {
             var lastBytes = 0L
             resp.body?.byteStream()?.use { input ->
                 while (true) {
+                    if (isCancelled(name)) throw IOException("已取消")
                     val n = input.read(buf)
                     if (n < 0) break
                     out.write(buf, 0, n)
@@ -404,6 +411,7 @@ object Downloader {
             var last = System.currentTimeMillis()
             var lastBytes = 0L
             while (!stop.get()) {
+                if (isCancelled(name)) break
                 Thread.sleep(400)
                 if (stop.get()) break
                 val d = done.get()
@@ -440,6 +448,7 @@ object Downloader {
                                 val buf = ByteArray(32 * 1024)
                                 var pos = start
                                 while (pos <= end) {
+                                    if (isCancelled(name)) throw IOException("已取消")
                                     val n = input.read(buf, 0, min(buf.size.toLong(), end - pos + 1).toInt())
                                     if (n < 0) break
                                     raf.write(buf, 0, n)

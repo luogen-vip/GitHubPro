@@ -69,7 +69,7 @@ fun ActionsTab(nav: NavController, owner: String, name: String, repo: Repo) {
         loading = false
     }
 
-    LaunchedEffect(owner, name) { if (runs.isNotEmpty()) load(true) else load() }
+    LaunchedEffect(owner, name) { if (runs.isEmpty()) load() }
     LaunchedEffect(autoOn) {
         while (isActive && autoOn) {
             delay((Cfg.pollSeconds.coerceIn(8, 300)) * 1000L)
