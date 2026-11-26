@@ -115,6 +115,13 @@ fun HomeScreen(nav: NavController) {
     }
 
     // 已有缓存时直接复用：从详情页返回 / 切回 App 都不会重新加载
+    var lastSortSeen by remember { mutableStateOf(sort) }
+    LaunchedEffect(sort) {
+        if (sort != lastSortSeen) {
+            lastSortSeen = sort
+            listState.scrollToItem(0); UiCache.homeIndex = 0; UiCache.homeOffset = 0
+        }
+    }
     LaunchedEffect(tab, sort) {
         val cached = UiCache.homeLoaded && UiCache.homeTab == tab && UiCache.homeSort == sort &&
                 UiCache.homeRepos.isNotEmpty()
@@ -249,7 +256,8 @@ fun HomeScreen(nav: NavController) {
                                 listOf("updated" to "最近更新", "pushed" to "最近推送", "full_name" to "名称", "stars" to "Star 最多").forEach { (k, v) ->
                                     DropdownMenuItem(text = { Text(v) }, onClick = {
                                         sort = k; sortMenu = false
-                                        scope.launch { listState.scrollToItem(0); UiCache.homeIndex = 0; UiCache.homeOffset = 0 }
+                                        UiCache.homeIndex = 0; UiCache.homeOffset = 0
+                                        scope.launch { kotlinx.coroutines.delay(80L); listState.scrollToItem(0) }
                                     })
                                 }
                             }
@@ -284,7 +292,7 @@ fun HomeScreen(nav: NavController) {
         }
     ) { pad ->
         LazyColumn(modifier = Modifier.fillMaxSize().padding(pad), state = listState,
-        contentPadding = PaddingValues(top = 2.dp, bottom = 84.dp)) {
+        contentPadding = PaddingValues(top = 2.dp, bottom = 14.dp)) {
             if (safeMode) item {
                 Box(
                     Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
@@ -319,7 +327,6 @@ fun HomeScreen(nav: NavController) {
                     Text("已经到底了 · 共 ${repos.size} 个", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            item { Spacer(Modifier.height(70.dp)) }
         }
     }
 }

@@ -338,7 +338,7 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                                             stepSel = job to s
                                             stepLog = ""; stepLogError = null; stepLogLoading = true
                                             scope.launch {
-                                                try { stepLog = Api.stepLogText(owner, name, job.id, s.number, s.name) }
+                                                try { stepLog = Api.stepLogText(owner, name, job.id, s.number, s.name, s.started_at, s.completed_at) }
                                                 catch (e: Exception) { stepLogError = e.message }
                                                 stepLogLoading = false
                                             }

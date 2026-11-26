@@ -60,7 +60,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
     var repo by remember { mutableStateOf(UiCache.repoData[key]) }
     var languages by remember { mutableStateOf(UiCache.repoLangs[key] ?: emptyMap()) }
     var starred by remember { mutableStateOf(UiCache.repoStarred[key] ?: Cfg.isStarredCached(key)) }
-    var starReady by remember { mutableStateOf(UiCache.repoStarred[key] != null) }
+    var starReady by remember { mutableStateOf(true) }
     var watching by remember { mutableStateOf(UiCache.repoWatching[key] ?: false) }
     var loading by remember { mutableStateOf(UiCache.repoData[key] == null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -80,6 +80,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
             repo = r
             UiCache.repoData[key] = r
             error = null
+            loading = false
             runCatching {
                 val st = Api.isStarred(owner, name)
                 starred = st

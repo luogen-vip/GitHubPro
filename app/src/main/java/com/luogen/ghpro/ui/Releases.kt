@@ -41,6 +41,8 @@ import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Repo
 import com.luogen.ghpro.data.Release
 import com.luogen.ghpro.download.Downloader
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -77,7 +79,15 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
     }
     LaunchedEffect(Unit) {
         val cached = UiCache.repoReleases[cacheKey]
-        if (cached != null && cached.isNotEmpty()) { list = cached; loading = false } else load(1, true)
+        if (cached != null && cached.isNotEmpty()) { list = cached; loading = false; load(1, true, silent = true) }
+        else load(1, true)
+    }
+    // 发行版/APK 实时刷新：别人刚上传也能在几秒内出现
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            delay(4_000L)
+            if (page == 1 && !loading) runCatching { load(1, true, silent = true) }
+        }
     }
 
     fun copy(text: String, tip: String) {

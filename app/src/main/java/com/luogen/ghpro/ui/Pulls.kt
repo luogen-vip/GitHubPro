@@ -24,9 +24,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.luogen.ghpro.data.Api
+import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Comment
 import com.luogen.ghpro.data.PRFile
 import com.luogen.ghpro.data.PullRequest
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 @Composable
@@ -48,13 +51,19 @@ fun PullListTab(nav: NavController, owner: String, name: String) {
             hasNext = pg.hasNext; page = p
             if (replace) UiCache.repoPulls[listKey()] = list
             error = null
-        } catch (e: Exception) { error = e.message }
+        } catch (e: Exception) { if (!silent) error = e.message }
         loading = false
     }
     LaunchedEffect(state) {
         val cached = UiCache.repoPulls[listKey()]
-        if (cached != null && cached.isNotEmpty()) { list = cached; loading = false }
+        if (cached != null && cached.isNotEmpty()) { list = cached; loading = false; load(1, true, silent = true) }
         else load(1, true)
+    }
+    LaunchedEffect(state) {
+        while (isActive) {
+            delay(4_000L)
+            if (page == 1 && !loading) runCatching { load(1, true, silent = true) }
+        }
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -118,6 +127,12 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
         loading = false
     }
     LaunchedEffect(number) { load() }
+    LaunchedEffect(number) {
+        while (isActive) {
+            delay(5_000L)
+            if (!busy) runCatching { load() }
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -135,6 +150,8 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
                 loading -> LoadingBox()
                 error != null -> ErrorBox(error) { scope.launch { load() } }
                 pr != null -> {
+                    val canPush = UiCache.repoData["$owner/$name"]?.permissions?.let { it.push || it.admin } == true
+                    val canClosePr = canPush || pr!!.user?.login == Cfg.login
                     Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(14.dp)) {
                         Text(pr!!.title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(5.dp))
@@ -148,7 +165,7 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
                         Spacer(Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             if (pr!!.state == "open") {
-                                Button(enabled = !busy, onClick = {
+                                if (canPush) Button(enabled = !busy, onClick = {
                                     scope.launch {
                                         busy = true
                                         try { Api.mergePr(owner, name, number, null); snackbar.showSnackbar("已合并"); load() }
@@ -156,7 +173,7 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
                                         busy = false
                                     }
                                 }) { Icon(Icons.Filled.CallMerge, null, Modifier.size(16.dp)); Text("合并", fontSize = 12.sp) }
-                                OutlinedButton(enabled = !busy, onClick = {
+                                if (canClosePr) OutlinedButton(enabled = !busy, onClick = {
                                     scope.launch {
                                         busy = true
                                         try { Api.closePr(owner, name, number); snackbar.showSnackbar("已关闭"); load() }
@@ -171,7 +188,7 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
                                     }
                                 }) { Text("批准", fontSize = 12.sp) }
                             } else {
-                                OutlinedButton(onClick = {
+                                if (canClosePr) OutlinedButton(onClick = {
                                     scope.launch { runCatching { Api.reopenPr(owner, name, number) }; load() }
                                 }) { Text("重新打开", fontSize = 12.sp) }
                             }

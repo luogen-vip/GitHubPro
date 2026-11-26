@@ -45,6 +45,8 @@ import com.luogen.ghpro.data.ContentItem
 import com.luogen.ghpro.data.DirListing
 import com.luogen.ghpro.data.Repo
 import com.luogen.ghpro.download.Downloader
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 @Composable
@@ -85,7 +87,7 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
         try {
             listing = Api.contents(owner, name, path, branch)
             listing?.let { UiCache.codeListing["$owner/$name|$branch|$path"] = it }
-        } catch (e: Exception) { error = e.message }
+        } catch (e: Exception) { if (!silent) error = e.message }
         loading = false
     }
 
@@ -96,7 +98,14 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
     LaunchedEffect(branch, path) {
         UiCache.codePath["$owner/$name"] = path
         val cached = UiCache.codeListing["$owner/$name|$branch|$path"]
-        if (cached != null) { listing = cached; loading = false } else load()
+        if (cached != null) { listing = cached; loading = false; load(silent = true) } else load()
+    }
+    // 代码页实时刷新：别人新建/删除/修改文件，几秒内自动出现
+    LaunchedEffect(branch, path) {
+        while (isActive) {
+            delay(6_000L)
+            if (!selecting && !uploading) runCatching { load(silent = true) }
+        }
     }
     LaunchedEffect(Unit) {
         branches = runCatching { Api.branches(owner, name).map { it.name } }.getOrDefault(emptyList())
@@ -325,6 +334,12 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
         if (!isNew) {
             val cached = UiCache.fileContent[fileKey]
             if (cached != null) { content = cached; original = cached; loading = false; runCatching { load(true) } } else load()
+        }
+    }
+    LaunchedEffect(path) {
+        if (!isNew) while (isActive) {
+            delay(6_000L)
+            if (!editing && !loading) runCatching { load(true) }
         }
     }
 

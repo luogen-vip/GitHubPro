@@ -26,10 +26,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.widget.Toast
 import androidx.navigation.NavController
 import com.luogen.ghpro.data.Api
+import com.luogen.ghpro.data.Bus
+import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Comment
 import com.luogen.ghpro.data.Issue
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 @Composable
@@ -42,6 +47,7 @@ fun IssueListTab(nav: NavController, owner: String, name: String) {
     var error by remember { mutableStateOf<String?>(null) }
     var page by remember { mutableStateOf(1) }
     var hasNext by remember { mutableStateOf(false) }
+    val issuePoke by Bus.issuePoke.collectAsState()
 
     suspend fun load(p: Int, replace: Boolean, silent: Boolean = false) {
         if (p == 1 && !silent) loading = true
@@ -52,14 +58,21 @@ fun IssueListTab(nav: NavController, owner: String, name: String) {
             page = p
             if (replace) UiCache.repoIssues[listKey()] = list
             error = null
-        } catch (e: Exception) { error = e.message }
+        } catch (e: Exception) { if (!silent) error = e.message }
         loading = false
     }
 
-    LaunchedEffect(state) {
+    LaunchedEffect(state, issuePoke) {
         val cached = UiCache.repoIssues[listKey()]
-        if (cached != null && cached.isNotEmpty()) { list = cached; loading = false }
+        if (cached != null && cached.isNotEmpty()) { list = cached; loading = false; load(1, true, silent = true) }
         else load(1, true)
+    }
+    // 页面停留时自动拉取：别人新建/关闭议题，几秒内就能看到
+    LaunchedEffect(state) {
+        while (isActive) {
+            delay(4_000L)
+            if (page == 1 && !loading) runCatching { load(1, true, silent = true) }
+        }
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -67,6 +80,8 @@ fun IssueListTab(nav: NavController, owner: String, name: String) {
             FilterChip(selected = state == "open", onClick = { state = "open" }, label = { Text("打开中", fontSize = 12.sp) })
             Spacer(Modifier.width(6.dp))
             FilterChip(selected = state == "closed", onClick = { state = "closed" }, label = { Text("已关闭", fontSize = 12.sp) })
+            Spacer(Modifier.width(6.dp))
+            FilterChip(selected = state == "all", onClick = { state = "all" }, label = { Text("全部", fontSize = 12.sp) })
             Spacer(Modifier.weight(1f))
             TextButton(onClick = { nav.navigate("newissue/$owner/$name") }) {
                 Icon(Icons.Filled.Add, null, Modifier.size(16.dp)); Text("新建议题", fontSize = 12.sp)
@@ -75,7 +90,7 @@ fun IssueListTab(nav: NavController, owner: String, name: String) {
         when {
             loading && list.isEmpty() -> LoadingBox()
             error != null -> ErrorBox(error) { scope.launch { load(1, true) } }
-            list.isEmpty() -> EmptyBox("没有${if (state == "open") "打开中" else "已关闭"}的议题")
+            list.isEmpty() -> EmptyBox(if (state == "all") "没有议题" else "没有${if (state == "open") "打开中" else "已关闭"}的议题")
             else -> LazyColumn(Modifier.fillMaxSize()) {
                 items(list, key = { it.id }) { issue ->
                     IssueRow(issue) { nav.navigate("issue/$owner/$name/${issue.number}") }
@@ -125,7 +140,13 @@ fun IssueRow(issue: Issue, onClick: () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: Int) {
+    val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
+    var lastToast by remember { mutableStateOf<Toast?>(null) }
+    fun quickToast(msg: String) {
+        lastToast?.cancel()
+        lastToast = Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).also { it.show() }
+    }
     var issue by remember { mutableStateOf<Issue?>(null) }
     var comments by remember { mutableStateOf<List<Comment>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
@@ -133,6 +154,9 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
     var text by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
     var actionMsg by remember { mutableStateOf<String?>(null) }
+    var opSeq by remember { mutableStateOf(0) }
+    var lockOpSeq by remember { mutableStateOf(0) }
+    var pendingOps by remember { mutableStateOf(0) }
     val snackbar = remember { SnackbarHostState() }
 
     suspend fun load() {
@@ -144,7 +168,33 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
         loading = false
     }
 
-    LaunchedEffect(number) { load() }
+    fun cacheIssue(up: Issue) {
+        UiCache.repoIssues.keys.filter { it.startsWith("$owner/$name|") }.forEach { k ->
+            val st = k.substringAfterLast('|')
+            val old = UiCache.repoIssues[k].orEmpty()
+            val rest = old.filter { it.number != up.number }
+            UiCache.repoIssues[k] = if (st == "all" || st == up.state) listOf(up) + rest else rest
+        }
+        UiCache.repoData["$owner/$name"]?.let { r ->
+            if (up.state == "open") UiCache.repoData["$owner/$name"] = r.copy(open_issues_count = r.open_issues_count + 1)
+            else UiCache.repoData["$owner/$name"] = r.copy(open_issues_count = (r.open_issues_count - 1).coerceAtLeast(0))
+        }
+    }
+
+    LaunchedEffect(number) {
+        if (UiCache.repoData["$owner/$name"] == null) runCatching { UiCache.repoData["$owner/$name"] = Api.repo(owner, name) }
+        load()
+        while (isActive) {
+            delay(4_000L)
+            if (pendingOps == 0) {
+                runCatching {
+                    val fresh = Api.issue(owner, name, number)
+                    issue = fresh
+                    comments = Api.issueComments(owner, name, number)
+                }
+            }
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -154,29 +204,64 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
                 title = { Text("议题 #$number", fontSize = 15.sp) },
                 navigationIcon = { IconButton({ nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
                 actions = {
-                    val isOpen = issue?.state == "open"
-                    TextButton(onClick = {
-                        scope.launch {
-                            try {
-                                if (isOpen) Api.patchIssue(owner, name, number, mapOf("state" to "closed", "state_reason" to "completed"))
-                                else Api.patchIssue(owner, name, number, mapOf("state" to "open"))
-                                snackbar.showSnackbar(if (isOpen) "已关闭" else "已重新打开")
-                                load()
-                            } catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
+                    val issueNow = issue
+                    if (issueNow != null) {
+                        val canPush = UiCache.repoData["$owner/$name"]?.permissions?.let { it.push || it.admin } == true
+                        val canClose = canPush || issueNow.user?.login == Cfg.login
+                        val isOpen = issueNow.state == "open"
+                        if (canClose) {
+                            TextButton(onClick = {
+                                val targetOpen = !isOpen
+                                val old = issueNow
+                                val seq = ++opSeq
+                                // 先立刻改 UI 和提示，网络在后台真实提交
+                                issue = old.copy(state = if (targetOpen) "open" else "closed",
+                                    state_reason = if (targetOpen) null else "completed")
+                                quickToast(if (targetOpen) "已重新打开" else "已关闭")
+                                pendingOps++
+                                scope.launch {
+                                    kotlinx.coroutines.delay(150L)
+                                    if (seq != opSeq) { pendingOps = (pendingOps - 1).coerceAtLeast(0); return@launch }
+                                    try {
+                                        val up = Api.patchIssue(owner, name, number,
+                                            if (targetOpen) mapOf("state" to "open")
+                                            else mapOf("state" to "closed", "state_reason" to "completed"))
+                                        if (seq == opSeq) { issue = up; cacheIssue(up) }
+                                        Bus.issuesChanged()
+                                    } catch (e: Exception) {
+                                        if (seq == opSeq) issue = old
+                                        quickToast("失败：${e.message}")
+                                    }
+                                    pendingOps = (pendingOps - 1).coerceAtLeast(0)
+                                }
+                            }) {
+                                Icon(if (isOpen) Icons.Filled.Check else Icons.Filled.LockOpen, null, Modifier.size(16.dp))
+                                Text(if (isOpen) "关闭" else "重开", fontSize = 12.sp)
+                            }
                         }
-                    }) {
-                        Icon(if (isOpen) Icons.Filled.Check else Icons.Filled.LockOpen, null, Modifier.size(16.dp))
-                        Text(if (isOpen) "关闭" else "重开", fontSize = 12.sp)
+                        if (canPush) {
+                            IconButton(onClick = {
+                                val old = issueNow
+                                val targetLocked = !old.locked
+                                val seq = ++lockOpSeq
+                                issue = old.copy(locked = targetLocked)
+                                quickToast(if (targetLocked) "已锁定讨论" else "已解锁讨论")
+                                pendingOps++
+                                scope.launch {
+                                    kotlinx.coroutines.delay(150L)
+                                    if (seq != lockOpSeq) { pendingOps = (pendingOps - 1).coerceAtLeast(0); return@launch }
+                                    try {
+                                        Api.lockIssue(owner, name, number, targetLocked)
+                                        Bus.issuesChanged()
+                                    } catch (e: Exception) {
+                                        issue = old
+                                        quickToast("失败：${e.message}")
+                                    }
+                                    pendingOps = (pendingOps - 1).coerceAtLeast(0)
+                                }
+                            }) { Icon(if (issueNow.locked) Icons.Filled.LockOpen else Icons.Filled.Lock, "锁定讨论") }
+                        }
                     }
-                    IconButton(onClick = {
-                        scope.launch {
-                            try {
-                                Api.lockIssue(owner, name, number, !(issue?.locked ?: false))
-                                snackbar.showSnackbar(if (issue?.locked == true) "已解锁" else "已锁定讨论")
-                                load()
-                            } catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
-                        }
-                    }) { Icon(if (issue?.locked == true) Icons.Filled.LockOpen else Icons.Filled.Lock, "锁定") }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )
@@ -278,6 +363,7 @@ fun NewIssueScreen(nav: NavController, owner: String, name: String) {
                                 val created = Api.createIssue(owner, name, title, body,
                                     labels.split(",").map { it.trim() }.filter { it.isNotBlank() },
                                     assignees.split(",").map { it.trim() }.filter { it.isNotBlank() })
+                                Bus.issuesChanged()
                                 nav.popBackStack()
                                 nav.navigate("issue/$owner/$name/${created.number}")
                             } catch (e: Exception) { snackbar.showSnackbar("创建失败：${e.message}") }

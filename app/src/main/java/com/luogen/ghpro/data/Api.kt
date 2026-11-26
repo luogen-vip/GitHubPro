@@ -542,8 +542,36 @@ object Api {
     }
     suspend fun jobLogs(o: String, r: String, jobId: Long): String = raw("/repos/$o/$r/actions/jobs/$jobId/logs")
 
-    /** 取某个任务日志 zip 中对应步骤的纯文本（GitHub 日志接口本身返回 zip）。 */
-    suspend fun stepLogText(o: String, r: String, jobId: Long, stepNumber: Int, stepName: String): String =
+    /** 取某个任务日志 zip 中对应步骤的纯文本；匹配不到时回退整份日志，绝不直接失败。 */
+    private fun sliceLogByTime(text: String, startedAt: String?, completedAt: String?): String {
+        if (startedAt.isNullOrBlank()) return ""
+        val from = runCatching { java.time.Instant.parse(startedAt) }.getOrNull() ?: return ""
+        val to = runCatching { completedAt?.let { java.time.Instant.parse(it) } }.getOrNull()
+        val fromMs = from.toEpochMilli() - 200
+        val toMs = to?.toEpochMilli()?.plus(300) ?: Long.MAX_VALUE
+        val out = StringBuilder()
+        var inside = false
+        text.lineSequence().forEach { line ->
+            val ts = line.trimStart('\uFEFF').substringBefore(' ', "")
+            val at = runCatching { java.time.Instant.parse(ts) }.getOrNull()
+            if (at != null) inside = at.toEpochMilli() in fromMs..toMs
+            if (inside) out.append(line).append('\n')
+        }
+        return out.toString().trim()
+    }
+
+    private fun sliceLogByName(text: String, stepName: String): String {
+        val lines = text.lines()
+        val exact = lines.indexOfFirst { it.contains("##[group]$stepName") || it.contains("Starting: $stepName") }
+        if (exact < 0) return ""
+        val end = (exact + 1 until lines.size).firstOrNull {
+            lines[it].contains("##[group]Run ") || lines[it].contains("##[debug]Finishing: $stepName")
+        } ?: lines.size
+        return lines.subList(exact, end).joinToString("\n").take(30000)
+    }
+
+    suspend fun stepLogText(o: String, r: String, jobId: Long, stepNumber: Int, stepName: String,
+                            startedAt: String? = null, completedAt: String? = null): String =
         withContext(Dispatchers.IO) {
             val req = Request.Builder()
                 .url("$base/repos/$o/$r/actions/jobs/$jobId/logs")
@@ -554,19 +582,45 @@ object Api {
             http.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
                 val bytes = resp.body?.bytes() ?: throw IOException("日志为空")
-                java.util.zip.ZipInputStream(bytes.inputStream()).use { zip ->
-                    var fallback = ""
-                    while (true) {
-                        val e = zip.nextEntry ?: break
-                        val n = e.name
-                        if (n.startsWith("${stepNumber}_") || n.contains(stepName.take(18))) {
+                val all = StringBuilder()
+                var matched: String? = null
+                var sawZip = false
+                try {
+                    java.util.zip.ZipInputStream(bytes.inputStream()).use { zip ->
+                        while (true) {
+                            val e = zip.nextEntry ?: break
+                            sawZip = true
+                            val n = e.name
                             val txt = zip.readBytes().toString(Charsets.UTF_8)
-                            return@withContext txt.take(30000)
+                            val simple = n.substringAfterLast('/')
+                            val stepKey = stepName.replace(Regex("[^0-9A-Za-z\\u4e00-\\u9fa5]+"), "").take(12)
+                            val simpleKey = simple.replace(Regex("[^0-9A-Za-z\\u4e00-\\u9fa5]+"), "")
+                            val hit = simple.startsWith("${stepNumber}_") ||
+                                simple.startsWith("$stepNumber.") ||
+                                simpleKey.startsWith("${stepNumber}_") ||
+                                (stepKey.length >= 3 && simpleKey.contains(stepKey, ignoreCase = true))
+                            if (hit && matched == null) { matched = txt.take(30000); break }
+                            if (all.length < 30000) {
+                                all.append("\n===== ").append(simple).append(" =====\n")
+                                all.append(txt.take(6000))
+                            }
                         }
-                        if (fallback.isBlank()) fallback = n
                     }
-                    throw IOException("日志里没有找到第 $stepNumber 步（$fallback）")
+                } catch (_: Exception) { }
+                matched?.let { return@withContext it }
+                if (sawZip) {
+                    if (all.isNotBlank()) return@withContext "（没有精确匹配到第 $stepNumber 步，下面是整个任务的日志）\n" + all.take(30000)
+                    throw IOException("日志为空")
                 }
+                val plain = bytes.toString(Charsets.UTF_8)
+                if (plain.isNotBlank() && !plain.startsWith("PK")) {
+                    val byTime = sliceLogByTime(plain, startedAt, completedAt)
+                    if (byTime.isNotBlank()) return@withContext byTime.take(30000)
+                    val byName = sliceLogByName(plain, stepName)
+                    if (byName.isNotBlank()) return@withContext byName.take(30000)
+                    return@withContext "（没有精确定位到第 $stepNumber 步，下面是整个任务日志）\n" + plain.take(30000)
+                }
+                throw IOException("日志格式无法识别")
             }
         }
 
