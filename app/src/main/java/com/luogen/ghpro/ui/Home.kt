@@ -84,6 +84,28 @@ fun HomeScreen(nav: NavController) {
     val safeMode = Cfg.safeMode
     val recent = Cfg.recentRepos.filter { Cfg.activityAt(it) > 0 }
 
+    // 首页点“关注者 / 正在关注”只在首页上弹名单，背景仍是首页，不再跳到个人主页。
+    var showPeople by remember { mutableStateOf(false) }
+    var peopleKind by remember { mutableStateOf(0) }   // 0 关注者，1 正在关注
+    var people by remember { mutableStateOf<List<User>>(emptyList()) }
+    var peopleLoading by remember { mutableStateOf(false) }
+    var peopleLoadingMore by remember { mutableStateOf(false) }
+    var peoplePage by remember { mutableStateOf(1) }
+    var peopleHasMore by remember { mutableStateOf(false) }
+    var peopleError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(showPeople, peopleKind) {
+        if (!showPeople) return@LaunchedEffect
+        peopleLoading = true; peopleError = null; people = emptyList()
+        peoplePage = 1; peopleHasMore = false
+        val login = me?.login ?: Cfg.login.orEmpty()
+        if (login.isBlank()) { peopleLoading = false; return@LaunchedEffect }
+        runCatching {
+            if (peopleKind == 0) Api.followers(login, 1) else Api.following(login, 1)
+        }.onSuccess { pg -> people = pg.items; peopleHasMore = pg.hasNext }
+            .onFailure { peopleError = it.message ?: "加载失败" }
+        peopleLoading = false
+    }
+
     suspend fun load(p: Int, replace: Boolean) {
         val req = ++reqGen
         val t = tab
@@ -357,10 +379,10 @@ fun HomeScreen(nav: NavController) {
                             Text("${me!!.public_repos} 个公开仓库", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text("  ·  ${me!!.followers} 关注者", fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.clickable { nav.navigate("user/${me!!.login}/0") })
+                                modifier = Modifier.clickable { peopleKind = 0; showPeople = true })
                             Text("  ·  ${me!!.following} 正在关注", fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.clickable { nav.navigate("user/${me!!.login}/1") })
+                                modifier = Modifier.clickable { peopleKind = 1; showPeople = true })
                         }
                     }
                 }
@@ -414,6 +436,58 @@ fun HomeScreen(nav: NavController) {
                 }
             }
         }
+    }
+
+    if (showPeople) {
+        AlertDialog(
+            onDismissRequest = { showPeople = false },
+            title = { Text(if (peopleKind == 0) "关注者" else "正在关注", fontSize = 15.sp) },
+            text = {
+                Box(Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
+                    when {
+                        peopleLoading -> LoadingBox()
+                        peopleError != null -> EmptyBox(peopleError!!)
+                        people.isEmpty() -> EmptyBox("暂无")
+                        else -> LazyColumn(Modifier.fillMaxSize()) {
+                            items(people, key = { it.id }) { p ->
+                                Row(Modifier.fillMaxWidth().clickable {
+                                    showPeople = false
+                                    nav.navigate("user/${p.login}")
+                                }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Avatar(p.avatar_url, 28, name = p.login)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(p.login, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f))
+                                }
+                                Divider1()
+                            }
+                            if (peopleHasMore) item {
+                                TextButton(enabled = !peopleLoadingMore, onClick = {
+                                    val login = me?.login ?: Cfg.login.orEmpty()
+                                    if (login.isBlank()) return@TextButton
+                                    peopleLoadingMore = true
+                                    scope.launch {
+                                        val pg = runCatching {
+                                            if (peopleKind == 0) Api.followers(login, peoplePage + 1)
+                                            else Api.following(login, peoplePage + 1)
+                                        }.getOrNull()
+                                        if (pg != null) {
+                                            people = (people + pg.items).distinctBy { it.id }
+                                            peoplePage += 1
+                                            peopleHasMore = pg.hasNext
+                                        }
+                                        peopleLoadingMore = false
+                                    }
+                                }, modifier = Modifier.fillMaxWidth()) {
+                                    Text(if (peopleLoadingMore) "加载中…" else "加载更多", fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton({ showPeople = false }) { Text("关闭") } }
+        )
     }
 }
 

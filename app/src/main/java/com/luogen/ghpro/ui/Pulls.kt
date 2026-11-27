@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
@@ -19,6 +20,7 @@ import androidx.compose.material.icons.filled.Comment
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
@@ -43,14 +45,36 @@ import kotlinx.coroutines.CancellationException
 @Composable
 fun PullListTab(nav: NavController, owner: String, name: String) {
     val scope = rememberCoroutineScope()
-    var state by remember { mutableStateOf("open") }
+    val repoKey = "$owner/$name"
+    var state by remember { mutableStateOf(UiCache.pullFilter[repoKey] ?: "open") }
     fun listKey() = "$owner/$name|$state"
     var list by remember { mutableStateOf(UiCache.repoPulls[listKey()] ?: emptyList()) }
-    var loading by remember { mutableStateOf(list.isEmpty()) }
+    var loading by remember { mutableStateOf(list.isEmpty() && UiCache.pullSyncAt[listKey()] == null) }
+    val listState = rememberLazyListState(
+        UiCache.pullIndex[repoKey] ?: 0,
+        UiCache.pullOffset[repoKey] ?: 0
+    )
     var error by remember { mutableStateOf<String?>(null) }
     var page by remember { mutableStateOf(1) }
     var hasNext by remember { mutableStateOf(false) }
     var showCreate by remember { mutableStateOf(false) }
+
+    // 列表筛选、滚动位置跨详情返回保存；返回时不会又跳回“打开中”。
+    DisposableEffect(repoKey) {
+        onDispose {
+            UiCache.pullFilter[repoKey] = state
+            UiCache.pullIndex[repoKey] = listState.firstVisibleItemIndex
+            UiCache.pullOffset[repoKey] = listState.firstVisibleItemScrollOffset
+        }
+    }
+    LaunchedEffect(listState, repoKey) {
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .collect { (i, o) ->
+                UiCache.pullFilter[repoKey] = state
+                UiCache.pullIndex[repoKey] = i
+                UiCache.pullOffset[repoKey] = o
+            }
+    }
 
     suspend fun load(p: Int, replace: Boolean, silent: Boolean = false) {
         if (p == 1 && !silent) loading = true
@@ -59,20 +83,30 @@ fun PullListTab(nav: NavController, owner: String, name: String) {
             list = if (replace) pg.items else list + pg.items
             hasNext = pg.hasNext; page = p
             if (replace) UiCache.repoPulls[listKey()] = list
+            UiCache.pullSyncAt[listKey()] = System.currentTimeMillis()
             error = null
         } catch (e: kotlinx.coroutines.CancellationException) { throw e }
         catch (e: Exception) { if (!silent) error = e.message }
         loading = false
     }
     LaunchedEffect(state) {
+        UiCache.pullFilter[repoKey] = state
         val cached = UiCache.repoPulls[listKey()]
-        if (cached != null && cached.isNotEmpty()) { list = cached; loading = false; load(1, true, silent = true) }
-        else load(1, true)
+        val syncAt = UiCache.pullSyncAt[listKey()]
+        list = cached.orEmpty()
+        loading = cached == null && syncAt == null
+        error = null
+        val fresh = syncAt != null && System.currentTimeMillis() - syncAt < 30_000L
+        if (cached == null || syncAt == null) load(1, true)
+        else if (!fresh) load(1, true, silent = true)
     }
     LaunchedEffect(state) {
         while (isActive) {
-            delay(5_000L)
-            if (page == 1 && !loading) runCatching { load(1, true, silent = true) }
+            delay(10_000L)
+            if (page == 1 && !loading) {
+                val at = UiCache.pullSyncAt[listKey()] ?: 0L
+                if (System.currentTimeMillis() - at >= 10_000L) runCatching { load(1, true, silent = true) }
+            }
         }
     }
 
@@ -81,9 +115,15 @@ fun PullListTab(nav: NavController, owner: String, name: String) {
             verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                FilterChip(selected = state == "open", onClick = { state = "open" }, label = { Text("打开中", fontSize = 12.sp) })
-                FilterChip(selected = state == "closed", onClick = { state = "closed" }, label = { Text("已关闭", fontSize = 12.sp) })
-                FilterChip(selected = state == "all", onClick = { state = "all" }, label = { Text("全部", fontSize = 12.sp) })
+                FilterChip(selected = state == "open", onClick = {
+                    if (state != "open") { state = "open"; UiCache.pullFilter[repoKey] = "open"; UiCache.pullIndex[repoKey] = 0; UiCache.pullOffset[repoKey] = 0; scope.launch { listState.scrollToItem(0) } }
+                }, label = { Text("打开中", fontSize = 12.sp) })
+                FilterChip(selected = state == "closed", onClick = {
+                    if (state != "closed") { state = "closed"; UiCache.pullFilter[repoKey] = "closed"; UiCache.pullIndex[repoKey] = 0; UiCache.pullOffset[repoKey] = 0; scope.launch { listState.scrollToItem(0) } }
+                }, label = { Text("已关闭", fontSize = 12.sp) })
+                FilterChip(selected = state == "all", onClick = {
+                    if (state != "all") { state = "all"; UiCache.pullFilter[repoKey] = "all"; UiCache.pullIndex[repoKey] = 0; UiCache.pullOffset[repoKey] = 0; scope.launch { listState.scrollToItem(0) } }
+                }, label = { Text("全部", fontSize = 12.sp) })
             }
             Spacer(Modifier.width(8.dp))
             // 固定高度、单行不换字：不会再把整行撑成两行高，也不会把“新建 PR”挤成竖排
@@ -101,7 +141,7 @@ fun PullListTab(nav: NavController, owner: String, name: String) {
             loading && list.isEmpty() -> LoadingBox()
             error != null -> ErrorBox(error) { scope.launch { load(1, true) } }
             list.isEmpty() -> EmptyBox("没有拉取请求")
-            else -> LazyColumn(Modifier.fillMaxSize()) {
+            else -> LazyColumn(Modifier.fillMaxSize(), state = listState) {
                 items(list, key = { it.id }) { pr ->
                     Column(Modifier.fillMaxWidth().clickable { nav.navigate("pr/$owner/$name/${pr.number}") }.padding(14.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {

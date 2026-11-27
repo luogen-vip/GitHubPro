@@ -23,6 +23,7 @@ import com.luogen.ghpro.data.Bus
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.OrgSummary
 import com.luogen.ghpro.data.UserStatus
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.Duration
 import java.time.Instant
@@ -188,10 +189,32 @@ private fun StatusDialog(onClose: () -> Unit) {
                 Bus.statusChanged()
                 scope.launch {
                     try {
-                        val real = Api.changeMyStatus(emoji, message.trim(), busy, exp, org?.id)
-                        Cfg.saveStatus(real)
+                        val msg = message.trim()
+                        val clearing = emoji.isBlank() && msg.isBlank() && !busy
+                        val real = Api.changeMyStatus(emoji, msg, busy, exp, org?.id)
+                        if (!clearing && real == null) {
+                            throw java.io.IOException("GitHub 没有返回状态对象")
+                        }
+                        // 不拿 mutation 的返回值直接当成功：再读一次 viewer.status，确认服务端真的保存了。
+                        var confirmed = Api.myStatus()
+                        if (confirmed == null && !clearing) {
+                            delay(700)
+                            confirmed = Api.myStatus()
+                                ?: Cfg.login?.takeIf { it.isNotBlank() }?.let { runCatching { Api.userStatus(it) }.getOrNull() }
+                        }
+                        val ok = if (clearing) {
+                            confirmed == null || ((confirmed.emoji ?: "").isBlank() && (confirmed.message ?: "").isBlank() && !confirmed.limitedAvailability)
+                        } else {
+                            confirmed != null && (confirmed.emoji ?: "") == emoji &&
+                                (confirmed.message ?: "") == msg &&
+                                confirmed.limitedAvailability == busy &&
+                                (org == null || confirmed.organizationId == org.id)
+                        }
+                        if (!ok) throw java.io.IOException("GitHub 返回成功，但重新读取状态不一致，可能未真正生效")
+                        Cfg.saveStatus(if (clearing) null else confirmed)
                         Bus.statusChanged()
-                        Toast.makeText(ctx, if (real?.organizationLogin.isNullOrBlank()) "状态已更新，GitHub 已生效" else "状态已更新，仅 ${real?.organizationLogin} 成员可见", Toast.LENGTH_SHORT).show()
+                        val visible = confirmed?.organizationLogin
+                        Toast.makeText(ctx, if (visible.isNullOrBlank()) "状态已更新，并从 GitHub 确认生效" else "状态已更新，仅 $visible 成员可见（已确认）", Toast.LENGTH_SHORT).show()
                         onClose()
                     } catch (e: Exception) {
                         Cfg.saveStatus(previous)
@@ -212,8 +235,13 @@ private fun StatusDialog(onClose: () -> Unit) {
                         scope.launch {
                             try {
                                 Api.changeMyStatus("", "", false, null)
+                                // 清理也要回读确认；不能再出现“提示成功但 GitHub 还有状态”。
+                                delay(500)
+                                val still = Api.myStatus()
+                                val gone = still == null || ((still.emoji ?: "").isBlank() && (still.message ?: "").isBlank() && !still.limitedAvailability)
+                                if (!gone) throw java.io.IOException("GitHub 仍返回状态，未真正清除")
                                 Cfg.saveStatus(null); Bus.statusChanged()
-                                Toast.makeText(ctx, "已清除状态", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(ctx, "已清除状态，并从 GitHub 确认", Toast.LENGTH_SHORT).show()
                                 onClose()
                             } catch (e: Exception) {
                                 Cfg.saveStatus(previous); Bus.statusChanged()

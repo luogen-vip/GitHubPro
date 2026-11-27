@@ -90,13 +90,23 @@ object SyncEngine {
         val repoChecked = root.getAsJsonObject("repoChecked") ?: JsonObject().also { root.add("repoChecked", it) }
         val runChecked = root.getAsJsonObject("runChecked") ?: JsonObject().also { root.add("runChecked", it) }
         val myReposNow = HashSet<String>()
+        // 先取一次服务端真实订阅仓库；通知过滤和后面的发行版/工作流轮询共用，避免重复请求。
+        val serverWatchNames = runCatching { Api.watchedRepos(1).items.map { it.full_name } }.getOrNull()
 
         // 1. 通知
         try {
             val list = Api.notifications(all = false)
             val seen = Cfg.lastSeenNotificationIds
             val firstRun = seen.isEmpty()
-            val fresh = list.filter { it.id !in seen && (it.repository?.full_name?.let { f -> !Cfg.isRepoMuted(f) } ?: true) }
+            val fresh = list.filter { n ->
+                if (n.id in seen) return@filter false
+                val repo = n.repository?.full_name ?: ""
+                if (repo.isNotBlank() && Cfg.isRepoMuted(repo)) return@filter false
+                // GitHub 会把“在某条议题/PR 下参与过”标成 subscribed；用户没订阅仓库时不再冒充“你关注的仓库”。
+                if (n.reason == "subscribed" && n.subject?.type?.let { it == "Issue" || it == "PullRequest" } == true &&
+                    serverWatchNames != null && repo.isNotBlank() && repo !in serverWatchNames) return@filter false
+                true
+            }
             val newSeen = (seen + list.map { it.id }).toList().takeLast(300).toSet()
             Cfg.lastSeenNotificationIds = newSeen
             if (notify && fresh.isNotEmpty() && !firstRun) {
@@ -255,10 +265,9 @@ object SyncEngine {
         }
 
         try {
-            // 关注的仓库 + 已 Star 的仓库都要收到新发行版/新提交提醒
-            // GitHub 的 /notifications 已经覆盖所有仓库的通知；这里重点轮询你的仓库/Star 仓库的推送和发行版。
-            // 不做 20 个硬截断，避免星标很多时后面的仓库永远收不到；最多取 60 个，避免一次请求过多。
-            val watch = (Cfg.watchRepos + Cfg.starredSnapshot + myReposNow).distinct().take(60)
+            // 只轮询服务端真实订阅的仓库：Star、自己建的仓库、历史播种都不再自动当成“已关注”。
+            // GitHub 的 /notifications 已覆盖所有仓库通知；这里只补订阅仓库的发行版/提交轮询。
+            val watch = serverWatchNames.orEmpty().distinct().take(60)
             watch.forEach { full ->
                 val parts = full.split("/")
                 if (parts.size != 2) return@forEach
@@ -325,10 +334,10 @@ object SyncEngine {
                 }
             }
 
-            // 工作流按仓库轮询：自己参与（含 collaborator/组织仓库）的仓库 + 关注仓库。
+            // 工作流只为服务端真实订阅的仓库轮询；自己的仓库也不再自动算关注。
             // 每轮最多查 10 个到期仓库，每个仓库 60 秒最多查一次，避免一次打几十个请求把加载拖慢。
             val nowRuns = System.currentTimeMillis()
-            val dueRuns = (watch + myReposNow).distinct()
+            val dueRuns = watch.distinct()
                 .filter { nowRuns - (runChecked.get(it)?.asLong ?: 0L) >= 60_000L }
                 .take(10)
             dueRuns.forEach { full ->
@@ -356,8 +365,7 @@ object SyncEngine {
                 ))
             }
         }
-        // 重装后自动把“我的仓库 + 已 Star 的仓库”播种到监听列表；只做一次，用户删掉不会复活。
-        Cfg.seedWatchRepos(myReposNow.toList() + Cfg.starredSnapshot.toList())
+        // 不再把“我的仓库 + 已 Star 的仓库”播种成监听；通知必须基于服务端真实订阅。
         save(root)
         if (changes.isNotEmpty()) Bus.poke()
         return changes

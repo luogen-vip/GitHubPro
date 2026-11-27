@@ -4,7 +4,12 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -260,14 +265,14 @@ object TranslateApi {
         return out.ifEmpty { listOf(Seg(source, false)) }
     }
 
-    suspend fun translate(text: String, target: String): Result = withContext(Dispatchers.IO) {
+    suspend fun translate(text: String, target: String, onPartial: ((String) -> Unit)? = null): Result = withContext(Dispatchers.IO) {
         val source = text.trim().let { if (it.length > 100_000) it.take(100_000) else it }
         if (source.isBlank()) return@withContext Result(source, null, "原文")
         if (!isTranslatable(source)) return@withContext Result(source, null, "代码/符号，无需翻译")
         val key = "$target\u0000$source"
         synchronized(cache) { cache[key] }?.let { return@withContext it }
         val parts = splitFenced(source)
-        if (parts.size <= 1) return@withContext translatePlain(source, target)
+        if (parts.size <= 1) return@withContext translatePlain(source, target, onPartial)
         val out = StringBuilder()
         var detected: String? = null
         val providers = ArrayList<String>()
@@ -280,17 +285,20 @@ object TranslateApi {
                 out.append(part.text)
                 continue
             }
-            val r = translatePlain(part.text, target)
+            val r = translatePlain(part.text, target) { partial ->
+                onPartial?.invoke((out.toString() + partial).trim())
+            }
             out.append(r.text)
             detected = detected ?: r.detected
             if (r.provider !in providers) providers.add(r.provider)
+            onPartial?.invoke(out.toString().trim())
         }
         val result = Result(out.toString().trim(), detected, providers.joinToString(" + ").ifBlank { "原文" })
         synchronized(cache) { cache[key] = result }
         result
     }
 
-    private suspend fun translatePlain(text: String, target: String): Result = withContext(Dispatchers.IO) {
+    private suspend fun translatePlain(text: String, target: String, onPartial: ((String) -> Unit)? = null): Result = withContext(Dispatchers.IO) {
         val source = text.trim().let { if (it.length > 100_000) it.take(100_000) else it }
         if (source.isBlank()) return@withContext Result(source, null, "原文")
         if (!isTranslatable(source)) {
@@ -304,29 +312,25 @@ object TranslateApi {
         val key = "$target\u0000$source"
         synchronized(cache) { cache[key] }?.let { return@withContext it }
         val chunks = chunk(source)
-        // 测试 token 按 IP 限流（每分钟约 5 次）。长 README 固定 1 万字一段，
-        // 每段串行；某一段被限流就等一分钟再单独重试这一段，
-        // 而不是把“彩云 403”直接丢到界面上变成翻译失败。
+        // 长 README 不再“一段等完再下一段”：第一段先出结果，剩下的并行走网络，
+        // B 站接口全局最多 4 个并发（实测 6 个会 503），既快又不触发限流。
         val out = StringBuilder()
         var detected: String? = guessed
         var provider = ""
-        for (c in chunks) {
-            var waited = 0
-            while (true) {
-                try {
-                    val r = translateChunk(c, t, guessed)
-                    out.append(r.first)
-                    detected = r.second ?: detected
-                    provider = r.third
-                    break
-                } catch (e: RateLimited) {
-                    // 单段被限流时只等这一段，不重翻前面已经成功的段；长文也能一段段啃完。
-                    if (waited >= 2) {
-                        throw IOException("彩云公开接口被限流（每分钟约 5 次），等 1 分钟后再点翻译；已重试仍未恢复。")
-                    }
-                    waited++
-                    delay(62_000L)
-                }
+        val first = translateChunk(chunks.first(), t, guessed)
+        out.append(first.first)
+        detected = first.second ?: detected
+        provider = first.third
+        onPartial?.invoke(out.toString().trim())
+        if (chunks.size > 1) {
+            val rest = coroutineScope {
+                chunks.drop(1).map { c -> async(Dispatchers.IO) { translateChunk(c, t, guessed) } }.awaitAll()
+            }
+            for (r in rest) {
+                out.append(r.first)
+                detected = r.second ?: detected
+                provider = r.third
+                onPartial?.invoke(out.toString().trim())
             }
         }
         val translated = out.toString().trim()
@@ -355,13 +359,23 @@ object TranslateApi {
         return out.ifEmpty { listOf(s) }
     }
 
-    private fun translateChunk(chunk: String, t: Lang, guessed: String?): Triple<String, String?, String> {
+    private suspend fun translateChunk(chunk: String, t: Lang, guessed: String?): Triple<String, String?, String> {
         val errors = ArrayList<String>()
         var rateLimited: RateLimited? = null
         // 1. B 站公开 Index-Translate：无需注册和 key，支持 150 种语言。
         //    这是目前实测最稳定的全语言入口；长文也交给它（每次最多 1 万字）。
+        //    503/超时再给一次很短的重试，仍失败才走后面两个额度有限的兜底。
         try {
-            val out = bilibiliTranslate(chunk, t)
+            var out = ""
+            for (attempt in 0..1) {
+                try {
+                    out = bilibiliTranslate(chunk, t)
+                    break
+                } catch (e: Exception) {
+                    if (attempt == 1) throw e
+                    delay(500L)
+                }
+            }
             if (isSameOrUntranslated(out, chunk)) throw IOException("B站接口原样返回")
             return Triple(out, null, "B站翻译")
         } catch (e: Exception) { errors.add("B站：${e.message}") }
@@ -391,7 +405,7 @@ object TranslateApi {
     }
 
     /** B 站公开演示接口：OpenAI 兼容，任意占位 key 可用；只接受纯译文。 */
-    private fun bilibiliTranslate(chunk: String, t: Lang): String {
+    private suspend fun bilibiliTranslate(chunk: String, t: Lang): String {
         // 实测该公开网关在 1800 字左右会 503，所以内部按 1400 字切开再拼接。
         if (chunk.length > 1400) {
             val out = StringBuilder()
@@ -401,7 +415,11 @@ object TranslateApi {
         return bilibiliOne(chunk, t)
     }
 
-    private fun bilibiliOne(chunk: String, t: Lang): String {
+    /** 全局 4 并发：实测同时 6 个请求会被 B 站 503；4 个稳定。 */
+    private val biliGate = Semaphore(4)
+
+    private suspend fun bilibiliOne(chunk: String, t: Lang): String = withContext(Dispatchers.IO) {
+        biliGate.withPermit {
         val prompt = "请将下面的文本翻译成${t.label}，只输出译文，不要解释、不要加引号、不要输出原文：\n\n$chunk"
         val body = JsonObject().apply {
             addProperty("model", "Index-Translate-35B-A3B")
@@ -428,8 +446,9 @@ object TranslateApi {
                 ?: throw IOException("没有译文")
             val out = content.trim()
             if (out.isBlank()) throw IOException("译文为空")
-            return out
+            out
         }
+    }
     }
 
     private fun hasLargeLatinPart(text: String): Boolean {

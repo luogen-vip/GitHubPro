@@ -152,15 +152,7 @@ fun SubscriptionsScreen(nav: NavController) {
     LaunchedEffect(tab) { UiCache.subsTab = tab; selected = emptySet(); justRestored = emptySet() }
     LaunchedEffect(sort) { UiCache.subsSort = sort }
 
-    suspend fun loadRepos() {
-        val all = ArrayList<Repo>()
-        var page = 1
-        while (page <= 20) {
-            val pg = Api.watchedRepos(page)
-            all.addAll(pg.items)
-            if (!pg.hasNext) break
-            page++
-        }
+    fun publishRepos(all: List<Repo>) {
         // GitHub 的订阅列表有短暂服务端延迟：刚取消的仓库可能还会被返回一次。
         // 以本地刚操作的真实状态为准，避免列表在“消失后滑一下又回来”。
         val out = ArrayList<Repo>()
@@ -176,17 +168,20 @@ fun SubscriptionsScreen(nav: NavController) {
         UiCache.subsRepos = repos
     }
 
-    suspend fun loadUsers() {
-        val me = Cfg.login.orEmpty()
-        if (me.isBlank()) throw IllegalStateException("还没有登录账号")
-        val all = ArrayList<User>()
+    suspend fun loadRepos() {
+        val all = ArrayList<Repo>()
+        // 第一页一回来就马上显示；后面还有页再继续追加，不再等全部页码跑完才显示。
         var page = 1
         while (page <= 20) {
-            val pg = Api.following(me, page)
+            val pg = Api.watchedRepos(page)
             all.addAll(pg.items)
+            publishRepos(all)
             if (!pg.hasNext) break
             page++
         }
+    }
+
+    fun publishUsers(all: List<User>) {
         val out = ArrayList<User>()
         for (u in all.distinctBy { it.id }) {
             if (UiCache.followOverride(u.login) == false) continue
@@ -199,7 +194,25 @@ fun SubscriptionsScreen(nav: NavController) {
         UiCache.subsUsers = users
     }
 
+    suspend fun loadUsers() {
+        val me = Cfg.login.orEmpty()
+        if (me.isBlank()) throw IllegalStateException("还没有登录账号")
+        val all = ArrayList<User>()
+        // 和仓库订阅一样：第一页立即显示，后续页继续追加。
+        var page = 1
+        while (page <= 20) {
+            val pg = Api.following(me, page)
+            all.addAll(pg.items)
+            publishUsers(all)
+            if (!pg.hasNext) break
+            page++
+        }
+    }
+
     LaunchedEffect(tab, refresh, watchVer, followVer) {
+        // 另一个 Tab 的首屏也同时取（不排队），从“仓库订阅”切到“用户关注”不再空等分页。
+        if (tab == 0 && users.isEmpty()) scope.launch { runCatching { loadUsers() } }
+        if (tab == 1 && repos.isEmpty()) scope.launch { runCatching { loadRepos() } }
         // 仓库页/资料页操作会发 Bus 事件；页面在后台也重新取一次真值，回到这里不显示旧状态。
         loading = true
         error = null

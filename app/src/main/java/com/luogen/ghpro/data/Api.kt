@@ -92,12 +92,12 @@ object Api {
             .build()
     }
 
-    /** 搜索接口单独用短超时：精选页网络差时不能一直转圈。 */
+    /** 搜索接口单独超时：GitHub 搜索偶尔要十几秒，给 25 秒；失败仍会明确报错，不会无限转圈。 */
     private val searchHttp: OkHttpClient by lazy {
         http.newBuilder()
-            .connectTimeout(8, TimeUnit.SECONDS)
-            .readTimeout(12, TimeUnit.SECONDS)
-            .callTimeout(15, TimeUnit.SECONDS)
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .callTimeout(25, TimeUnit.SECONDS)
             .build()
     }
 
@@ -1142,7 +1142,8 @@ object Api {
             addProperty("message", message.take(80))
             addProperty("limitedAvailability", limited)
             if (expiresAt.isNullOrBlank()) add("expiresAt", com.google.gson.JsonNull.INSTANCE) else addProperty("expiresAt", expiresAt)
-            if (organizationId.isNullOrBlank()) add("organizationId", com.google.gson.JsonNull.INSTANCE) else addProperty("organizationId", organizationId)
+            // 公开状态不要传 organizationId:null；GitHub 文档要求“省略”才是公开，显式 null 部分账号会写入失败。
+            if (!organizationId.isNullOrBlank()) addProperty("organizationId", organizationId)
         }
         val body = JsonObject().apply {
             addProperty("query", q)

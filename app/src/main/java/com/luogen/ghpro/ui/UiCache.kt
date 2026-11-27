@@ -140,8 +140,17 @@ object UiCache {
     val runJobs = lruCache<Long, List<Job>>(50)
     val runArtifacts = lruCache<Long, List<Artifact>>(50)
     val repoIssues = lruCache<String, List<Issue>>(24)
+    /** owner/name -> 议题筛选；返回详情时不会又跳回“打开中”。 */
+    val issueFilter = HashMap<String, String>()
+    val issueIndex = HashMap<String, Int>()
+    val issueOffset = HashMap<String, Int>()
+    val issueSyncAt = HashMap<String, Long>()
     val issueOverrides = HashMap<String, Pair<Issue, Long>>()   // owner/name#number -> 本地乐观状态（10 秒内不被服务端旧数据覆盖）
     val repoPulls = lruCache<String, List<PullRequest>>(24)
+    val pullFilter = HashMap<String, String>()
+    val pullIndex = HashMap<String, Int>()
+    val pullOffset = HashMap<String, Int>()
+    val pullSyncAt = HashMap<String, Long>()
     val repoReleases = lruCache<String, List<Release>>(24)
     val repoContributors = lruCache<String, List<User>>(24)
     val repoDiscussions = lruCache<String, List<Discussion>>(24)

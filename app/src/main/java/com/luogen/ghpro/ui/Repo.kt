@@ -248,10 +248,8 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                                 if (seq != starSeq) return@launch
                                 runCatching { Api.star(owner, name, target) }
                                     .onSuccess {
+                                        // Star 只影响收藏，不再偷偷把仓库加入监听；否则会收到没订阅过的仓库通知。
                                         Cfg.touchRepo(key)
-                                        val wl = Cfg.watchRepos
-                                        if (target) wl.add(key) else wl.remove(key)
-                                        Cfg.watchRepos = wl
                                     }
                                     .onFailure {
                                         if (seq == starSeq) {
@@ -620,11 +618,13 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
         val src = readme?.trim().orEmpty()
         if (src.isBlank()) return
         if (!TranslateApi.isTranslatable(src)) {
+            readmeTrLoading = false
             readmeError = "代码/符号，无需翻译"
             Toast.makeText(ctx, readmeError, Toast.LENGTH_SHORT).show()
             return
         }
         if (TranslateApi.sameLanguage(src, to)) {
+            readmeTrLoading = false
             readmeError = "原文已经是${TranslateApi.label(to)}，不需要强行翻译"
             Toast.makeText(ctx, readmeError, Toast.LENGTH_SHORT).show()
             return
@@ -638,8 +638,18 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
         readmeTrSource = null
         readmeJob = scope.launch {
             try {
-                val translated = withTimeout(180_000L) {
-                    TranslateApi.translate(src.take(100_000), to).text
+                val translated = withTimeout(300_000L) {
+                    TranslateApi.translate(src.take(100_000), to) { partial ->
+                        // 第一段/后续段一完成就先显示，长 README 不用整篇等完才出字。
+                        scope.launch {
+                            if (seq == readmeSeq && partial.isNotBlank()) {
+                                readmeTr = partial
+                                readmeTrTarget = to
+                                readmeTrSource = src
+                                readmeShowOriginal = false
+                            }
+                        }
+                    }.text
                 }
                 if (seq == readmeSeq) {
                     readmeTr = translated
@@ -763,6 +773,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
                 readmePicker = false
                 readmeJob?.cancel()
                 readmeSeq++
+                readmeTrLoading = false
                 readmeTarget = code
                 Cfg.translateTarget = code
                 readmeTr = null

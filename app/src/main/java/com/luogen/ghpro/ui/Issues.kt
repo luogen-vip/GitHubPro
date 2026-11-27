@@ -7,6 +7,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
@@ -22,6 +23,7 @@ import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -47,15 +49,37 @@ import kotlinx.coroutines.launch
 @Composable
 fun IssueListTab(nav: NavController, owner: String, name: String) {
     val scope = rememberCoroutineScope()
-    var state by remember { mutableStateOf("open") }
+    val repoKey = "$owner/$name"
+    var state by remember { mutableStateOf(UiCache.issueFilter[repoKey] ?: "open") }
     fun listKey() = "$owner/$name|$state"
     var list by remember { mutableStateOf(UiCache.repoIssues[listKey()] ?: emptyList()) }
-    var loading by remember { mutableStateOf(list.isEmpty()) }
+    var loading by remember { mutableStateOf(list.isEmpty() && UiCache.issueSyncAt[listKey()] == null) }
+    val listState = rememberLazyListState(
+        UiCache.issueIndex[repoKey] ?: 0,
+        UiCache.issueOffset[repoKey] ?: 0
+    )
     var error by remember { mutableStateOf<String?>(null) }
     var page by remember { mutableStateOf(1) }
     var hasNext by remember { mutableStateOf(false) }
     val issuePoke by Bus.issuePoke.collectAsState()
     val issueLocalPoke by Bus.issueLocalPoke.collectAsState()
+
+    // 从哪个筛选点进去，回来就还是哪个筛选、哪个位置。
+    DisposableEffect(repoKey) {
+        onDispose {
+            UiCache.issueFilter[repoKey] = state
+            UiCache.issueIndex[repoKey] = listState.firstVisibleItemIndex
+            UiCache.issueOffset[repoKey] = listState.firstVisibleItemScrollOffset
+        }
+    }
+    LaunchedEffect(listState, repoKey) {
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .collect { (i, o) ->
+                UiCache.issueFilter[repoKey] = state
+                UiCache.issueIndex[repoKey] = i
+                UiCache.issueOffset[repoKey] = o
+            }
+    }
 
     suspend fun load(p: Int, replace: Boolean, silent: Boolean = false) {
         if (p == 1 && !silent) loading = true
@@ -79,6 +103,7 @@ fun IssueListTab(nav: NavController, owner: String, name: String) {
             hasNext = pg.hasNext
             page = p
             if (replace) UiCache.repoIssues[listKey()] = list
+            UiCache.issueSyncAt[listKey()] = System.currentTimeMillis()
             error = null
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) { if (!silent) error = e.message }
@@ -88,32 +113,44 @@ fun IssueListTab(nav: NavController, owner: String, name: String) {
     fun pick(s: String) {
         if (s == state) return
         state = s
+        UiCache.issueFilter[repoKey] = s
+        UiCache.issueIndex[repoKey] = 0
+        UiCache.issueOffset[repoKey] = 0
         val cached = UiCache.repoIssues["$owner/$name|$s"]
         list = cached.orEmpty()
-        loading = cached == null
+        loading = cached == null && UiCache.issueSyncAt["$owner/$name|$s"] == null
         error = null
         page = 1
         hasNext = false
+        scope.launch { listState.scrollToItem(0) }
     }
 
     LaunchedEffect(state, issuePoke, issueLocalPoke) {
+        UiCache.issueFilter[repoKey] = state
         val cached = UiCache.repoIssues[listKey()]
+        val syncAt = UiCache.issueSyncAt[listKey()]
         // 缓存已经因乐观操作更新（例如刚关闭的议题已从“打开中”移除），先立刻换上，不能等网络
         list = cached.orEmpty()
-        loading = cached == null
+        loading = cached == null && syncAt == null
         error = null
         // 自己的关闭/重开刚做了乐观更新：先让列表用本地缓存；本地操作成功前不要拉服务端旧数据
         if (issueLocalPoke > 0 && issuePoke <= issueLocalPoke) {
             val age = System.currentTimeMillis() - issueLocalPoke
             if (age in 0..1500L) delay(1500L - age)
         }
-        if (cached != null) load(1, true, silent = true) else load(1, true)
+        // 刚返回时只要缓存还新鲜就不请求，避免“每次返回都加载”；超过 30 秒才后台静默补最新。
+        val fresh = syncAt != null && System.currentTimeMillis() - syncAt < 30_000L
+        if (cached == null || syncAt == null) load(1, true)
+        else if (!fresh) load(1, true, silent = true)
     }
-    // 页面停留时自动拉取：别人新建/关闭议题，几秒内就能看到
+    // 页面停留时后台补最新；不阻塞列表，也不改变当前滚动位置。
     LaunchedEffect(state) {
         while (isActive) {
-            delay(2_000L)
-            if (page == 1 && !loading) runCatching { load(1, true, silent = true) }
+            delay(8_000L)
+            if (page == 1 && !loading) {
+                val at = UiCache.issueSyncAt[listKey()] ?: 0L
+                if (System.currentTimeMillis() - at >= 8_000L) runCatching { load(1, true, silent = true) }
+            }
         }
     }
 
@@ -135,7 +172,7 @@ fun IssueListTab(nav: NavController, owner: String, name: String) {
             loading && list.isEmpty() -> LoadingBox()
             error != null -> ErrorBox(error) { scope.launch { load(1, true) } }
             list.isEmpty() -> EmptyBox(if (state == "all") "没有议题" else "没有${if (state == "open") "打开中" else "已关闭"}的议题")
-            else -> LazyColumn(Modifier.fillMaxSize()) {
+            else -> LazyColumn(Modifier.fillMaxSize(), state = listState) {
                 items(list, key = { it.id }) { issue ->
                     IssueRow(issue) { nav.navigate("issue/$owner/$name/${issue.number}") }
                     Divider1()
