@@ -1,11 +1,14 @@
 package com.luogen.ghpro.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -22,6 +25,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -225,7 +229,7 @@ private fun IssueCommentRow(c: Comment, depth: Int, selected: Boolean, onReply: 
     Divider1()
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: Int) {
     val ctx = LocalContext.current
@@ -249,6 +253,9 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
     var lockOpSeq by remember { mutableStateOf(0) }
     var pendingOps by remember { mutableStateOf(0) }
     val snackbar = remember { SnackbarHostState() }
+    val commentBring = remember { BringIntoViewRequester() }
+    // 输入时让评论框自己滚进可视区：键盘弹出、文字换行变高都不会被盖住。
+    LaunchedEffect(text) { if (text.isNotEmpty()) runCatching { commentBring.bringIntoView() } }
 
     suspend fun load() {
         try {
@@ -383,13 +390,17 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
             )
         }
     ) { pad ->
-        Column(Modifier.fillMaxSize().padding(pad)) {
+        Column(Modifier.fillMaxSize().padding(pad).imePadding()) {
             when {
                 loading -> LoadingBox()
                 error != null -> ErrorBox(error) { scope.launch { load() } }
                 issue != null -> {
-                    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(14.dp)) {
-                        Text(issue!!.title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    // 整页一起滚动：顶部信息仍保留在最上面，往上滑后正文/评论能占满全屏，
+                    // 不再被固定头部压成一条很小的可滑动区域。
+                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)
+                        .padding(horizontal = 14.dp, vertical = 6.dp)) {
+                        Text(issue!!.title, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.height(6.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             StateChip(issue!!.state)
@@ -399,7 +410,8 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
                         }
                         issue!!.labels?.takeIf { it.isNotEmpty() }?.let {
                             Spacer(Modifier.height(6.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) { it.forEach { l -> LabelChip(l) } }
+                            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)) { it.forEach { l -> LabelChip(l) } }
                         }
                         // 真实 reactions：点一下会调用 GitHub 添加/删除，不是本地假计数。
                         val emojiMap = listOf(
@@ -432,7 +444,7 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
                             }
                         }
                     }
-                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(14.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
                         Text(issue!!.body ?: "（没有正文）", fontSize = 13.sp, lineHeight = 19.sp)
                         Spacer(Modifier.height(14.dp))
                         Divider1()
@@ -451,7 +463,9 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
                             }
                             Spacer(Modifier.height(4.dp))
                         }
-                        OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth(),
+                        OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth()
+                            .bringIntoViewRequester(commentBring)
+                            .onFocusChanged { if (it.isFocused) scope.launch { runCatching { commentBring.bringIntoView() } } },
                             label = { Text(if (replyTo == null) "写下你的评论…" else "回复 @${replyTo?.user?.login ?: ""}…") }, minLines = 2)
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             TextButton(enabled = text.isNotBlank() && !sending, onClick = {
@@ -481,6 +495,7 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
                         Text("GitHub 不支持通过 API 删除议题，只能关闭或锁定（关闭后别人仍可查看历史）。",
                             fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(20.dp))
+                    }
                     }
                 }
             }

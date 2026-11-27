@@ -41,6 +41,7 @@ fun UserScreen(nav: NavController, login: String) {
     var repos by remember { mutableStateOf(UiCache.userRepos[login] ?: emptyList()) }
     var following by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(u == null) }
+    var reposLoading by remember { mutableStateOf(repos.isEmpty()) }
     var error by remember { mutableStateOf<String?>(null) }
     var tab by remember { mutableStateOf(UiCache.userTab[login] ?: 0) }
     var peopleDialog by remember { mutableStateOf(0) }
@@ -56,12 +57,15 @@ fun UserScreen(nav: NavController, login: String) {
     suspend fun load() {
         try {
             u = Api.user(login)
+            reposLoading = true
             repos = Api.userRepos(login, 1, 60).items
+            reposLoading = false
             u?.let { UiCache.userData[login] = it }
             UiCache.userRepos[login] = repos
             following = runCatching { Api.isFollowing(login) }.getOrDefault(false)
             error = null
         } catch (e: Exception) { error = e.message }
+        reposLoading = false
         loading = false
     }
     LaunchedEffect(login) { load() }
@@ -160,11 +164,12 @@ fun UserScreen(nav: NavController, login: String) {
                             }
                         }
                         if (tab == 0) {
+                            if (reposLoading && repos.isEmpty()) item { LoadingBox("正在加载仓库…") }
                             items(repos, key = { it.id }) { r ->
                                 RepoRow(r) { nav.navigate("repo/${r.owner?.login}/${r.name}") }
                                 Divider1()
                             }
-                            if (repos.isEmpty()) item { EmptyBox("没有公开仓库") }
+                            if (!reposLoading && repos.isEmpty()) item { EmptyBox("没有公开仓库") }
                         } else {
                             if (eventsLoading) item { LoadingBox() }
                             else if (events.isEmpty()) item { EmptyBox("暂无公开动态") }
@@ -191,11 +196,18 @@ fun UserScreen(nav: NavController, login: String) {
 
     if (showPeople) {
         var loadingPeople by remember { mutableStateOf(true) }
+        var peopleLoadingMore by remember { mutableStateOf(false) }
+        var peoplePage by remember { mutableStateOf(1) }
+        var peopleHasMore by remember { mutableStateOf(false) }
         LaunchedEffect(peopleDialog, showPeople) {
             if (showPeople) {
-                people = runCatching {
-                    if (peopleDialog == 0) Api.followers(login, 1).items else Api.following(login, 1).items
-                }.getOrDefault(emptyList())
+                loadingPeople = true
+                val pg = runCatching {
+                    if (peopleDialog == 0) Api.followers(login, 1) else Api.following(login, 1)
+                }.getOrNull()
+                people = pg?.items.orEmpty()
+                peopleHasMore = pg?.hasNext == true
+                peoplePage = 1
                 loadingPeople = false
             }
         }
@@ -203,13 +215,39 @@ fun UserScreen(nav: NavController, login: String) {
             onDismissRequest = { showPeople = false },
             title = { Text(if (peopleDialog == 0) "关注者" else "正在关注", fontSize = 15.sp) },
             text = {
-                Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
-                    if (loadingPeople) LoadingBox() else if (people.isEmpty()) EmptyBox("暂无")
-                    else people.forEach { p ->
-                        Row(Modifier.fillMaxWidth().clickable { showPeople = false; nav.navigate("user/${p.login}") }.padding(vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically) {
-                            Avatar(p.avatar_url, 26); Spacer(Modifier.width(8.dp))
-                            Text(p.login, fontSize = 12.sp)
+                Box(Modifier.fillMaxWidth().heightIn(max = 400.dp)) {
+                    when {
+                        loadingPeople -> LoadingBox()
+                        people.isEmpty() -> EmptyBox("暂无")
+                        else -> LazyColumn(Modifier.fillMaxSize()) {
+                            // 懒加载：只请求屏幕内可见的头像，避免一次并发几十张后全部退回字母头像。
+                            items(people, key = { it.id }) { p ->
+                                Row(Modifier.fillMaxWidth().clickable { showPeople = false; nav.navigate("user/${p.login}") }.padding(vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically) {
+                                    Avatar(p.avatar_url, 27, name = p.login)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(p.login, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                                Divider1()
+                            }
+                            if (peopleHasMore) item {
+                                TextButton(enabled = !peopleLoadingMore, onClick = {
+                                    peopleLoadingMore = true
+                                    scope.launch {
+                                        val pg = runCatching {
+                                            if (peopleDialog == 0) Api.followers(login, peoplePage + 1) else Api.following(login, peoplePage + 1)
+                                        }.getOrNull()
+                                        if (pg != null) {
+                                            people = people + pg.items
+                                            peoplePage += 1
+                                            peopleHasMore = pg.hasNext
+                                        }
+                                        peopleLoadingMore = false
+                                    }
+                                }, modifier = Modifier.fillMaxWidth()) {
+                                    Text(if (peopleLoadingMore) "加载中…" else "加载更多", fontSize = 12.sp)
+                                }
+                            }
                         }
                     }
                 }

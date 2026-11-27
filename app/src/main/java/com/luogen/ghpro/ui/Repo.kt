@@ -761,10 +761,7 @@ fun PeopleDialog(nav: NavController, owner: String, name: String, kind: Int, onC
     LaunchedEffect(kind) {
         loading = true
         err = null
-        try {
-            fetch(1)
-            if (hasMore) fetch(2)
-        } catch (e: Exception) { err = e.message }
+        try { fetch(1) } catch (e: Exception) { err = e.message }
         loading = false
     }
 
@@ -779,43 +776,53 @@ fun PeopleDialog(nav: NavController, owner: String, name: String, kind: Int, onC
         onDismissRequest = onClose,
         title = { Text(title, fontSize = 15.sp) },
         text = {
-            Column(Modifier.heightIn(max = 430.dp).verticalScroll(rememberScrollState())) {
-                if (loading) LoadingBox()
-                else if (err != null) EmptyBox(when {
-                    kind == 2 -> "GitHub 只允许仓库管理员查看“关注者”名单，别人的仓库看不到具体是谁；关注人数仍然会显示。"
-                    kind == 0 -> "GitHub 没有公开这个仓库的 Star 名单（接口返回受限）。这不是网络问题，自己的仓库通常可以正常查看。"
-                    else -> "读取失败：$err"
-                })
-                else if (list.isEmpty()) EmptyBox(emptyText)
-                else {
-                    Text("已加载 ${list.size} 个" + if (hasMore) "（还有更多，可继续加载）" else "（已全部显示）",
-                        fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
-                    list.forEach { item ->
-                        val (login, avatar, extra) = when (item) {
-                            is User -> Triple(item.login, item.avatar_url,
-                                if (kind == 3) "${item.contributions} 次贡献" else if (kind == 2) "关注者" else "Star 用户")
-                            is Repo -> Triple(item.full_name, item.owner?.avatar_url, "${item.stargazers_count} star")
-                            else -> Triple("", null, "")
+            Box(Modifier.fillMaxWidth().heightIn(max = 430.dp)) {
+                when {
+                    loading -> LoadingBox()
+                    err != null -> EmptyBox(when {
+                        kind == 2 -> "GitHub 只允许仓库管理员查看“关注者”名单，别人的仓库看不到具体是谁；关注人数仍然会显示。"
+                        kind == 0 -> "GitHub 没有公开这个仓库的 Star 名单（接口返回受限）。这不是网络问题，自己的仓库通常可以正常查看。"
+                        else -> "读取失败：$err"
+                    })
+                    list.isEmpty() -> EmptyBox(emptyText)
+                    else -> LazyColumn(Modifier.fillMaxSize()) {
+                        item {
+                            Text("已加载 ${list.size} 个" + if (hasMore) "（还有更多，可继续加载）" else "（已全部显示）",
+                                fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 2.dp, vertical = 4.dp))
                         }
-                        Row(Modifier.fillMaxWidth().clickable {
-                            onClose(); if (!login.contains("/")) nav.navigate("user/$login")
-                            else nav.navigate("repo/${login.split("/")[0]}/${login.split("/")[1]}")
-                        }.padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Avatar(avatar, 28)
-                            Spacer(Modifier.width(8.dp))
-                            Text(login, fontSize = 12.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(extra, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                    if (hasMore) {
-                        TextButton(enabled = !loadingMore, onClick = {
-                            scope.launch {
-                                loadingMore = true
-                                runCatching { fetch(page + 1) }.onFailure { err = it.message }
-                                loadingMore = false
+                        // 用 LazyColumn 而不是 Column：只给可视区域的头像发请求，
+                        // 不会一次并发几十张图，后面的用户不会全部退化成字母头像。
+                        items(list) { item ->
+                            val (login, avatar, extra) = when (item) {
+                                is User -> Triple(item.login, item.avatar_url,
+                                    if (kind == 3) "${item.contributions} 次贡献" else if (kind == 2) "关注者" else "Star 用户")
+                                is Repo -> Triple(item.full_name, item.owner?.avatar_url, "${item.stargazers_count} star")
+                                else -> Triple("", null, "")
                             }
-                        }, modifier = Modifier.fillMaxWidth()) {
-                            Text(if (loadingMore) "加载中…" else "加载更多", fontSize = 12.sp)
+                            Row(Modifier.fillMaxWidth().clickable {
+                                onClose(); if (!login.contains("/")) nav.navigate("user/$login")
+                                else nav.navigate("repo/${login.split("/")[0]}/${login.split("/")[1]}")
+                            }.padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Avatar(avatar, 28, name = login.substringBefore("/"))
+                                Spacer(Modifier.width(8.dp))
+                                Text(login, fontSize = 12.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(extra, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Divider1()
+                        }
+                        if (hasMore) {
+                            item {
+                                TextButton(enabled = !loadingMore, onClick = {
+                                    scope.launch {
+                                        loadingMore = true
+                                        runCatching { fetch(page + 1) }.onFailure { err = it.message }
+                                        loadingMore = false
+                                    }
+                                }, modifier = Modifier.fillMaxWidth()) {
+                                    Text(if (loadingMore) "加载中…" else "加载更多", fontSize = 12.sp)
+                                }
+                            }
                         }
                     }
                 }

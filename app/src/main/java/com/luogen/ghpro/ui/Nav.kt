@@ -11,6 +11,12 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.luogen.ghpro.data.Cfg
 
+// Navigation 可能已经解码一次；文件名里的 + 会被 URLDecoder 当空格，
+// 含 % 的名字则会直接抛异常。这里先保护 +，失败就保留原值，避免“文件不存在”。
+private fun navArgDecode(raw: String): String = try {
+    java.net.URLDecoder.decode(raw.replace("+", "%2B"), "UTF-8")
+} catch (e: Exception) { raw }
+
 @Composable
 fun NavRoot(onThemeChange: () -> Unit) {
     val nav = rememberNavController()
@@ -94,8 +100,8 @@ fun NavRoot(onThemeChange: () -> Unit) {
                 nav,
                 e.arguments?.getString("owner") ?: "",
                 e.arguments?.getString("repo") ?: "",
-                java.net.URLDecoder.decode(e.arguments?.getString("branch") ?: "main", "UTF-8"),
-                java.net.URLDecoder.decode(e.arguments?.getString("path") ?: "", "UTF-8"),
+                navArgDecode(e.arguments?.getString("branch") ?: "main"),
+                navArgDecode(e.arguments?.getString("path") ?: ""),
                 (e.arguments?.getString("isNew") ?: "0") == "1"
             )
         }

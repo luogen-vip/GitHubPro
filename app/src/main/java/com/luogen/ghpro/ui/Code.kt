@@ -494,6 +494,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
     var editing by remember { mutableStateOf(isNew) }
     var loading by remember { mutableStateOf(!isNew && UiCache.fileContent[fileKey] == null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var fatal404 by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
     var confirmDelete by remember { mutableStateOf(false) }
     var isFile by remember { mutableStateOf(true) }
@@ -545,7 +546,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
     fun load(silent: Boolean = false) {
         if (isNew) { loading = false; return }
         scope.launch {
-            if (!silent) { loading = true; previewKind = "text"; imageUrl = null; fontFamily = null }
+            if (!silent) { loading = true; error = null; fatal404 = false; previewKind = "text"; imageUrl = null; fontFamily = null }
             try {
                 val l = Api.contents(owner, name, path, branch)
                 val f = l.file
@@ -620,7 +621,28 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                     UiCache.fileContent[fileKey] = text
                 }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
-            catch (e: Exception) { error = e.message }
+            catch (e: Exception) {
+                if (e is com.luogen.ghpro.data.ApiException && e.code == 404) {
+                    // 当前分支没有这个文件时，自动到默认分支再找一次：很多 404 是
+                    // 从旧分支的列表点进来、文件后来只保留在默认分支上。
+                    val def = runCatching { Api.repo(owner, name).default_branch }.getOrNull()
+                    if (def != null && def != branch &&
+                        runCatching { Api.contents(owner, name, path, def) }.getOrNull()?.file != null) {
+                        Toast.makeText(ctx, "当前分支没有这个文件，已切到默认分支 $def", Toast.LENGTH_SHORT).show()
+                        fatal404 = true
+                        nav.navigate("file?owner=${Uri.encode(owner)}&repo=${Uri.encode(name)}&branch=${Uri.encode(def)}&path=${Uri.encode(path)}&isNew=0")
+                        loading = false
+                        return@launch
+                    }
+                    // 404 不再只丢一句“内容不存在或无权限”：把路径/分支和可做的操作说清楚，
+                    // 同时停止每 3 秒自动重试，避免红色报错反复闪。
+                    fatal404 = true
+                    error = "文件不存在或没有权限\n路径：$path\n分支：$branch\n\n" +
+                        "可能是文件已删除或改名、当前分支里没有这个文件，" +
+                        "也可能是文件名含 +、% 等特殊字符。\n" +
+                        "可以返回上一级刷新文件列表确认；或点“直接下载文件”试原始地址。"
+                } else error = e.message
+            }
             loading = false
         }
     }
@@ -635,7 +657,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
     LaunchedEffect(path) {
         if (!isNew) while (isActive) {
             delay(3_000L)
-            if (previewKind == "text" && !editing && !loading && "$owner/$name|$branch" !in UiCache.deletingCode) runCatching { load(true) }
+            if (previewKind == "text" && !editing && !loading && !fatal404 && "$owner/$name|$branch" !in UiCache.deletingCode) runCatching { load(true) }
         }
     }
 

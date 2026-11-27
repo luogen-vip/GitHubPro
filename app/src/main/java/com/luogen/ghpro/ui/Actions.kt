@@ -97,12 +97,13 @@ fun ActionsTab(nav: NavController, owner: String, name: String, repo: Repo) {
                         Text(w.name, fontSize = 11.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         TinyTag(w.state, if (w.state == "active") GH.green else MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.width(6.dp))
-                        TextButton(onClick = {
-                            scope.launch {
-                                try { Api.dispatch(owner, name, w.id, repo.default_branch ?: "main"); Cfg.touchRepo("$owner/$name"); load() }
-                                catch (e: Exception) { }
-                            }
-                        }) { Text("运行", fontSize = 10.sp) }
+                        Text("运行", fontSize = 10.sp, color = GH.blue,
+                            modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable {
+                                scope.launch {
+                                    try { Api.dispatch(owner, name, w.id, repo.default_branch ?: "main"); Cfg.touchRepo("$owner/$name"); load() }
+                                    catch (e: Exception) { }
+                                }
+                            }.padding(horizontal = 6.dp, vertical = 4.dp))
                     }
                 }
             }

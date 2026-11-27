@@ -1,10 +1,13 @@
 package com.luogen.ghpro.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
@@ -18,6 +21,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -130,7 +134,7 @@ fun PullListTab(nav: NavController, owner: String, name: String) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun PullDetailScreen(nav: NavController, owner: String, name: String, number: Int) {
     val scope = rememberCoroutineScope()
@@ -145,6 +149,8 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
     var busy by remember { mutableStateOf(false) }
     var mergeMethod by remember { mutableStateOf("merge") }
     val snackbar = remember { SnackbarHostState() }
+    val commentBring = remember { BringIntoViewRequester() }
+    LaunchedEffect(text) { if (text.isNotEmpty()) runCatching { commentBring.bringIntoView() } }
 
     suspend fun load() {
         try {
@@ -176,15 +182,18 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
             )
         }
     ) { pad ->
-        Column(Modifier.fillMaxSize().padding(pad)) {
+        Column(Modifier.fillMaxSize().padding(pad).imePadding()) {
             when {
                 loading -> LoadingBox()
                 error != null -> ErrorBox(error) { scope.launch { load() } }
                 pr != null -> {
                     val canPush = UiCache.repoData["$owner/$name"]?.permissions?.let { it.push || it.admin } == true
                     val canClosePr = canPush || pr!!.user?.login == Cfg.login
-                    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(14.dp)) {
-                        Text(pr!!.title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    // 整页一起滚：顶部标题/合并按钮保留，向下滑后改动文件与评论占满屏幕。
+                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)
+                        .padding(horizontal = 14.dp, vertical = 6.dp)) {
+                        Text(pr!!.title, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.height(5.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             StateChip(pr!!.state, conclusion = if (pr!!.merged == true) "merged" else null)
@@ -199,15 +208,14 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
                         Spacer(Modifier.height(6.dp))
                         Text("${pr!!.head?.ref} → ${pr!!.base?.ref}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(8.dp))
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
                             if (pr!!.state == "open") {
-                                if (canPush) Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    listOf("merge" to "合并", "squash" to "压缩", "rebase" to "变基").forEach { (k, v) ->
-                                        FilterChip(selected = mergeMethod == k, onClick = { mergeMethod = k },
-                                            label = { Text(v, fontSize = 10.sp) })
-                                    }
+                                if (canPush) listOf("merge" to "合并", "squash" to "压缩", "rebase" to "变基").forEach { (k, v) ->
+                                    FilterChip(selected = mergeMethod == k, onClick = { mergeMethod = k },
+                                        label = { Text(v, fontSize = 10.sp) })
                                 }
-                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 if (canPush) Button(enabled = !busy, onClick = {
                                     scope.launch {
                                         busy = true
@@ -215,7 +223,7 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
                                         catch (e: Exception) { snackbar.showSnackbar("合并失败：${e.message}") }
                                         busy = false
                                     }
-                                }) { Icon(Icons.Filled.CallMerge, null, Modifier.size(16.dp)); Text("合并", fontSize = 12.sp) }
+                                }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) { Icon(Icons.Filled.CallMerge, null, Modifier.size(16.dp)); Text("合并", fontSize = 12.sp) }
                                 if (canClosePr) OutlinedButton(enabled = !busy, onClick = {
                                     scope.launch {
                                         busy = true
@@ -223,25 +231,23 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
                                         catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
                                         busy = false
                                     }
-                                }) { Text("关闭", fontSize = 12.sp) }
+                                }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) { Text("关闭", fontSize = 12.sp) }
                                 OutlinedButton(onClick = {
                                     scope.launch {
                                         try { Api.prReview(owner, name, number, "APPROVE", "LGTM"); snackbar.showSnackbar("已批准") }
                                         catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
                                     }
-                                }) { Text("批准", fontSize = 12.sp) }
-                                OutlinedButton(onClick = { reviewerDialog = true }) { Text("请求审查", fontSize = 12.sp) }
-                                }
+                                }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) { Text("批准", fontSize = 12.sp) }
+                                OutlinedButton(onClick = { reviewerDialog = true },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) { Text("请求审查", fontSize = 12.sp) }
                             } else {
-                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 if (canClosePr) OutlinedButton(onClick = {
                                     scope.launch { runCatching { Api.reopenPr(owner, name, number) }; load() }
-                                }) { Text("重新打开", fontSize = 12.sp) }
-                                }
+                                }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) { Text("重新打开", fontSize = 12.sp) }
                             }
                         }
                     }
-                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(14.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
                         Text(pr!!.body ?: "（无描述）", fontSize = 13.sp, lineHeight = 19.sp)
                         Spacer(Modifier.height(12.dp))
                         Text("改动文件（${files.size}）· +${pr!!.additions} −${pr!!.deletions}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
@@ -292,7 +298,10 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
                             }
                         }
                         Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth(), label = { Text("写评论…") }, minLines = 2)
+                        OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth()
+                            .bringIntoViewRequester(commentBring)
+                            .onFocusChanged { if (it.isFocused) scope.launch { runCatching { commentBring.bringIntoView() } } },
+                            label = { Text("写评论…") }, minLines = 2)
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             TextButton(enabled = text.isNotBlank(), onClick = {
                                 scope.launch {
@@ -304,6 +313,7 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
                             }) { Icon(Icons.Filled.Send, null, Modifier.size(16.dp)); Text("发送") }
                         }
                         Spacer(Modifier.height(24.dp))
+                    }
                     }
                 }
             }
