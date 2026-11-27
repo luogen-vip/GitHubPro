@@ -122,6 +122,7 @@ private fun VideoPreview(file: File) {
     var position by remember(file.absolutePath) { mutableStateOf(0) }
     var dragging by remember(file.absolutePath) { mutableStateOf<Float?>(null) }
     var seekTarget by remember(file.absolutePath) { mutableStateOf<Int?>(null) }
+    var resumeAfterSeek by remember(file.absolutePath) { mutableStateOf(false) }
     val video = remember(file.absolutePath) {
         VideoView(ctx).apply {
             setVideoPath(file.absolutePath)
@@ -130,12 +131,8 @@ private fun VideoPreview(file: File) {
                 mp.isLooping = false
                 duration = mp.duration.coerceAtLeast(0)
                 prepared = true
-                // seekTo 是异步的：以播放器真正到位后的位置为准，别让 300ms 轮询把滑块拉回旧位置。
-                mp.setOnSeekCompleteListener { player ->
-                    val real = runCatching { player.currentPosition }.getOrDefault(position)
-                    position = real
-                    seekTarget = null
-                }
+                // 不在 OnSeekComplete 里读 currentPosition：部分机型这时还返回旧位置，
+                // 会把刚拖到的滑块瞬间拉回去。统一交给下面的 300ms 轮询确认到位。
                 start()
                 playing = true
             }
@@ -156,16 +153,22 @@ private fun VideoPreview(file: File) {
                     val target = seekTarget
                     if (target == null) {
                         position = runCatching { video.currentPosition }.getOrDefault(position)
+                        playing = runCatching { video.isPlaying }.getOrDefault(playing)
                     } else {
                         val current = runCatching { video.currentPosition }.getOrDefault(position)
                         if (kotlin.math.abs(current - target) <= 800) {
                             position = current; seekTarget = null
+                            if (resumeAfterSeek) {
+                                runCatching { video.start() }
+                                playing = true
+                                resumeAfterSeek = false
+                            }
                         } else {
+                            // 播放器还没走到目标位置时，滑块必须停在用户拖到的位置，不能回跳。
                             position = target
                         }
                     }
                 }
-                playing = runCatching { video.isPlaying }.getOrDefault(playing)
             }
             delay(300L)
         }
@@ -175,7 +178,14 @@ private fun VideoPreview(file: File) {
         val target = ms.coerceIn(0, duration)
         position = target
         seekTarget = target
+        val wasPlaying = playing || runCatching { video.isPlaying }.getOrDefault(false)
         runCatching { video.seekTo(target) }
+        // 有些播放器 seek 时会短暂停；拖动前在播就继续保持播放，不让用户以为一拖就暂停。
+        if (wasPlaying) {
+            resumeAfterSeek = true
+            runCatching { video.start() }
+            playing = true
+        }
     }
     fun togglePlayPause() {
         if (!prepared) return

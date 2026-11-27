@@ -13,9 +13,11 @@ import androidx.compose.material.icons.filled.Comment
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -24,6 +26,7 @@ import androidx.navigation.NavController
 import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Discussion
 import com.luogen.ghpro.data.Repo
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
@@ -147,6 +150,22 @@ fun DiscussionDetailScreen(nav: NavController, owner: String, name: String, numb
     var error by remember { mutableStateOf<String?>(null) }
     var text by remember { mutableStateOf("") }
     val snackbar = remember { SnackbarHostState() }
+    val dkey = "$owner/$name#$number"
+    val scrollState = rememberScrollState()
+    var restored by remember(number) { mutableStateOf(false) }
+
+    LaunchedEffect(d, restored) {
+        if (d != null && !restored) {
+            // 等正文/评论完成一次布局再恢复，否则滚动值会被内容高度夹到 0。
+            delay(80)
+            scrollState.scrollTo(UiCache.discussionScroll[dkey] ?: 0)
+            restored = true
+        }
+    }
+    LaunchedEffect(scrollState, restored) {
+        // 恢复完成前不要监听：初次组合时 0 会立刻把缓存里的旧位置覆盖掉。
+        if (restored) snapshotFlow { scrollState.value }.collect { UiCache.discussionScroll[dkey] = it }
+    }
 
     suspend fun load() {
         try {
@@ -173,27 +192,77 @@ fun DiscussionDetailScreen(nav: NavController, owner: String, name: String, numb
                 loading -> LoadingBox()
                 error != null -> ErrorBox(error)
                 d != null -> {
-                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(14.dp)) {
+                    Column(Modifier.weight(1f).verticalScroll(scrollState).padding(14.dp)) {
                         d!!.category?.let { Text("${it.emoji ?: ""} ${it.name}", fontSize = 11.sp, color = GH.blue) }
-                        Text(d!!.title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        if (d!!.title.isNotBlank()) {
+                            TranslateBlock(
+                                text = d!!.title,
+                                style = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.Bold, lineHeight = 22.sp),
+                                compact = true
+                            )
+                        }
                         Spacer(Modifier.height(5.dp))
-                        Text("${d!!.author?.login ?: ""} · ${timeAgo(d!!.createdAt)}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        val postAuthor = d!!.author?.login.orEmpty()
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Avatar(
+                                d!!.author?.avatarUrl, 24,
+                                Modifier.clickable(enabled = postAuthor.isNotBlank()) {
+                                    if (postAuthor.isNotBlank()) nav.navigate("user/$postAuthor")
+                                },
+                                name = postAuthor
+                            )
+                            Spacer(Modifier.width(7.dp))
+                            Text(
+                                postAuthor, fontSize = 11.sp, fontWeight = FontWeight.Medium,
+                                modifier = Modifier.clickable(enabled = postAuthor.isNotBlank()) {
+                                    if (postAuthor.isNotBlank()) nav.navigate("user/$postAuthor")
+                                }
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(timeAgo(d!!.createdAt), fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                         Spacer(Modifier.height(10.dp))
-                        Text(d!!.body ?: (d!!.body ?: ""), fontSize = 13.sp, lineHeight = 19.sp)
+                        val body = d!!.body.orEmpty()
+                        if (body.isNotBlank()) {
+                            TranslateBlock(
+                                text = body,
+                                style = TextStyle(fontSize = 13.sp, lineHeight = 19.sp),
+                                compact = true
+                            )
+                        }
                         Spacer(Modifier.height(14.dp))
                         Text("回复（${d!!.comments?.totalCount ?: 0}）", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         d!!.comments?.nodes?.forEach { c ->
+                            val commentAuthor = c.author?.login.orEmpty()
                             Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                                Avatar(c.author?.avatarUrl, 24)
+                                Avatar(
+                                    c.author?.avatarUrl, 24,
+                                    Modifier.clickable(enabled = commentAuthor.isNotBlank()) {
+                                        if (commentAuthor.isNotBlank()) nav.navigate("user/$commentAuthor")
+                                    },
+                                    name = commentAuthor
+                                )
                                 Spacer(Modifier.width(8.dp))
                                 Column(Modifier.weight(1f)) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(c.author?.login ?: "", fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                        Text(
+                                            commentAuthor, fontSize = 11.sp, fontWeight = FontWeight.Medium,
+                                            modifier = Modifier.clickable(enabled = commentAuthor.isNotBlank()) {
+                                                if (commentAuthor.isNotBlank()) nav.navigate("user/$commentAuthor")
+                                            }
+                                        )
                                         Spacer(Modifier.width(5.dp))
                                         Text(timeAgo(c.createdAt), fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         if (c.isAnswer) { Spacer(Modifier.width(5.dp)); TinyTag("答案", GH.green) }
                                     }
-                                    Text(c.body ?: "", fontSize = 12.sp, lineHeight = 18.sp)
+                                    val commentBody = c.body.orEmpty()
+                                    if (commentBody.isNotBlank()) {
+                                        TranslateBlock(
+                                            text = commentBody,
+                                            style = TextStyle(fontSize = 12.sp, lineHeight = 18.sp),
+                                            compact = true
+                                        )
+                                    }
                                 }
                             }
                         }

@@ -243,14 +243,32 @@ private fun commentThread(list: List<Comment>): List<ThreadedComment> {
 }
 
 @Composable
-private fun IssueCommentRow(c: Comment, depth: Int, selected: Boolean, onReply: () -> Unit) {
+private fun IssueCommentRow(
+    nav: NavController,
+    c: Comment,
+    depth: Int,
+    selected: Boolean,
+    onReply: () -> Unit
+) {
+    val login = c.user?.login.orEmpty()
     Row(Modifier.fillMaxWidth().padding(start = (depth * 16).dp, top = 6.dp, bottom = 6.dp)
         .then(if (selected) Modifier.background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(6.dp)) else Modifier)) {
-        Avatar(c.user?.avatar_url, 24)
+        Avatar(
+            c.user?.avatar_url, 24,
+            Modifier.clickable(enabled = login.isNotBlank()) {
+                if (login.isNotBlank()) nav.navigate("user/$login")
+            },
+            name = login
+        )
         Spacer(Modifier.width(8.dp))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(c.user?.login ?: "", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                Text(
+                    login, fontSize = 12.sp, fontWeight = FontWeight.Medium,
+                    modifier = Modifier.clickable(enabled = login.isNotBlank()) {
+                        if (login.isNotBlank()) nav.navigate("user/$login")
+                    }
+                )
                 Spacer(Modifier.width(6.dp))
                 Text(timeAgo(c.created_at), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (depth > 0) {
@@ -259,7 +277,14 @@ private fun IssueCommentRow(c: Comment, depth: Int, selected: Boolean, onReply: 
                 }
             }
             Spacer(Modifier.height(3.dp))
-            Text(commentClean(c), fontSize = 12.sp, lineHeight = 18.sp)
+            val body = commentClean(c)
+            if (body.isNotBlank()) {
+                TranslateBlock(
+                    text = body,
+                    style = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, lineHeight = 18.sp),
+                    compact = true
+                )
+            }
             TextButton(onClick = onReply, modifier = Modifier.height(24.dp)) { Text("回复", fontSize = 10.sp) }
         }
     }
@@ -291,6 +316,20 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
     var pendingOps by remember { mutableStateOf(0) }
     val snackbar = remember { SnackbarHostState() }
     val commentBring = remember { BringIntoViewRequester() }
+    val ikey = "$owner/$name#$number"
+    val scrollState = rememberScrollState()
+    var restored by remember(number) { mutableStateOf(false) }
+    LaunchedEffect(restored, loading) {
+        if (issue != null && !loading && !restored) {
+            // 等顶层信息和评论完成一次布局再恢复，否则会被夹到 0。
+            delay(80)
+            scrollState.scrollTo(UiCache.issueScroll[ikey] ?: 0)
+            restored = true
+        }
+    }
+    LaunchedEffect(scrollState, restored) {
+        if (restored) snapshotFlow { scrollState.value }.collect { UiCache.issueScroll[ikey] = it }
+    }
     // 输入时让评论框自己滚进可视区：键盘弹出、文字换行变高都不会被盖住。
     LaunchedEffect(text) { if (text.isNotEmpty()) runCatching { commentBring.bringIntoView() } }
 
@@ -440,10 +479,16 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
                 issue != null -> {
                     // 整页一起滚动：顶部信息仍保留在最上面，往上滑后正文/评论能占满全屏，
                     // 不再被固定头部压成一条很小的可滑动区域。
-                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                    Column(Modifier.fillMaxSize().verticalScroll(scrollState)) {
                     Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)
                         .padding(horizontal = 14.dp, vertical = 6.dp)) {
-                        Text(issue!!.title, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        TranslateBlock(
+                            text = issue!!.title,
+                            style = androidx.compose.ui.text.TextStyle(fontSize = 16.sp, fontWeight = FontWeight.Bold, lineHeight = 22.sp),
+                            compact = true,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
                         Spacer(Modifier.height(6.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             StateChip(issue!!.state)
@@ -497,7 +542,7 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
                         Text("讨论（${comments.size}）", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(8.dp))
                         commentThread(comments).forEach { tc ->
-                            IssueCommentRow(tc.comment, tc.depth, replyTo?.id == tc.comment.id) { replyTo = tc.comment }
+                            IssueCommentRow(nav, tc.comment, tc.depth, replyTo?.id == tc.comment.id) { replyTo = tc.comment }
                         }
                         Spacer(Modifier.height(10.dp))
                         replyTo?.let { target ->

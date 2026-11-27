@@ -78,6 +78,12 @@ object TranslateApi {
 
     fun lang(code: String): Lang = langs.firstOrNull { it.code == code } ?: langs[0]
     fun label(code: String): String = lang(code).label
+    /** 只翻译器返回的可信语言码用这个：不认识就返回 null，不能回退成“简体中文”。 */
+    fun labelOrNull(code: String?): String? {
+        val c = code?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        return langs.firstOrNull { it.code.equals(c, true) }?.label
+            ?: langs.firstOrNull { it.code.substringBefore('-').equals(c.substringBefore('-'), true) }?.label
+    }
 
     private val http = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
@@ -222,6 +228,8 @@ object TranslateApi {
         if (s.latin > 4 && (s.cjk > 0 || s.kana > 0 || s.hangul > 0 || s.cyr > 0 || s.arab > 0 || s.thai > 0)) {
             kinds += "拉丁文字"
         }
+        // 纯拉丁字母先按最常见的 English 显示，同时标注只是拉丁文字，避免冒充精确识别。
+        if (kinds.isEmpty() && s.latin > 4) return "English（拉丁文字）"
         if (kinds.isEmpty()) return null
         return if (kinds.size > 1) "多语言（${kinds.joinToString("+")}）" else kinds[0]
     }

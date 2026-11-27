@@ -28,6 +28,9 @@ import kotlinx.coroutines.withTimeout
 
 class ApiException(val code: Int, override val message: String, val body: String? = null) : Exception(message)
 
+/** GraphQL 的可空对象字段返回的是 JsonNull；直接 getAsJsonObject 会崩，统一安全转换。 */
+private fun JsonElement?.objOrNull(): JsonObject? = this?.takeIf { it.isJsonObject }?.asJsonObject
+
 data class Page<T>(val items: List<T>, val hasNext: Boolean)
 
 data class DirListing(val isFile: Boolean, val items: List<ContentItem>, val file: ContentItem?)
@@ -1237,7 +1240,7 @@ object Api {
             addProperty("n", perPage.coerceIn(1, 100))
         }
         val data = graphql(gql, vars, leanSearchHttp, singleAttempt = true)
-        val search = data.getAsJsonObject("search") ?: return SearchRepos()
+        val search = data.get("search").objOrNull() ?: return SearchRepos()
         val count = search.get("repositoryCount")?.asLong ?: 0L
         val nodes = search.getAsJsonArray("nodes") ?: return SearchRepos(total_count = count)
         val items = ArrayList<Repo>()
@@ -1245,7 +1248,7 @@ object Api {
             val n = el.takeIf { it.isJsonObject }?.asJsonObject ?: continue
             val full = n.get("nameWithOwner")?.asString.orEmpty()
             if (full.isBlank()) continue
-            val ownerObj = n.getAsJsonObject("owner")
+            val ownerObj = n.get("owner").objOrNull()
             val private = n.get("isPrivate")?.asBoolean ?: false
             items.add(
                 Repo(
@@ -1260,7 +1263,7 @@ object Api {
                     description = n.get("description")?.takeIf { !it.isJsonNull }?.asString,
                     isPrivate = private,
                     html_url = n.get("url")?.asString ?: "https://github.com/$full",
-                    language = n.getAsJsonObject("primaryLanguage")?.get("name")?.asString,
+                    language = n.get("primaryLanguage").objOrNull()?.get("name")?.asString,
                     forks_count = n.get("forkCount")?.asInt ?: 0,
                     stargazers_count = n.get("stargazerCount")?.asInt ?: 0,
                     updated_at = n.get("updatedAt")?.asString,
@@ -1295,7 +1298,7 @@ object Api {
             addProperty("n", perPage.coerceIn(1, 100))
         }
         val data = graphql(gql, vars, leanSearchHttp, singleAttempt = true)
-        val search = data.getAsJsonObject("search") ?: return SearchUsers()
+        val search = data.get("search").objOrNull() ?: return SearchUsers()
         val count = search.get("userCount")?.asLong ?: 0L
         val nodes = search.getAsJsonArray("nodes") ?: return SearchUsers(total_count = count)
         val items = ArrayList<User>()
@@ -1311,8 +1314,8 @@ object Api {
                     html_url = n.get("url")?.asString ?: "https://github.com/$login",
                     name = n.get("name")?.takeIf { !it.isJsonNull }?.asString,
                     bio = n.get("bio")?.takeIf { !it.isJsonNull }?.asString,
-                    public_repos = n.getAsJsonObject("repositories")?.get("totalCount")?.asInt ?: 0,
-                    followers = n.getAsJsonObject("followers")?.get("totalCount")?.asInt ?: 0,
+                    public_repos = n.get("repositories").objOrNull()?.get("totalCount")?.asInt ?: 0,
+                    followers = n.get("followers").objOrNull()?.get("totalCount")?.asInt ?: 0,
                     type = "User"
                 )
             )

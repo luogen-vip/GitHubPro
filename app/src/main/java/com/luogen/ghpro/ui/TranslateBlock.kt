@@ -164,6 +164,12 @@ fun TranslateBlock(
     }
 
     Column(modifier) {
+        val detectedNow = if (hasResult) result?.detected?.let { TranslateApi.labelOrNull(it) } else null
+        val sourceLabel = when {
+            !translatable -> "代码/符号"
+            detectedNow != null -> detectedNow
+            else -> TranslateApi.detectedLabel(text) ?: "自动识别"
+        }
         val controls: @Composable () -> Unit = {
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -191,7 +197,7 @@ fun TranslateBlock(
                     Text("取消", fontSize = actionSize, color = GH.red, maxLines = 1, softWrap = false,
                         modifier = Modifier.clickable { cancel() }.padding(horizontal = 1.dp, vertical = 2.dp))
                 }
-                Text("原文：${if (!translatable) "代码/符号" else TranslateApi.detectedLabel(text) ?: "自动识别"}",
+                Text("原文：$sourceLabel",
                     fontSize = metaSize, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                 Text("目标：${TranslateApi.label(target)} ▾", fontSize = metaSize, color = GH.blue,
                     maxLines = 1, softWrap = false, modifier = Modifier.clickable {
@@ -199,7 +205,7 @@ fun TranslateBlock(
                         picker = true
                     })
                 if (!compact && hasResult && !same) result?.let { r ->
-                    val det = r.detected?.let { TranslateApi.label(it) }
+                    val det = TranslateApi.labelOrNull(r.detected)
                     Text((det?.let { "译自 $it · " } ?: "") + r.provider, fontSize = metaSize,
                         color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                 }
@@ -241,7 +247,7 @@ fun TranslateBlock(
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        if (showControls && error != null && !same && translatable) {
+        if (showControls && error != null && error != "已取消翻译" && !same && translatable) {
             Text("失败：$error", fontSize = if (compact) 8.sp else 9.sp, color = GH.red,
                 maxLines = 3, overflow = TextOverflow.Ellipsis)
         }

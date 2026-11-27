@@ -48,6 +48,7 @@ fun DownloadsScreen(nav: NavController) {
     val ver by Downloader.historyVersion.collectAsState()
     val states by Downloader.state.collectAsState()
     val active = states.values.filter { it.active }
+        .sortedByDescending { Downloader.startedAtOf(it.fileName) }
     val failed = states.values.filter { !it.active && it.status == "失败" }
     val cancelled = states.values.filter { !it.active && it.status == "已取消" }
     var cat by rememberSaveable { mutableStateOf("全部") }
@@ -55,6 +56,7 @@ fun DownloadsScreen(nav: NavController) {
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState(UiCache.downloadsIndex, UiCache.downloadsOffset)
     var restored by remember { mutableStateOf(false) }
+    var pendingScroll by remember { mutableStateOf<String?>(null) }
     val showTop by remember { derivedStateOf { listState.firstVisibleItemIndex > 3 || listState.firstVisibleItemScrollOffset > 600 } }
     val snackbar = remember { SnackbarHostState() }
 
@@ -67,6 +69,15 @@ fun DownloadsScreen(nav: NavController) {
                 listState.scrollToItem(UiCache.downloadsIndex, UiCache.downloadsOffset)
             }
             restored = true
+        }
+    }
+    // 点“重新下载”后，等真实下载状态出现，再精确滚到那一条的进度条。
+    LaunchedEffect(active.map { it.fileName }, pendingScroll) {
+        val target = pendingScroll ?: return@LaunchedEffect
+        val idx = active.indexOfFirst { it.fileName == target }
+        if (idx >= 0) {
+            listState.scrollToItem(1 + idx)   // 0 是“正在下载 N”标题，1 开始才是进度条
+            pendingScroll = null
         }
     }
     // 滚动位置实时存到内存：点“定位仓库”离开页面、再返回，仍停在刚才那一条。
@@ -290,11 +301,9 @@ fun DownloadsScreen(nav: NavController) {
                                 TextButton({
                                     Downloader.retryDownload(ctx, r,
                                         onDone = { })
-                                    // 新任务会插到列表最上面的“正在下载”区；直接滚过去，用户不用自己往上滑才看见进度。
-                                    UiCache.downloadsIndex = 0
-                                    UiCache.downloadsOffset = 0
-                                    scope.launch { listState.scrollToItem(0) }
-                                    Toast.makeText(ctx, "已开始重新下载，进度已显示在最上面", Toast.LENGTH_SHORT).show()
+                                    // 新任务会插到列表最上面的“正在下载”区；等状态出现后精确滚到这一条的进度条。
+                                    pendingScroll = Downloader.sanitize(r.name)
+                                    Toast.makeText(ctx, "已开始重新下载，正在定位到这条进度", Toast.LENGTH_SHORT).show()
                                 }, contentPadding = PaddingValues(horizontal = 8.dp)) {
                                     Icon(Icons.Filled.Download, null, Modifier.size(14.dp)); Text("重新下载", fontSize = 11.sp)
                                 }

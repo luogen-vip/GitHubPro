@@ -91,6 +91,10 @@ object Downloader {
     private val cancelFlags = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
     private val trackedBytes = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val mobilePauses = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    private val startedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** 本次下载开始时间；下载管理用它把“刚点重新下载”的文件排到最前面。 */
+    fun startedAtOf(name: String): Long = startedAt[sanitize(name)] ?: 0L
 
     private fun isCancelled(name: String): Boolean = cancelFlags[name] == true
     private fun isMobilePaused(name: String): Boolean = mobilePauses[name] == true
@@ -126,6 +130,7 @@ object Downloader {
     ): Job {
         val key = sanitize(fileName)
         jobs[key]?.takeIf { it.isActive }?.let { return it }
+        startedAt[key] = System.currentTimeMillis()
         Notifier.downloadStart(key)
         cancelFlags.remove(key)
         mobilePauses.remove(key)

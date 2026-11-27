@@ -163,6 +163,10 @@ object UiCache {
     /** owner/name -> 已加载过的真实 README；切页签不重复请求，也避免内容先空后长导致位置错乱。 */
     val repoReadme = HashMap<String, String>()
     val repoReadmeLoaded = HashSet<String>()
+    /** owner/name#number -> 讨论详情滚动位置；点评论头像看主页再返回，仍停在原处。 */
+    val discussionScroll = HashMap<String, Int>()
+    /** owner/name#number -> 议题详情滚动位置；点评论头像看主页再返回，仍停在原处。 */
+    val issueScroll = HashMap<String, Int>()
 
     // ---------------- 下载管理 ----------------
     /** 下载列表滚动位置；点“定位仓库”再返回时保持用户刚才看到的那一条。 */
