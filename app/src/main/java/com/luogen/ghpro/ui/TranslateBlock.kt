@@ -106,7 +106,18 @@ fun TranslateBlock(
         error = null
         job = scope.launch {
             try {
-                val r = withTimeout(180_000L) { TranslateApi.translate(src, to) }
+                val r = withTimeout(180_000L) {
+                    TranslateApi.translate(src, to) { partial ->
+                        // 不等整段翻完：第一段出来就先替换正文，长文可以边翻边读。
+                        scope.launch {
+                            if (seq == reqSeq && partial.isNotBlank()) {
+                                result = TranslateApi.Result(partial, null, "翻译中")
+                                resultTarget = to
+                                showOriginal = false
+                            }
+                        }
+                    }
+                }
                 if (seq == reqSeq) {
                     result = r
                     resultTarget = to

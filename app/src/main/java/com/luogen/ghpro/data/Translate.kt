@@ -320,28 +320,32 @@ object TranslateApi {
         val key = "$target\u0000$source"
         synchronized(cache) { cache[key] }?.let { return@withContext it }
         val chunks = chunk(source)
-        // 第一屏先翻 1400 字：长 README 也不用等前 1 万字全部翻完才看到译文。
-        // 第一段完成后，剩余 1400 字小块和其他 1 万字大块统一走 4 并发，总请求量不变。
+        // 第一屏只翻 200 字：实测 200 字约 1~2 秒就能先显示；900 字约 5~7 秒，
+        // 1400 字经常 20 秒甚至 503，所以剩余统一按 900 字并发补齐。
         val firstChunk = chunks.first()
-        val firstParts = if (firstChunk.length > 1400) firstChunk.chunked(1400) else listOf(firstChunk)
+        val firstText = firstChunk.take(200)
         val out = StringBuilder()
         var detected: String? = guessed
         var provider = ""
-        val first = translateChunk(firstParts.first(), t, guessed)
+        val first = translateChunk(firstText, t, guessed)
         out.append(first.first)
         detected = first.second ?: detected
         provider = first.third
         onPartial?.invoke(out.toString().trim())
-        val restParts = firstParts.drop(1) + chunks.drop(1)
+        val restParts = (
+            if (firstChunk.length > 200) chunk(firstChunk.substring(200), 900) else emptyList()
+        ) + chunks.drop(1)
         if (restParts.isNotEmpty()) {
-            val rest = coroutineScope {
-                restParts.map { c -> async(Dispatchers.IO) { translateChunk(c, t, guessed) } }.awaitAll()
-            }
-            for (r in rest) {
-                out.append(r.first)
-                detected = r.second ?: detected
-                provider = r.third
-                onPartial?.invoke(out.toString().trim())
+            coroutineScope {
+                val jobs = restParts.map { c -> async(Dispatchers.IO) { translateChunk(c, t, guessed) } }
+                // 按原文顺序逐块落地：每完成一块就更新一次界面，不能等所有块全部翻完才显示。
+                for (job in jobs) {
+                    val r = job.await()
+                    out.append(r.first)
+                    detected = r.second ?: detected
+                    provider = r.third
+                    onPartial?.invoke(out.toString().trim())
+                }
             }
         }
         val translated = out.toString().trim()
@@ -421,17 +425,17 @@ object TranslateApi {
 
     /** B 站公开演示接口：OpenAI 兼容，任意占位 key 可用；只接受纯译文。 */
     private suspend fun bilibiliTranslate(chunk: String, t: Lang): String {
-        // 实测该公开网关在 1800 字左右会 503，所以内部按 1400 字切开再拼接。
-        if (chunk.length > 1400) {
+        // 实测 1400 字请求会明显变慢并间歇 503；900 字小块稳定得多，再由全局并发拉总吞吐。
+        if (chunk.length > 900) {
             val out = StringBuilder()
-            for (part in chunk.chunked(1400)) out.append(bilibiliOne(part, t))
+            for (part in chunk.chunked(900)) out.append(bilibiliOne(part, t))
             return out.toString().trim()
         }
         return bilibiliOne(chunk, t)
     }
 
-    /** 全局 4 并发：实测同时 6 个请求会被 B 站 503；4 个稳定。 */
-    private val biliGate = Semaphore(4)
+    /** 900 字小块下实测 20 并发仍稳定；并发太低才是长文慢的主因。 */
+    private val biliGate = Semaphore(20)
 
     private suspend fun bilibiliOne(chunk: String, t: Lang): String = withContext(Dispatchers.IO) {
         biliGate.withPermit {
