@@ -47,6 +47,8 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
     var poll by remember { mutableStateOf(Cfg.pollSeconds) }
     var notify by remember { mutableStateOf(Cfg.notifyEnabled) }
     var auto by remember { mutableStateOf(Cfg.autoRefresh) }
+    var mobileDlWarn by remember { mutableStateOf(Cfg.mobileDownloadWarn) }
+    var mobileBrowseWarn by remember { mutableStateOf(Cfg.mobileBrowseWarn) }
     var theme by remember { mutableStateOf(Cfg.themeMode) }
     var mirrors by remember { mutableStateOf(Cfg.mirrors.toList()) }
     var watch by remember { mutableStateOf(Cfg.watchRepos.toList()) }
@@ -135,7 +137,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
                         Text(if (Cfg.token.isNullOrBlank()) "未保存令牌" else "已保存访问令牌", fontSize = 11.sp, color = GH.green)
                     }
                     OutlinedButton(onClick = {
-                        Cfg.clearAll()
+                        Cfg.logoutPreservingSettings()
                         nav.navigate("login") { popUpTo("home") { inclusive = true } }
                     }) { Text("退出") }
                 }
@@ -150,6 +152,8 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
             SectionTitle("同步与通知")
             SwitchRow("自动刷新（每 20 秒）", auto) { auto = it; Cfg.autoRefresh = it }
             SwitchRow("状态变化通知", notify) { notify = it; Cfg.notifyEnabled = it }
+            SwitchRow("移动数据下载前确认", mobileDlWarn) { mobileDlWarn = it; Cfg.mobileDownloadWarn = it }
+            SwitchRow("使用移动数据浏览时提醒", mobileBrowseWarn) { mobileBrowseWarn = it; Cfg.mobileBrowseWarn = it }
             SliderRow("监听间隔", poll, 8f..120f, "${poll} 秒") {
                 poll = it; Cfg.pollSeconds = it
             }
@@ -353,7 +357,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
 
         item {
             Spacer(Modifier.height(40.dp))
-            Text("GitHub Pro 1.0.20 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("GitHub Pro 1.0.21 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("数据全部来自 GitHub 官方 REST / GraphQL API", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(30.dp))
         }

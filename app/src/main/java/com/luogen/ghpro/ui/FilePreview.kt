@@ -121,6 +121,7 @@ private fun VideoPreview(file: File) {
     var duration by remember(file.absolutePath) { mutableStateOf(0) }
     var position by remember(file.absolutePath) { mutableStateOf(0) }
     var dragging by remember(file.absolutePath) { mutableStateOf<Float?>(null) }
+    var seekTarget by remember(file.absolutePath) { mutableStateOf<Int?>(null) }
     val video = remember(file.absolutePath) {
         VideoView(ctx).apply {
             setVideoPath(file.absolutePath)
@@ -129,10 +130,16 @@ private fun VideoPreview(file: File) {
                 mp.isLooping = false
                 duration = mp.duration.coerceAtLeast(0)
                 prepared = true
+                // seekTo 是异步的：以播放器真正到位后的位置为准，别让 300ms 轮询把滑块拉回旧位置。
+                mp.setOnSeekCompleteListener { player ->
+                    val real = runCatching { player.currentPosition }.getOrDefault(position)
+                    position = real
+                    seekTarget = null
+                }
                 start()
                 playing = true
             }
-            setOnCompletionListener { playing = false; position = duration }
+            setOnCompletionListener { playing = false; position = duration; seekTarget = null }
             setOnErrorListener { _, what, extra ->
                 Toast.makeText(ctx, "视频播放失败（$what/$extra）", Toast.LENGTH_SHORT).show()
                 prepared = false; playing = false
@@ -145,11 +152,30 @@ private fun VideoPreview(file: File) {
         while (true) {
             if (prepared) {
                 duration = runCatching { video.duration }.getOrDefault(duration).coerceAtLeast(0)
-                if (dragging == null) position = runCatching { video.currentPosition }.getOrDefault(position)
+                if (dragging == null) {
+                    val target = seekTarget
+                    if (target == null) {
+                        position = runCatching { video.currentPosition }.getOrDefault(position)
+                    } else {
+                        val current = runCatching { video.currentPosition }.getOrDefault(position)
+                        if (kotlin.math.abs(current - target) <= 800) {
+                            position = current; seekTarget = null
+                        } else {
+                            position = target
+                        }
+                    }
+                }
                 playing = runCatching { video.isPlaying }.getOrDefault(playing)
             }
             delay(300L)
         }
+    }
+    fun seekToPosition(ms: Int) {
+        if (duration <= 0) return
+        val target = ms.coerceIn(0, duration)
+        position = target
+        seekTarget = target
+        runCatching { video.seekTo(target) }
     }
     fun togglePlayPause() {
         if (!prepared) return
@@ -180,13 +206,13 @@ private fun VideoPreview(file: File) {
                 Text(formatVideoTime(if (dragging != null) (dragging!! * duration).toInt() else position),
                     color = Color.White, fontSize = 11.sp)
                 Slider(
-                    value = (dragging ?: if (duration > 0) position.toFloat() / duration else 0f).coerceIn(0f, 1f),
+                    value = (dragging ?: seekTarget?.let { if (duration > 0) it.toFloat() / duration else 0f }
+                        ?: if (duration > 0) position.toFloat() / duration else 0f).coerceIn(0f, 1f),
                     onValueChange = { dragging = it },
                     onValueChangeFinished = {
                         val p = dragging
                         if (p != null && duration > 0) {
-                            val ms = (p * duration).toInt().coerceIn(0, duration)
-                            video.seekTo(ms); position = ms
+                            seekToPosition((p * duration).toInt())
                         }
                         dragging = null
                     },

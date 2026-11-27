@@ -10,6 +10,11 @@ import android.provider.MediaStore
 import androidx.core.content.FileProvider
 import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Cfg
+import com.luogen.ghpro.data.NetworkTools
+import com.luogen.ghpro.data.NetPrompts
+import com.luogen.ghpro.data.NetChoice
+import com.luogen.ghpro.data.MobileDataUsage
+import com.luogen.ghpro.AppCtx
 import com.luogen.ghpro.sync.Notifier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
@@ -42,14 +47,15 @@ data class DownloadState(
     val localPath: String? = null,
     val url: String? = null,
     val useMirror: Boolean = true,
-    val completedAt: Long = 0L
+    val completedAt: Long = 0L,
+    val mobileBytes: Long = 0L
 ) {
     val percent: Int get() = if (total <= 0) 0 else ((done * 100) / total).toInt().coerceIn(0, 100)
     val remaining: Long get() = if (total > 0) (total - done).coerceAtLeast(0L) else 0L
     val active: Boolean
         get() = status.startsWith("下载中") || status.startsWith("多线程下载") ||
             status.startsWith("已下载") || status.startsWith("切换下载线路") || status.startsWith("多线程失败") ||
-            status in listOf("连接中", "重试中", "合并中", "准备中")
+            status in listOf("连接中", "重试中", "合并中", "准备中", "等待网络", "等待 WiFi", "检测到移动数据", "等待确认流量")
 }
 
 data class DlRecord(
@@ -62,8 +68,11 @@ data class DlRecord(
     val repo: String? = null,
     val release: String? = null,
     val publicPath: String? = null,
-    val localPath: String? = null
+    val localPath: String? = null,
+    val mobileBytes: Long = 0L
 )
+
+private class MobilePauseException(message: String) : Exception(message)
 
 object Downloader {
 
@@ -80,8 +89,11 @@ object Downloader {
     private val epochs = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val repoMap = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val cancelFlags = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    private val trackedBytes = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val mobilePauses = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 
     private fun isCancelled(name: String): Boolean = cancelFlags[name] == true
+    private fun isMobilePaused(name: String): Boolean = mobilePauses[name] == true
 
     fun repoOf(name: String): String? = repoMap[sanitize(name)]
     private fun routeOf(name: String): String = repoMap[sanitize(name)]?.let { "repo/$it" } ?: "downloads"
@@ -114,47 +126,134 @@ object Downloader {
     ): Job {
         val key = sanitize(fileName)
         jobs[key]?.takeIf { it.isActive }?.let { return it }
+        Notifier.downloadStart(key)
         cancelFlags.remove(key)
+        mobilePauses.remove(key)
+        MobileDataUsage.reset(key)
+        trackedBytes[key] = runCatching { File(dir(ctx), key).length() }.getOrDefault(0L)
         val epoch = newEpoch(key)
         if (!repo.isNullOrBlank()) repoMap[key] = repo
         lateinit var job: Job
         job = appScope.launch {
-            // 下载期间真实监听网络：切到流量只提示一次；真的断网立刻提示（断点会保留）
             var warnedMobile = false
             val cm = ctx.getSystemService(android.net.ConnectivityManager::class.java)
             val cb = object : android.net.ConnectivityManager.NetworkCallback() {
                 override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) {
-                    if (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) && !warnedMobile) {
+                    if (Cfg.mobileDownloadWarn && caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) && !warnedMobile) {
                         warnedMobile = true
+                        // 中途从 Wi‑Fi 切到流量：先暂停传输，让用户选继续 / 等 Wi‑Fi / 取消；
+                        // 已写入的字节会按流量统计，断点保留。
+                        mobilePauses[key] = true
+                        update(DownloadState(key, status = "检测到移动数据", error = "已暂停，等待确认是否用流量继续", url = rawUrl, useMirror = useMirror))
                         kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
-                            Notifier.generic(ctx, "正在使用移动数据下载", "$fileName 正在用流量继续下载；不想用流量请到下载中心取消。")
+                            Notifier.generic(ctx, "已切换到移动数据", "$fileName 正在用流量继续下载；可在下载管理取消，已下载部分会保留。")
                         }
                     }
                 }
                 override fun onLost(network: android.net.Network) {
                     kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
                         kotlinx.coroutines.delay(1500)
-                        if (!networkOnline(ctx)) Notifier.generic(ctx, "网络已断开", "$fileName 已停止，已下载的部分会保留；联网后在下载管理点重试即可续传。")
+                        if (!networkOnline(ctx)) Notifier.generic(ctx, "网络已断开", "$fileName 已暂停，已下载的部分会保留；联网后会自动继续。")
                     }
                 }
             }
             runCatching { cm?.registerDefaultNetworkCallback(cb) }
             try {
-                val f = download(ctx, rawUrl, fileName, token, useMirror, epoch = epoch, expectedTotal = expectedSize)
-                val st = stateOf(fileName)
-                record(ctx, DlRecord(
-                    id = java.util.UUID.randomUUID().toString(),
-                    name = fileName, url = rawUrl, size = f.length(), time = System.currentTimeMillis(),
-                    source = source, repo = repo, release = release,
-                    publicPath = st?.publicPath, localPath = st?.localPath ?: f.absolutePath
-                ))
-                // 不再自动拉起安装器：下载完成后在通知/下载管理里手动点安装，避免打断用户
-                kotlinx.coroutines.withContext(Dispatchers.Main) { onDone?.invoke(f) }
+                val initial = NetworkTools.info(ctx)
+                if (!initial.online) {
+                    updateE(DownloadState(key, status = "等待网络", error = initial.label, url = rawUrl, useMirror = useMirror,
+                        done = stateOf(key)?.done ?: 0L, total = expectedSize.takeIf { it > 0 } ?: 0L), epoch)
+                    NetPrompts.showNoNetwork(key, initial.label)
+                    Notifier.generic(ctx, "等待网络", "$fileName 暂时不能下载：${initial.label}\n联网后会自动开始，已下载部分会保留。")
+                    if (!NetworkTools.awaitOnline(ctx)) throw kotlinx.coroutines.CancellationException("等待网络取消")
+                    NetPrompts.dismissNoNetwork()
+                    updateE(DownloadState(key, status = "连接中", url = rawUrl, useMirror = useMirror,
+                        done = stateOf(key)?.done ?: 0L, total = expectedSize.takeIf { it > 0 } ?: 0L), epoch)
+                    Notifier.generic(ctx, "网络已恢复", "$fileName 已检测到网络，正在自动开始下载。")
+                }
+
+                val now = NetworkTools.info(ctx)
+                if (now.kind == NetworkTools.Kind.CELLULAR) {
+                    val bytes = expectedSize.takeIf { it > 0 } ?: stateOf(key)?.total?.takeIf { it > 0 } ?: -1L
+                    when (NetPrompts.askDownload(key, bytes, now.slow)) {
+                        NetChoice.CONTINUE -> { mobilePauses.remove(key); warnedMobile = true }
+                        NetChoice.WAIT_WIFI -> {
+                            updateE(DownloadState(key, status = "等待 WiFi", error = "已暂停，连接 Wi‑Fi 后自动开始",
+                                url = rawUrl, useMirror = useMirror, done = stateOf(key)?.done ?: 0L,
+                                total = expectedSize.takeIf { it > 0 } ?: 0L), epoch)
+                            Notifier.generic(ctx, "等待 Wi‑Fi", "$fileName 已暂停；连接 Wi‑Fi 后自动继续，已下载部分保留。")
+                            if (!NetworkTools.awaitWifi(ctx)) throw kotlinx.coroutines.CancellationException("等待 WiFi 取消")
+                            mobilePauses.remove(key); warnedMobile = false
+                            updateE(DownloadState(key, status = "连接中", url = rawUrl, useMirror = useMirror,
+                                done = stateOf(key)?.done ?: 0L, total = expectedSize.takeIf { it > 0 } ?: 0L), epoch)
+                        }
+                        else -> throw kotlinx.coroutines.CancellationException("用户取消流量下载")
+                    }
+                }
+                if (now.slow && expectedSize > 20L * 1024 * 1024) {
+                    Notifier.generic(ctx, "当前网络较慢", "$fileName 较大（约 ${expectedSize / 1024 / 1024}MB），当前网络带宽较低，下载可能较慢；可继续等待或取消。")
+                }
+
+                var retry = 0
+                while (true) {
+                    try {
+                        val f = download(ctx, rawUrl, fileName, token, useMirror, epoch = epoch, expectedTotal = expectedSize)
+                        val st = stateOf(fileName)
+                        record(ctx, DlRecord(
+                            id = java.util.UUID.randomUUID().toString(),
+                            name = fileName, url = rawUrl, size = f.length(), time = System.currentTimeMillis(),
+                            source = source, repo = repo, release = release,
+                            publicPath = st?.publicPath, localPath = st?.localPath ?: f.absolutePath,
+                            mobileBytes = MobileDataUsage.bytesFor(key)
+                        ))
+                        kotlinx.coroutines.withContext(Dispatchers.Main) { onDone?.invoke(f) }
+                        return@launch
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: MobilePauseException) {
+                        mobilePauses.remove(key)
+                        val info = NetworkTools.info(ctx)
+                        val bytes = expectedSize.takeIf { it > 0 } ?: stateOf(key)?.total?.takeIf { it > 0 } ?: -1L
+                        updateE(DownloadState(key, status = "等待确认流量", error = "已暂停，等待确认是否用流量继续",
+                            url = rawUrl, useMirror = useMirror, done = stateOf(key)?.done ?: 0L,
+                            total = expectedSize.takeIf { it > 0 } ?: 0L), epoch)
+                        when (NetPrompts.askDownload(key, bytes, info.slow)) {
+                            NetChoice.CONTINUE -> { warnedMobile = true; mobilePauses.remove(key); continue }
+                            NetChoice.WAIT_WIFI -> {
+                                updateE(DownloadState(key, status = "等待 WiFi", error = "已暂停，连接 Wi‑Fi 后自动开始",
+                                    url = rawUrl, useMirror = useMirror, done = stateOf(key)?.done ?: 0L,
+                                    total = expectedSize.takeIf { it > 0 } ?: 0L), epoch)
+                                if (!NetworkTools.awaitWifi(ctx)) throw kotlinx.coroutines.CancellationException("等待 WiFi 取消")
+                                warnedMobile = false
+                                continue
+                            }
+                            else -> throw kotlinx.coroutines.CancellationException("用户取消流量下载")
+                        }
+                    } catch (e: Exception) {
+                        if (!NetworkTools.info(ctx).online) {
+                            retry++
+                            updateE(DownloadState(key, status = "等待网络", error = "网络断开，已暂停；联网后会自动继续",
+                                url = rawUrl, useMirror = useMirror, done = stateOf(key)?.done ?: 0L,
+                                total = expectedSize.takeIf { it > 0 } ?: 0L), epoch)
+                            NetPrompts.showNoNetwork(key, "网络断开，已暂停；联网后会自动继续")
+                            Notifier.generic(ctx, "网络已断开", "$fileName 已暂停；联网后会自动继续，已下载部分保留。")
+                            if (!NetworkTools.awaitOnline(ctx)) throw kotlinx.coroutines.CancellationException("等待网络取消")
+                            NetPrompts.dismissNoNetwork()
+                            updateE(DownloadState(key, status = "连接中", url = rawUrl, useMirror = useMirror,
+                                done = stateOf(key)?.done ?: 0L, total = expectedSize.takeIf { it > 0 } ?: 0L), epoch)
+                            continue
+                        }
+                        throw e
+                    }
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
-                if (sameEpoch(key, epoch)) update(DownloadState(key, status = "已取消"))
+                update(DownloadState(key, status = "已取消", done = stateOf(key)?.done ?: 0L,
+                    total = stateOf(key)?.total ?: 0L, url = rawUrl, useMirror = useMirror))
+                runCatching { Notifier.downloadCanceled(ctx, key) }
             } catch (e: Exception) {
                 kotlinx.coroutines.withContext(Dispatchers.Main) { onError?.invoke(e.message ?: "下载失败") }
             } finally {
+                mobilePauses.remove(key)
                 runCatching { cm?.unregisterNetworkCallback(cb) }
                 if (jobs[key] === job) jobs.remove(key)
             }
@@ -165,11 +264,13 @@ object Downloader {
 
     fun cancelDownload(name: String): Boolean {
         val key = sanitize(name)
+        val prev = stateOf(key)
         cancelFlags[key] = true
         newEpoch(key)
         val j = jobs.remove(key)
         j?.cancel()
-        update(DownloadState(key, status = "已取消"))
+        update(prev?.copy(status = "已取消", speed = 0L, error = "已取消，已下载的部分保留，可继续下载")
+            ?: DownloadState(key, status = "已取消", error = "已取消，已下载的部分保留，可继续下载"))
         runCatching { Notifier.downloadCanceled(com.luogen.ghpro.AppCtx.get(), key) }
         return j != null
     }
@@ -190,7 +291,8 @@ object Downloader {
                 DlRecord(o.optString("id"), o.optString("name"), o.optString("url"),
                     o.optLong("size"), o.optLong("time"), o.optString("source", "文件"),
                     o.optString("repo").takeIf { it.isNotBlank() }, o.optString("release").takeIf { it.isNotBlank() },
-                    o.optString("publicPath").takeIf { it.isNotBlank() }, o.optString("localPath").takeIf { it.isNotBlank() })
+                    o.optString("publicPath").takeIf { it.isNotBlank() }, o.optString("localPath").takeIf { it.isNotBlank() },
+                    o.optLong("mobileBytes", 0L))
             }
         }.getOrDefault(emptyList())
     }
@@ -207,7 +309,7 @@ object Downloader {
             arr.put(org.json.JSONObject().apply {
                 put("id", r.id); put("name", r.name); put("url", r.url); put("size", r.size)
                 put("time", r.time); put("source", r.source); put("repo", r.repo ?: "")
-                put("release", r.release ?: ""); put("publicPath", r.publicPath ?: "")
+                put("release", r.release ?: ""); put("publicPath", r.publicPath ?: ""); put("mobileBytes", r.mobileBytes)
                 put("localPath", r.localPath ?: "")
             })
         }
@@ -341,7 +443,21 @@ object Downloader {
     }
 
     private fun update(s: DownloadState) {
-        state.value = state.value + (s.fileName to s)
+        val key = s.fileName
+        val prev = trackedBytes[key] ?: 0L
+        val delta = s.done - prev
+        // 按每次真实写入文件的增量计流量；网络在下载中途从 Wi‑Fi 切到流量时，
+        // 后续增量会按当前网络类型记到流量，而不是把整份文件都算成流量。
+        // 只有带真实进度的状态才更新基线；纯状态提示（如“检测到移动数据”）不能把基线归零。
+        if (s.done > 0 || s.status == "已完成") {
+            if (delta > 0 && (s.active || s.status == "已完成") && NetworkTools.isCellular(AppCtx.get())) {
+                MobileDataUsage.add(key, delta)
+            }
+            trackedBytes[key] = s.done
+        }
+        val mobileNow = MobileDataUsage.bytesFor(key)
+        val shown = if (mobileNow > 0 && (s.active || s.status == "已完成")) s.copy(mobileBytes = mobileNow) else s
+        state.value = state.value + (key to shown)
     }
 
     private fun dir(ctx: Context): File {
@@ -386,6 +502,7 @@ object Downloader {
             throw java.io.IOException("这个文件正在下载中，进度条在上面")
         }
         val outFile = File(dir(ctx), safe)
+        trackedBytes[safe] = outFile.takeIf { it.exists() }?.length() ?: 0L
         val cands = candidates(rawUrl, useMirror)
         var lastError: Exception? = null
         var idx = 0
@@ -417,6 +534,8 @@ object Downloader {
                 if (c != rawUrl) Cfg.preferredMirror = c.substringBefore("/https://").substringBefore("/http://")
                 if (notify) Notifier.downloadDone(ctx, safe, outFile.absolutePath, pub.first)
                 return@withContext outFile
+            } catch (e: MobilePauseException) {
+                throw e
             } catch (e: Exception) {
                 lastError = e
                 // 镜像失败不清掉已下好的部分：下一个线路可以按 Range 断点续传
@@ -425,16 +544,18 @@ object Downloader {
             }
             idx++
         }
+        val offline = !NetworkTools.info(ctx, true).online
         val rawMsg = lastError?.message ?: "下载失败"
-        val msg = if (!networkOnline(ctx)) {
-            "网络已断开，下载已停止。已经下好的部分保留着，联网后在下载管理点“重试”会从断点继续。"
+        val msg = if (offline) {
+            "网络已断开，下载已暂停；已下载的部分会保留，恢复网络后自动继续。"
         } else rawMsg
         val kept = outFile.takeIf { it.exists() }?.length() ?: 0L
         // 候选线路每次都会刷新 epoch；失败落状态必须用当前 epoch，否则会永远停在「重试中」
-        updateE(DownloadState(safe, status = "失败", error = msg, done = kept,
+        updateE(DownloadState(safe, status = if (offline) "等待网络" else "失败", error = msg, done = kept,
             total = expectedTotal.takeIf { it > 0 } ?: 0, url = rawUrl, useMirror = useMirror),
             epochs[safe] ?: epoch)
-        if (notify) Notifier.downloadFailed(ctx, safe, msg)
+        // 断网不是“失败”，由外层进入自动等待/续传，避免先弹一条失败通知再弹等待网络。
+        if (notify && !offline) Notifier.downloadFailed(ctx, safe, msg)
         throw IOException(msg)
     }
 
@@ -460,12 +581,7 @@ object Downloader {
     }
 
     fun networkOnline(ctx: Context): Boolean {
-        return try {
-            val cm = ctx.getSystemService(android.net.ConnectivityManager::class.java) ?: return false
-            val n = cm.activeNetwork ?: return false
-            val caps = cm.getNetworkCapabilities(n) ?: return false
-            caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
-        } catch (e: Exception) { true }
+        return runCatching { NetworkTools.info(ctx, true).online }.getOrDefault(true)
     }
 
     /** 把下载好的文件放进系统「下载」目录，用户在文件管理器里直接能看到。 */
@@ -591,6 +707,7 @@ object Downloader {
                     multiThread(url, outFile, token, sendAuth, total, n, name, notify, epoch)
                     return
                 } catch (e: Exception) {
+                    if (e is MobilePauseException) throw e
                     if (isCancelled(name)) throw e
                     lastMulti = e
                 }
@@ -631,6 +748,7 @@ object Downloader {
             resp.body?.byteStream()?.use { input ->
                 while (true) {
                     if (isCancelled(name)) throw IOException("已取消")
+                    if (isMobilePaused(name)) throw MobilePauseException("检测到切换到移动数据，已暂停")
                     val n = input.read(buf)
                     if (n < 0) break
                     out.write(buf, 0, n)
@@ -712,6 +830,7 @@ object Downloader {
                                 var pos = start
                                 while (pos <= end) {
                                     if (isCancelled(name)) throw IOException("已取消")
+                                    if (isMobilePaused(name)) throw MobilePauseException("检测到切换到移动数据，已暂停")
                                     val n = input.read(buf, 0, min(buf.size.toLong(), end - pos + 1).toInt())
                                     if (n < 0) break
                                     raf.write(buf, 0, n)
@@ -734,6 +853,7 @@ object Downloader {
         }
         try {
             workers.forEach { it.join() }
+            errors.filterIsInstance<MobilePauseException>().firstOrNull()?.let { throw it }
             if (errors.isNotEmpty()) throw IOException("分片下载失败：${errors.first().message}")
             if (outFile.length() != total) throw IOException("文件大小不符")
         } finally {

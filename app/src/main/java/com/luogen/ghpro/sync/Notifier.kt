@@ -14,6 +14,7 @@ import com.luogen.ghpro.R
 import com.luogen.ghpro.data.Cfg
 
 object Notifier {
+    private val canceledIds = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
     const val CH_ACTION = "gh_action"
     const val CH_NOTIF = "gh_notif"
     const val CH_DOWNLOAD = "gh_download"
@@ -88,7 +89,10 @@ object Notifier {
         safeNotify(ctx, n, id)
     }
 
+    fun downloadStart(name: String) { canceledIds.remove(name.hashCode()) }
+
     fun downloadStatus(ctx: Context, name: String, status: String, route: String? = null) {
+        if (name.hashCode() in canceledIds) return
         val n = NotificationCompat.Builder(ctx, CH_DOWNLOAD)
             .setSmallIcon(R.drawable.ic_small)
             .setContentTitle("正在下载 $name")
@@ -104,6 +108,7 @@ object Notifier {
 
     fun downloadProgress(ctx: Context, name: String, progress: Int, status: String = "下载中",
                          done: Long = 0L, total: Long = 0L, route: String? = null) {
+        if (name.hashCode() in canceledIds) return
         val doneText = fmtBytes(ctx, done)
         val sizeLine = if (total > 0) {
             val left = (total - done).coerceAtLeast(0L)
@@ -129,6 +134,7 @@ object Notifier {
         android.text.format.Formatter.formatShortFileSize(ctx, bytes.coerceAtLeast(0L))
 
     fun downloadDone(ctx: Context, name: String, path: String, publicPath: String? = null) {
+        canceledIds.remove(name.hashCode())
         // 点通知直接打开刚下好的文件：APK 弹安装器，图片/视频进 App 内预览
         val open = Intent(ctx, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -150,6 +156,7 @@ object Notifier {
     }
 
     fun downloadFailed(ctx: Context, name: String, reason: String) {
+        canceledIds.remove(name.hashCode())
         val n = NotificationCompat.Builder(ctx, CH_DOWNLOAD_DONE)
             .setSmallIcon(R.drawable.ic_small)
             .setContentTitle("下载失败")
@@ -164,7 +171,21 @@ object Notifier {
     }
 
     fun downloadCanceled(ctx: Context, name: String) {
+        canceledIds.add(name.hashCode())
+        // 用同一个通知 id 覆盖掉还在转圈的“正在下载”，再变成一条可读的“已取消下载”。
+        // 这样用户从下载管理取消后，通知栏不会继续显示一个永远不会完成的任务。
+        val n = NotificationCompat.Builder(ctx, CH_DOWNLOAD_DONE)
+            .setSmallIcon(R.drawable.ic_small)
+            .setContentTitle("已取消下载")
+            .setContentText(name)
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$name\n下载已取消，后台下载任务已停止"))
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setContentIntent(contentIntent(ctx, "downloads", name.hashCode()))
+            .build()
+        // 先撤掉低优先级进度通知，再用完成渠道发“已取消”，避免通知渠道不切换。
         runCatching { NotificationManagerCompat.from(ctx).cancel(name.hashCode()) }
+        safeNotify(ctx, n, name.hashCode())
     }
 
     fun serviceNotification(ctx: Context, text: String): Notification =

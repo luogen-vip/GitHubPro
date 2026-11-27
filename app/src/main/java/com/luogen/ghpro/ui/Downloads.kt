@@ -45,6 +45,7 @@ fun DownloadsScreen(nav: NavController) {
     val states by Downloader.state.collectAsState()
     val active = states.values.filter { it.active }
     val failed = states.values.filter { !it.active && it.status == "失败" }
+    val cancelled = states.values.filter { !it.active && it.status == "已取消" }
     var cat by rememberSaveable { mutableStateOf("全部") }
     var list by remember { mutableStateOf<List<DlRecord>>(emptyList()) }
     val snackbar = remember { SnackbarHostState() }
@@ -84,6 +85,14 @@ fun DownloadsScreen(nav: NavController) {
                 }
             }
             val shown = if (cat == "全部") list else list.filter { Downloader.categoryOf(it.name) == cat }
+            val mobileFiles = list.filter { it.mobileBytes > 0 }
+            val mobileTotal = mobileFiles.sumOf { it.mobileBytes }
+            if (mobileTotal > 0) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("本 App 通过移动数据下载：${mobileFiles.size} 个文件 · ${humanSize(mobileTotal)}",
+                        fontSize = 10.sp, color = GH.yellow, modifier = Modifier.weight(1f))
+                }
+            }
             LazyColumn(Modifier.fillMaxSize()) {
                     if (failed.isNotEmpty()) {
                         item {
@@ -121,6 +130,38 @@ fun DownloadsScreen(nav: NavController) {
                             Divider1()
                         }
                     }
+                    if (cancelled.isNotEmpty()) {
+                        item {
+                            Text("已取消 ${cancelled.size}（断点保留）", fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp), color = GH.yellow)
+                        }
+                        items(cancelled, key = { "cancel-${it.fileName}" }) { d ->
+                            Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(12.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    TinyTag("已取消", GH.yellow)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(d.fileName, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                    Text(if (d.done > 0) "已保留 ${humanSize(d.done)}" else "", fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    if (!d.url.isNullOrBlank()) TextButton({
+                                        Downloader.startDownload(ctx, d.url!!, d.fileName, Cfg.token, d.useMirror,
+                                            source = "继续下载", expectedSize = d.total)
+                                        Toast.makeText(ctx, "正在继续下载", Toast.LENGTH_SHORT).show()
+                                    }, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                                        Icon(Icons.Filled.Refresh, null, Modifier.size(14.dp)); Text("继续下载", fontSize = 11.sp)
+                                    }
+                                    TextButton({ Downloader.cancelAndDelete(ctx, d.fileName) },
+                                        contentPadding = PaddingValues(horizontal = 8.dp)) {
+                                        Text("删除记录", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                            }
+                            Divider1()
+                        }
+                    }
                     if (active.isNotEmpty()) {
                         item {
                             Text("正在下载 ${active.size}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
@@ -135,12 +176,18 @@ fun DownloadsScreen(nav: NavController) {
                                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                                     Text(if (d.total > 0) "${d.percent}%" else d.status, fontSize = 11.sp, color = GH.blue)
                                     TextButton({
+                                        Downloader.cancelDownload(d.fileName)
+                                        Toast.makeText(ctx, "已取消下载，已下载部分保留", Toast.LENGTH_SHORT).show()
+                                    }, contentPadding = PaddingValues(horizontal = 6.dp)) {
+                                        Text("取消下载", fontSize = 11.sp, color = GH.red)
+                                    }
+                                    TextButton({
                                         val ok = Downloader.cancelAndDelete(ctx, d.fileName)
                                         Toast.makeText(ctx,
                                             if (ok) "已取消并删除记录和本地文件" else "已取消并删除记录（本地文件没找到）",
                                             Toast.LENGTH_SHORT).show()
-                                    }, contentPadding = PaddingValues(horizontal = 6.dp)) {
-                                        Text("取消并删除", fontSize = 11.sp, color = GH.red)
+                                    }, contentPadding = PaddingValues(horizontal = 4.dp)) {
+                                        Text("彻底删除", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                 }
                                 LinearProgressIndicator(
@@ -149,7 +196,7 @@ fun DownloadsScreen(nav: NavController) {
                                 )
                                 Text(downloadAmountText(d), fontSize = 10.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text(listOfNotNull(d.status, d.speed.takeIf { it > 0 }?.let { humanSize(it) + "/s" }, Downloader.repoOf(d.fileName)).joinToString(" · "),
+                                Text(listOfNotNull(d.status, d.speed.takeIf { it > 0 }?.let { humanSize(it) + "/s" }, d.mobileBytes.takeIf { it > 0 }?.let { "移动数据 ${humanSize(it)}" }, Downloader.repoOf(d.fileName)).joinToString(" · "),
                                     fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
@@ -167,6 +214,7 @@ fun DownloadsScreen(nav: NavController) {
                             }
                             Spacer(Modifier.height(3.dp))
                             Text("${humanSize(r.size)} · ${timeAgo(java.time.Instant.ofEpochMilli(r.time).toString())} · 来源 ${r.source}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (r.mobileBytes > 0) Text("其中移动数据 ${humanSize(r.mobileBytes)}", fontSize = 10.sp, color = GH.yellow)
                             if (!r.repo.isNullOrBlank() || !r.release.isNullOrBlank()) {
                                 Text("来自 " + listOfNotNull(r.repo, r.release).joinToString(" · "), fontSize = 10.sp, color = GH.blue,
                                     modifier = Modifier.clickable { r.repo?.let { UiCache.repoTab[it] = if (!r.release.isNullOrBlank()) 5 else 1; nav.navigate("repo/$it") } })

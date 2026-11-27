@@ -21,6 +21,11 @@ import com.luogen.ghpro.ui.NavRoot
 import com.luogen.ghpro.ui.FilePreviewDialog
 import com.luogen.ghpro.ui.PreviewBus
 import com.luogen.ghpro.ui.DeepLinkBus
+import com.luogen.ghpro.ui.NetworkPromptHost
+import com.luogen.ghpro.data.NetworkTools
+import com.luogen.ghpro.data.NetPrompts
+import com.luogen.ghpro.data.NetPromptKind
+import com.luogen.ghpro.download.Downloader
 
 class MainActivity : ComponentActivity() {
     private val notifPerm = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -93,11 +98,18 @@ class MainActivity : ComponentActivity() {
             GHTheme(themeMode) {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     Box(Modifier.fillMaxSize()) {
+                        LaunchedEffect(Unit) {
+                            if (Cfg.mobileBrowseWarn) {
+                                val info = NetworkTools.info(this@MainActivity)
+                                if (info.kind == NetworkTools.Kind.CELLULAR) NetPrompts.showBrowse()
+                            }
+                        }
                         NavRoot(onThemeChange = { themeMode = Cfg.themeMode })
                         val preview by PreviewBus.target.collectAsState()
                         preview?.let { file ->
                             FilePreviewDialog(file) { PreviewBus.target.value = null }
                         }
+                        NetworkPromptHost(onCancelDownload = { name -> Downloader.cancelDownload(name) })
                     }
                 }
             }

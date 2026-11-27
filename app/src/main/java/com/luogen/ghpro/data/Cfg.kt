@@ -122,6 +122,16 @@ object Cfg {
         get() = sp.getBoolean("watch_enabled", true)
         set(v) { sp.edit().putBoolean("watch_enabled", v).apply() }
 
+    /** 打开 App 正在用流量时，浏览类操作的提醒；勾选不再提醒后关闭。 */
+    var mobileBrowseWarn: Boolean
+        get() = sp.getBoolean("mobile_browse_warn", true)
+        set(v) { sp.edit().putBoolean("mobile_browse_warn", v).apply() }
+
+    /** 开始用流量下载时的确认提醒；下载过程中仍会统计实际流量。 */
+    var mobileDownloadWarn: Boolean
+        get() = sp.getBoolean("mobile_download_warn", true)
+        set(v) { sp.edit().putBoolean("mobile_download_warn", v).apply() }
+
     var autoRefresh: Boolean
         get() = sp.getBoolean("auto_refresh", true)
         set(v) { sp.edit().putBoolean("auto_refresh", v).apply() }
@@ -234,6 +244,12 @@ object Cfg {
     fun activityAt(full: String): Long {
         val raw = (sp.getString("repo_activity", "") ?: "").split("|").firstOrNull { it.startsWith("$full@") } ?: return 0L
         return raw.substringAfterLast('@').toLongOrNull() ?: 0L
+    }
+
+    /** 退出账号只清身份信息，不碰用户设置：主题、下载、通知、镜像、监听、开关全部保留。 */
+    fun logoutPreservingSettings() {
+        sp.edit().remove("token").remove("login").remove("uname").remove("avatar").apply()
+        Api.token = null
     }
 
     fun clearAll() {
