@@ -151,8 +151,21 @@ private fun VideoPreview(file: File) {
             delay(300L)
         }
     }
+    fun togglePlayPause() {
+        if (!prepared) return
+        if (video.isPlaying) {
+            video.pause(); playing = false
+            position = runCatching { video.currentPosition }.getOrDefault(position)
+        } else {
+            if (position >= duration && duration > 0) video.seekTo(0)
+            video.start(); playing = true
+        }
+    }
     Box(Modifier.fillMaxSize()) {
+        // 点视频画面本身也能播放/暂停，和底部按钮行为一致；底部进度条仍可拖动。
         AndroidView(factory = { video }, modifier = Modifier.fillMaxSize())
+        // 透明点击层放在视频上面，确保 VideoView 不会把点击吃掉；留出底部控制条区域。
+        Box(Modifier.fillMaxSize().padding(bottom = 52.dp).clickable { togglePlayPause() })
         Column(
             Modifier.fillMaxWidth().align(Alignment.BottomCenter)
                 .navigationBarsPadding()
@@ -160,15 +173,7 @@ private fun VideoPreview(file: File) {
                 .padding(horizontal = 8.dp, vertical = 8.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                IconButton(onClick = {
-                    if (!prepared) return@IconButton
-                    if (video.isPlaying) {
-                        video.pause(); playing = false; position = runCatching { video.currentPosition }.getOrDefault(position)
-                    } else {
-                        if (position >= duration && duration > 0) video.seekTo(0)
-                        video.start(); playing = true
-                    }
-                }) {
+                IconButton(onClick = { togglePlayPause() }) {
                     Icon(if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                         if (playing) "暂停" else "播放", tint = Color.White, modifier = Modifier.size(25.dp))
                 }

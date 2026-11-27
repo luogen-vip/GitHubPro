@@ -84,6 +84,7 @@ object UiCache {
     val codeListing = HashMap<String, com.luogen.ghpro.data.DirListing>() // owner/name|branch|path
     val fileContent = HashMap<String, String>()       // owner/name|branch|path
     val codeScroll = HashMap<String, Int>()
+    val codeScrollOffset = HashMap<String, Int>()
 
     // ---------------- 仓库各 Tab 列表 ----------------
     val repoRuns = HashMap<String, List<Run>>()

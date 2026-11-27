@@ -11,6 +11,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -180,14 +181,22 @@ fun Avatar(url: String?, size: Int = 32, modifier: Modifier = Modifier, name: St
         Text(letter, fontSize = (size * 0.42f).sp, color = GH.blue, fontWeight = FontWeight.Bold)
         // 不用 Subcompose 的“成功才组合内容”：AsyncImage 一进入组合就发请求，
         // 头像只要服务器有就立刻加载，不需要等用户滑动触发重组。
-        AsyncImage(
-            model = ImageRequest.Builder(LocalContext.current)
+        val avatarPx = with(androidx.compose.ui.platform.LocalDensity.current) { size.dp.roundToPx() }
+        val context = LocalContext.current
+        // 关键：请求只在 url / 显示尺寸变化时重建；普通重组不再重新发一次图片请求。
+        val req = remember(url, avatarPx) {
+            ImageRequest.Builder(context)
                 .data(url)
                 .crossfade(false)
-                .memoryCacheKey(url)
+                // 头像只按实际显示尺寸解码，避免设置页滚到头像时解码大图造成一顿一顿。
+                .size(avatarPx.coerceAtLeast(1))
+                .memoryCacheKey("$url@$avatarPx")
                 .diskCachePolicy(coil.request.CachePolicy.ENABLED)
                 .networkCachePolicy(coil.request.CachePolicy.ENABLED)
-                .build(),
+                .build()
+        }
+        AsyncImage(
+            model = req,
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize(),

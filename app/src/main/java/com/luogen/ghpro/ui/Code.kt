@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.WrapText
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -82,6 +83,13 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
     var listing by remember { mutableStateOf(UiCache.codeListing["$owner/$name|${repo.default_branch ?: "main"}|${UiCache.codePath["$owner/$name"] ?: ""}"]) }
     var loading by remember { mutableStateOf(listing == null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var scrollReady by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    fun codeScrollKey() = "$owner/$name|$branch|$path"
+    fun saveCodeScroll() {
+        UiCache.codeScroll[codeScrollKey()] = listState.firstVisibleItemIndex
+        UiCache.codeScrollOffset[codeScrollKey()] = listState.firstVisibleItemScrollOffset
+    }
     val snackbar = remember { SnackbarHostState() }
     var pendingUpload by remember { mutableStateOf<Uri?>(null) }
     var uploadTarget by remember { mutableStateOf("") }
@@ -90,6 +98,7 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
     var uploadSent by remember { mutableStateOf(0L) }
     var uploadTotalBytes by remember { mutableStateOf(0L) }
     var uploadFileBytes by remember { mutableStateOf(0L) }
+    var showUploadBar by remember { mutableStateOf(true) }
     var selecting by remember { mutableStateOf(false) }
     val selected = remember { mutableStateListOf<String>() }
     var confirmBulk by remember { mutableStateOf(false) }
@@ -118,18 +127,77 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
             listing = Api.contents(owner, name, path, branch)
             listing?.let { UiCache.codeListing["$owner/$name|$branch|$path"] = it }
         } catch (e: kotlinx.coroutines.CancellationException) { throw e }
-        catch (e: Exception) { if (!silent) error = e.message }
+        catch (e: Exception) {
+            val api = e as? com.luogen.ghpro.data.ApiException
+            if (!silent && api?.code == 404 && path.isBlank()) {
+                val body = api.body.orEmpty()
+                val looksEmpty = body.contains("empty", true) || body.contains("No commit found", true)
+                if (looksEmpty) {
+                    // GitHub 空仓库的 contents 接口返回 404 + “This repository is empty.”，这不是权限错误。
+                    listing = DirListing(false, emptyList(), null)
+                    error = null
+                    loading = false
+                    return
+                }
+                // 分支名可能不是 main/dev：用仓库真实默认分支再试一次，避免把“分支不存在”误报成无权限。
+                val info = runCatching { Api.repo(owner, name) }.getOrNull()
+                val realBranch = info?.default_branch?.takeIf { it.isNotBlank() }
+                if (realBranch != null && realBranch != branch) {
+                    branch = realBranch; error = null; loading = false
+                    return
+                }
+                // 仓库能读到但 commits 为空（GitHub 对空仓库返回 409）就显示空目录，不弹红字。
+                val commits = runCatching { Api.commits(owner, name, realBranch ?: branch, 1) }
+                val commitError = commits.exceptionOrNull()?.message.orEmpty()
+                val emptyRepo = (commits.isSuccess && commits.getOrNull()?.items.isNullOrEmpty()) ||
+                    commitError.contains("409") || commitError.contains("empty", true)
+                if (emptyRepo) {
+                    listing = DirListing(false, emptyList(), null)
+                    error = null
+                } else if (info != null) {
+                    error = "这个分支暂时没有可读取的代码；如果仓库是空的，会显示空目录。点重试再拉一次"
+                } else {
+                    error = e.message ?: "内容不存在或无权限"
+                }
+            } else if (!silent) {
+                error = e.message
+            }
+        }
         loading = false
     }
 
     androidx.activity.compose.BackHandler(enabled = selecting || path.isNotEmpty()) {
         if (selecting) { selecting = false; selected.clear() }
-        else path = path.substringBeforeLast('/', "")
+        else { saveCodeScroll(); path = path.substringBeforeLast('/', "") }
     }
     LaunchedEffect(branch, path) {
         UiCache.codePath["$owner/$name"] = path
+        scrollReady = false
+        val key = codeScrollKey()
+        val idx = UiCache.codeScroll[key] ?: 0
+        val off = UiCache.codeScrollOffset[key] ?: 0
+        // 先恢复一次（列表已有缓存时立刻生效）；网络刷新完再恢复一次（首次进入文件夹时生效）。
+        if (idx > 0 || off > 0) runCatching { listState.scrollToItem(idx, off) }
         val cached = UiCache.codeListing["$owner/$name|$branch|$path"]
-        if (cached != null) { listing = cached; loading = false; load(silent = true) } else load()
+        if (cached != null) {
+            listing = cached; loading = false
+            scrollReady = true
+            load(silent = true)
+        } else {
+            load()
+            if (idx > 0 || off > 0) runCatching { listState.scrollToItem(idx, off) }
+            scrollReady = true
+        }
+    }
+    // 记住每个目录的滚动位置：点文件/文件夹再返回，回到原来那一行，不从顶部重来。
+    LaunchedEffect(branch, path, listState) {
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .collect { (i, o) ->
+                if (!scrollReady) return@collect
+                val key = codeScrollKey()
+                UiCache.codeScroll[key] = i
+                UiCache.codeScrollOffset[key] = o
+            }
     }
     // 代码页实时刷新：别人新建/删除/修改文件，几秒内自动出现
     LaunchedEffect(branch, path) {
@@ -176,6 +244,28 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
             }) { Icon(Icons.Filled.Add, "新建文件", tint = GH.green) }
         }
 
+        if (uploading && showUploadBar) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("正在上传 ${uploadTarget.ifBlank { "文件" }}", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        LinearProgressIndicator(progress = { uploadPercent / 100f }, modifier = Modifier.fillMaxWidth().padding(top = 3.dp))
+                        Text(if (uploadTotalBytes > 0)
+                            "$uploadPercent% · 已发送 ${humanSize(uploadSent)} / ${humanSize(uploadTotalBytes)}"
+                        else "正在准备 ${humanSize(uploadFileBytes)}…",
+                            fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp))
+                    }
+                    TextButton(onClick = { showUploadBar = false; Toast.makeText(ctx, "进度已隐藏，上传仍在继续", Toast.LENGTH_SHORT).show() }) {
+                        Text("隐藏", fontSize = 11.sp)
+                    }
+                }
+            }
+        }
+
         if (selecting) {
             val all = listing?.items ?: emptyList()
             Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 10.dp, vertical = 2.dp),
@@ -197,14 +287,14 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
             else -> {
                 val l = listing
                 if (l == null || l.items.isEmpty()) EmptyBox("空目录")
-                else LazyColumn(Modifier.fillMaxSize()) {
+                else LazyColumn(Modifier.fillMaxSize(), state = listState) {
                     items(l.items.sortedWith(compareBy({ it.type != "dir" }, { it.name })), key = { it.sha + it.path }) { item ->
                         Row(
                             Modifier.fillMaxWidth().clickable {
                                 if (selecting) {
                                     if (selected.contains(item.path)) selected.remove(item.path) else selected.add(item.path)
-                                } else if (item.type == "dir") path = item.path
-                                else nav.navigate("file?owner=$owner&repo=$name&branch=${Uri.encode(branch)}&path=${Uri.encode(item.path)}&isNew=0")
+                                } else if (item.type == "dir") { saveCodeScroll(); path = item.path }
+                                else { saveCodeScroll(); nav.navigate("file?owner=$owner&repo=$name&branch=${Uri.encode(branch)}&path=${Uri.encode(item.path)}&isNew=0") }
                             }.padding(horizontal = 10.dp, vertical = if (selecting) 6.dp else 11.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -253,29 +343,25 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(uploadTarget, { uploadTarget = it }, label = { Text("完整路径（含文件名）") },
                         singleLine = true, modifier = Modifier.fillMaxWidth())
-                    if (uploading) {
-                        Spacer(Modifier.height(10.dp))
-                        LinearProgressIndicator(progress = { uploadPercent / 100f }, modifier = Modifier.fillMaxWidth())
-                        Text(if (uploadTotalBytes > 0)
-                            "真实上传进度 $uploadPercent% · 已发送 ${humanSize(uploadSent)} / ${humanSize(uploadTotalBytes)}"
-                        else "正在准备上传 ${humanSize(uploadFileBytes)}…",
-                            fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 4.dp))
-                    }
                 }
             },
             confirmButton = {
                 TextButton(enabled = uploadTarget.isNotBlank() && !uploading, onClick = {
                     val target = uploadTarget.trim().trim('/')
                     if (target.isBlank()) return@TextButton
+                    val chosen = pu ?: return@TextButton
+                    // 立即关掉选择弹窗，进度条改为页面顶部的非模态小条；上传继续，不阻塞浏览。
+                    pendingUpload = null
+                    showUploadBar = true
                     Bus.actions.launch {
                         uploading = true
+                        showUploadBar = true
                         uploadPercent = 0; uploadSent = 0L; uploadTotalBytes = 0L; uploadFileBytes = 0L
                         try {
                             Toast.makeText(ctx, "开始上传…", Toast.LENGTH_SHORT).show()
                             val tmp = java.io.File(ctx.cacheDir, "ghpro_upload_source.bin")
                             withContext(Dispatchers.IO) {
-                                ctx.contentResolver.openInputStream(pu)?.use { input -> tmp.outputStream().use { input.copyTo(it) } }
+                                ctx.contentResolver.openInputStream(chosen)?.use { input -> tmp.outputStream().use { input.copyTo(it) } }
                                     ?: throw java.io.IOException("读不到这个文件")
                             }
                             val size = tmp.length()
@@ -302,6 +388,7 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
                             UiCache.fileContent.remove("$owner/$name|$branch|$target")
                             Cfg.touchRepo("$owner/$name")
                             uploadPercent = 100
+                            showUploadBar = false
                             Toast.makeText(ctx, "已上传 $target", Toast.LENGTH_LONG).show()
                             pendingUpload = null
                             uploadTarget = ""
@@ -311,6 +398,7 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
                             Toast.makeText(ctx, "上传失败：${e.message}", Toast.LENGTH_LONG).show()
                         }
                         uploading = false
+                        showUploadBar = false
                         uploadSent = 0L; uploadTotalBytes = 0L; uploadPercent = 0
                     }
                 }) { Text(if (uploading) "上传中 $uploadPercent%" else "上传", fontSize = 13.sp) }

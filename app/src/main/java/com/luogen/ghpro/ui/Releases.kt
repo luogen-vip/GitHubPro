@@ -70,6 +70,7 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
     var assetSent by remember { mutableStateOf(0L) }
     var assetTotal by remember { mutableStateOf(0L) }
     var assetPct by remember { mutableStateOf(0) }
+    var assetBarVisible by remember { mutableStateOf(true) }
     val snackbar = remember { SnackbarHostState() }
 
     suspend fun load(p: Int, replace: Boolean, silent: Boolean = false) {
@@ -121,7 +122,7 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
         val rel = list.firstOrNull { it.id == uploadTargetId } ?: return@rememberLauncherForActivityResult
         scope.launch {
             try {
-                assetUploading = true; assetName = ""; assetSent = 0L; assetTotal = 0L; assetPct = 0
+                assetUploading = true; assetBarVisible = true; assetName = ""; assetSent = 0L; assetTotal = 0L; assetPct = 0
                 val f = File(ctx.cacheDir, "upload.tmp")
                 var n = uri.lastPathSegment?.substringAfterLast('/') ?: "asset.bin"
                 runCatching {
@@ -154,6 +155,7 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                 snackbar.showSnackbar("上传失败：${e.message}")
             } finally {
                 assetUploading = false
+                assetBarVisible = false
             }
         }
     }
@@ -164,6 +166,23 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                 Text("发行版（${list.size}）", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
                 TextButton(onClick = { showCreate = true }) {
                     Icon(Icons.Filled.Add, null, Modifier.size(16.dp)); Text("新建发行版", fontSize = 12.sp)
+                }
+            }
+            if (assetUploading && assetBarVisible) {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    modifier = Modifier.fillMaxWidth()) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("正在上传附件 ${assetName.ifBlank { "…" }}", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            LinearProgressIndicator(progress = { assetPct / 100f }, modifier = Modifier.fillMaxWidth().padding(top = 3.dp))
+                            Text(if (assetTotal > 0)
+                                "$assetPct% · ${humanSize(assetSent)} / ${humanSize(assetTotal)}"
+                            else "正在准备…", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        TextButton(onClick = { assetBarVisible = false; Toast.makeText(ctx, "进度已隐藏，上传仍在继续", Toast.LENGTH_SHORT).show() }) {
+                            Text("隐藏", fontSize = 11.sp)
+                        }
+                    }
                 }
             }
             when {
@@ -248,7 +267,7 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                                 Spacer(Modifier.height(6.dp))
                                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    OutlinedButton(onClick = { uploadTargetId = rel.id; picker.launch("*/*") }) {
+                                    OutlinedButton(enabled = !assetUploading, onClick = { uploadTargetId = rel.id; picker.launch("*/*") }) {
                                         Icon(Icons.Filled.Upload, null, Modifier.size(15.dp)); Text("上传附件", fontSize = 11.sp)
                                     }
                                     OutlinedButton(onClick = { copy(rel.html_url ?: "", "已复制发行版链接") }) {
@@ -373,22 +392,4 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
         )
     }
 
-    if (assetUploading) {
-        AlertDialog(
-            onDismissRequest = { },
-            title = { Text("上传发行版附件", fontSize = 15.sp) },
-            text = {
-                Column {
-                    Text(assetName, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Spacer(Modifier.height(10.dp))
-                    LinearProgressIndicator(progress = { assetPct / 100f }, modifier = Modifier.fillMaxWidth())
-                    Text(if (assetTotal > 0)
-                        "真实上传进度 $assetPct% · ${humanSize(assetSent)} / ${humanSize(assetTotal)}"
-                    else "正在准备上传…", fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 5.dp))
-                }
-            },
-            confirmButton = {}
-        )
-    }
 }
