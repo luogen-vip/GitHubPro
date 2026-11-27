@@ -152,6 +152,7 @@ object TranslateApi {
         val s = text.trim()
         if (s.isBlank()) return false
         val fenced = Regex("""```[\s\S]*?```""")
+        val hasFence = fenced.containsMatchIn(s)
         val inline = Regex("""`[^`\n]+`""")
         val url = Regex("""https?://[^\s)\]]+""")
         val stripped = s.replace(fenced, " ").replace(inline, " ").replace(url, " ").trim()
@@ -161,7 +162,7 @@ object TranslateApi {
         // 表情、标点、数字、纯符号：没有足够自然语言字符。
         if (letters < 2) return false
         val lines = s.replace("\r\n", "\n").split('\n').map { it.trim() }.filter { it.isNotBlank() }
-        if (lines.size >= 3) {
+        if (!hasFence && lines.size >= 3) {
             val codeLines = lines.count { line ->
                 line.startsWith("```") || line.startsWith("~~~") ||
                     line.startsWith("{") || line.startsWith("}") ||
