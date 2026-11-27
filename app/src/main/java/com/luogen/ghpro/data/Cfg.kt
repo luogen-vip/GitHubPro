@@ -171,11 +171,26 @@ object Cfg {
         get() = sp.getString("my_status_expires", null)
         set(v) { sp.edit().putString("my_status_expires", v).apply() }
 
+    var statusOrgId: String?
+        get() = sp.getString("my_status_org_id", null)
+        set(v) { sp.edit().putString("my_status_org_id", v).apply() }
+
+    var statusOrgLogin: String?
+        get() = sp.getString("my_status_org_login", null)
+        set(v) { sp.edit().putString("my_status_org_login", v).apply() }
+
+    var statusOrgName: String?
+        get() = sp.getString("my_status_org_name", null)
+        set(v) { sp.edit().putString("my_status_org_name", v).apply() }
+
     fun saveStatus(s: com.luogen.ghpro.data.UserStatus?) {
         statusEmoji = s?.emoji
         statusMessage = s?.message
         statusBusy = s?.limitedAvailability ?: false
         statusExpiresAt = s?.expiresAt
+        statusOrgId = s?.organizationId
+        statusOrgLogin = s?.organizationLogin
+        statusOrgName = s?.organizationName
     }
 
     /** 本地已读的通知 id：即使刷新时服务端还没来得及更新，也不会再冒到“未读”里。 */

@@ -65,6 +65,13 @@ fun NavRoot(onThemeChange: () -> Unit) {
         composable("edit/{owner}/{repo}") { e ->
             EditRepoScreen(nav, e.arguments?.getString("owner") ?: "", e.arguments?.getString("repo") ?: "")
         }
+        // 首页的“关注者/正在关注”要直接打开对应名单；之前导航到 user/{login}/0，
+        // 但这里只有 user/{login}，多出来的路径段匹配不到，点一下会直接崩溃。
+        composable("user/{login}/{people}") { e ->
+            UserScreen(nav,
+                e.arguments?.getString("login") ?: "",
+                e.arguments?.getString("people")?.toIntOrNull() ?: -1)
+        }
         composable("user/{login}") { e ->
             UserScreen(nav, e.arguments?.getString("login") ?: "")
         }

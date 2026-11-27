@@ -438,9 +438,20 @@ data class LicenseTpl(
     val url: String? = null
 )
 
+data class OrgSummary(
+    val id: String = "",
+    val login: String = "",
+    val name: String? = null,
+    val avatarUrl: String? = null
+)
+
 data class UserStatus(
     val emoji: String? = null,
     val message: String? = null,
     val limitedAvailability: Boolean = false,
-    val expiresAt: String? = null
+    val expiresAt: String? = null,
+    /** GitHub 只支持「所有人可见」或「指定组织成员可见」；空表示公开。 */
+    val organizationId: String? = null,
+    val organizationLogin: String? = null,
+    val organizationName: String? = null
 )

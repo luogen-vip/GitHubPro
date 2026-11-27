@@ -74,7 +74,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
             rateLoading = rate == null
             rate = try {
                 val r = Api.rateLimit().resources?.core
-                "核心 ${r?.remaining ?: "-"}/${r?.limit ?: "-"} · 重置 ${r?.reset?.let { fullTime(java.time.Instant.ofEpochSecond(it).toString()) } ?: "-"}"
+                "核心 ${r?.remaining ?: "-"}/${r?.limit ?: "-"} · 额度重置 ${r?.reset?.let { fullTimeCn(java.time.Instant.ofEpochSecond(it).toString()) } ?: "-"} · 当前 ${clockCn()}"
             } catch (e: Exception) { "读取失败：${e.message}" }
             rateLoading = false
             delay(8_000L)
@@ -382,24 +382,28 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
             SectionTitle("API 用量 · 每 8 秒自动刷新")
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("剩余额度", fontSize = 13.sp, modifier = Modifier.weight(1f))
-                Text(if (rateLoading) "读取中…" else (rate ?: "-"), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 IconButton(onClick = {
                     scope.launch {
                         rateLoading = true
                         rate = try {
                             val r = Api.rateLimit().resources?.core
-                            "核心 ${r?.remaining ?: "-"}/${r?.limit ?: "-"} · 重置 ${r?.reset?.let { fullTime(java.time.Instant.ofEpochSecond(it).toString()) } ?: "-"}"
+                            "核心 ${r?.remaining ?: "-"}/${r?.limit ?: "-"} · 额度重置 ${r?.reset?.let { fullTimeCn(java.time.Instant.ofEpochSecond(it).toString()) } ?: "-"} · 当前 ${clockCn()}"
                         } catch (e: Exception) { "读取失败：${e.message}" }
                         rateLoading = false
                     }
                 }) { Icon(Icons.Filled.Refresh, null, Modifier.size(18.dp)) }
             }
+            Text(if (rateLoading) "读取中…" else (rate ?: "-"), fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 14.sp,
+                modifier = Modifier.fillMaxWidth().padding(top = 2.dp))
+            Text("重置时间是 GitHub 额度恢复的未来时间，不是当前时间；两者都按北京时间显示。",
+                fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
             Spacer(Modifier.height(14.dp))
         }
 
         item {
             Spacer(Modifier.height(40.dp))
-            Text("GitHub Pro 1.0.30 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("GitHub Pro 1.0.31 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("数据全部来自 GitHub 官方 REST / GraphQL API", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(30.dp))
         }

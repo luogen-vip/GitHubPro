@@ -46,6 +46,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -110,9 +111,9 @@ fun SubscriptionsScreen(nav: NavController) {
     var tab by remember { mutableStateOf(UiCache.subsTab.coerceIn(0, 1)) }
     var sort by remember { mutableStateOf(UiCache.subsSort) }
     var sortMenu by remember { mutableStateOf(false) }
-    var repos by remember { mutableStateOf<List<Repo>>(emptyList()) }
-    var users by remember { mutableStateOf<List<User>>(emptyList()) }
-    var loading by remember { mutableStateOf(false) }
+    var repos by remember { mutableStateOf(UiCache.subsRepos) }
+    var users by remember { mutableStateOf(UiCache.subsUsers) }
+    var loading by remember { mutableStateOf(if (tab == 0) UiCache.subsRepos.isEmpty() else UiCache.subsUsers.isEmpty()) }
     var error by remember { mutableStateOf<String?>(null) }
     var refresh by remember { mutableStateOf(0) }
     var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -126,11 +127,14 @@ fun SubscriptionsScreen(nav: NavController) {
     )
     val watchVer by Bus.watchPoke.collectAsState()
     val followVer by Bus.followPoke.collectAsState()
+    val showTop by remember { derivedStateOf { listState.firstVisibleItemIndex > 3 || listState.firstVisibleItemScrollOffset > 600 } }
 
     DisposableEffect(Unit) {
         onDispose {
             UiCache.subsTab = tab
             UiCache.subsSort = sort
+            UiCache.subsRepos = repos
+            UiCache.subsUsers = users
             UiCache.subsScrollIndex = listState.firstVisibleItemIndex
             UiCache.subsScrollOffset = listState.firstVisibleItemScrollOffset
         }
@@ -159,6 +163,7 @@ fun SubscriptionsScreen(nav: NavController) {
             if (UiCache.repoWatchOverride(r.full_name) == true && out.none { it.full_name == r.full_name }) out.add(r)
         }
         repos = out.distinctBy { it.id }
+        UiCache.subsRepos = repos
     }
 
     suspend fun loadUsers() {
@@ -181,6 +186,7 @@ fun SubscriptionsScreen(nav: NavController) {
             if (UiCache.followOverride(u.login) == true && out.none { it.login == u.login }) out.add(u)
         }
         users = out.distinctBy { it.id }
+        UiCache.subsUsers = users
     }
 
     LaunchedEffect(tab, refresh, watchVer, followVer) {
@@ -368,6 +374,11 @@ fun SubscriptionsScreen(nav: NavController) {
                 } },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )
+        },
+        floatingActionButton = {
+            if (showTop && visibleKeys.isNotEmpty()) {
+                SmallFab { scope.launch { listState.animateScrollToItem(0) } }
+            }
         }
     ) { pad ->
         Column(Modifier.fillMaxSize().padding(pad)) {

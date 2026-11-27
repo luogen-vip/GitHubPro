@@ -46,6 +46,8 @@ object UiCache {
     var subsSort = "time_desc"
     var subsScrollIndex = 0
     var subsScrollOffset = 0
+    var subsRepos: List<Repo> = emptyList()
+    var subsUsers: List<User> = emptyList()
 
     // ---------------- 首页 ----------------
     var homeLoaded = false

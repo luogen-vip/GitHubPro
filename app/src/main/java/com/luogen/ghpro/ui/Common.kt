@@ -30,6 +30,7 @@ import coil.compose.SubcomposeAsyncImageContent
 import coil.request.ImageRequest
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Label
+import com.luogen.ghpro.data.UserStatus
 import com.luogen.ghpro.download.DownloadState
 import java.time.Duration
 import java.time.Instant
@@ -70,27 +71,45 @@ fun prettyStatusEmoji(raw: String?): String {
     return STATUS_EMOJI[v] ?: v
 }
 
-/** 头像旁的我的状态；没有设置时返回 null，不占额外一行。 */
-fun myStatusLine(): String? {
-    val expired = Cfg.statusExpiresAt?.let { raw ->
+/** 状态文本；包含“仅某组织可见”，让用户一眼知道别人看不到的原因。 */
+fun statusLine(s: UserStatus?): String? {
+    if (s == null) return null
+    val expired = s.expiresAt?.let { raw ->
         runCatching { java.time.Instant.parse(raw).isBefore(java.time.Instant.now()) }.getOrDefault(false)
     } ?: false
     if (expired) return null
-    val emoji = prettyStatusEmoji(Cfg.statusEmoji)
-    val msg = Cfg.statusMessage?.trim().orEmpty()
-    val busy = Cfg.statusBusy
-    if (emoji.isBlank() && msg.isBlank() && !busy) return null
+    val emoji = prettyStatusEmoji(s.emoji)
+    val msg = s.message?.trim().orEmpty()
+    if (emoji.isBlank() && msg.isBlank() && !s.limitedAvailability) return null
     return buildString {
         if (emoji.isNotBlank()) append(emoji)
         if (msg.isNotBlank()) { if (isNotEmpty()) append(" "); append(msg) }
-        if (busy) { if (isNotEmpty()) append(" · "); append("忙碌") }
+        if (s.limitedAvailability) { if (isNotEmpty()) append(" · "); append("忙碌") }
+        val org = s.organizationLogin?.takeIf { it.isNotBlank() }
+        if (org != null) { if (isNotEmpty()) append(" · "); append("仅 $org 可见") }
     }
 }
+
+/** 头像旁的我的状态；没有设置时返回 null，不占额外一行。 */
+fun myStatusLine(): String? = statusLine(UserStatus(
+    Cfg.statusEmoji, Cfg.statusMessage, Cfg.statusBusy, Cfg.statusExpiresAt,
+    Cfg.statusOrgId, Cfg.statusOrgLogin, Cfg.statusOrgName
+))
 
 fun fullTime(iso: String?): String {
     val t = parseTime(iso) ?: return ""
     return DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault()).format(t)
 }
+
+private val CN_ZONE: ZoneId = ZoneId.of("Asia/Shanghai")
+
+/** GitHub 额度重置时间固定按北京时间显示，不受手机时区/夏令时设置影响。 */
+fun fullTimeCn(iso: String?): String {
+    val t = parseTime(iso) ?: return ""
+    return DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(CN_ZONE).format(t)
+}
+
+fun clockCn(): String = DateTimeFormatter.ofPattern("HH:mm:ss").withZone(CN_ZONE).format(Instant.now())
 
 fun durationText(startIso: String?, endIso: String?): String {
     val s = parseTime(startIso) ?: return ""

@@ -1091,8 +1091,10 @@ object Api {
 
     // ---------------- 用户状态（GraphQL） ----------------
     /** GitHub 状态：真实写回服务端，别人在个人主页/头像悬浮卡能看到。 */
+    private val statusFields = "emoji message indicatesLimitedAvailability expiresAt organization{id login name}"
+
     suspend fun myStatus(): UserStatus? {
-        val q = "query{viewer{status{emoji message indicatesLimitedAvailability expiresAt}}}"
+        val q = "query{viewer{status{$statusFields}}}"
         val body = JsonObject().apply { addProperty("query", q) }
         val root = JsonParser.parseString(raw("/graphql", "POST", body.toString())).asJsonObject
         root.getAsJsonObject("data")?.getAsJsonObject("viewer")?.get("status")?.takeIf { it.isJsonObject }?.asJsonObject?.let { return parseStatus(it) }
@@ -1101,13 +1103,46 @@ object Api {
         return null
     }
 
-    suspend fun changeMyStatus(emoji: String, message: String, limited: Boolean, expiresAt: String?): UserStatus? {
-        val q = "mutation(\$input:ChangeUserStatusInput!){changeUserStatus(input:\$input){status{emoji message indicatesLimitedAvailability expiresAt}}}"
+    /** 查看别人的公开状态；如果对方设为仅组织可见且你不是该组织成员，GitHub 会返回 null。 */
+    suspend fun userStatus(login: String): UserStatus? {
+        if (login.isBlank()) return null
+        val q = "query(\$login:String!){user(login:\$login){status{$statusFields}}}"
+        val body = JsonObject().apply {
+            addProperty("query", q)
+            add("variables", JsonObject().apply { addProperty("login", login) })
+        }
+        val root = JsonParser.parseString(raw("/graphql", "POST", body.toString())).asJsonObject
+        val err = root.getAsJsonArray("errors")?.firstOrNull()?.asJsonObject?.get("message")?.asString
+        if (!err.isNullOrBlank()) throw IOException(err)
+        return root.getAsJsonObject("data")?.getAsJsonObject("user")
+            ?.get("status")?.takeIf { it.isJsonObject }?.asJsonObject?.let { parseStatus(it) }
+    }
+
+    /** 当前用户加入的组织；用于 GitHub 支持的“仅组织成员可见”状态。 */
+    suspend fun myOrganizations(): List<OrgSummary> {
+        val q = "query{viewer{organizations(first:100){nodes{id login name avatarUrl}}}}"
+        val body = JsonObject().apply { addProperty("query", q) }
+        val root = JsonParser.parseString(raw("/graphql", "POST", body.toString())).asJsonObject
+        val err = root.getAsJsonArray("errors")?.firstOrNull()?.asJsonObject?.get("message")?.asString
+        if (!err.isNullOrBlank()) throw IOException(err)
+        val arr = root.getAsJsonObject("data")?.getAsJsonObject("viewer")
+            ?.getAsJsonObject("organizations")?.getAsJsonArray("nodes") ?: return emptyList()
+        return arr.mapNotNull { it.takeIf { x -> x.isJsonObject }?.asJsonObject }.mapNotNull { o ->
+            val id = o.get("id")?.takeIf { !it.isJsonNull }?.asString ?: return@mapNotNull null
+            val login = o.get("login")?.takeIf { !it.isJsonNull }?.asString ?: return@mapNotNull null
+            OrgSummary(id, login, o.get("name")?.takeIf { !it.isJsonNull }?.asString,
+                o.get("avatarUrl")?.takeIf { !it.isJsonNull }?.asString)
+        }
+    }
+
+    suspend fun changeMyStatus(emoji: String, message: String, limited: Boolean, expiresAt: String?, organizationId: String? = null): UserStatus? {
+        val q = "mutation(\$input:ChangeUserStatusInput!){changeUserStatus(input:\$input){status{$statusFields}}}"
         val input = JsonObject().apply {
             addProperty("emoji", emoji)
             addProperty("message", message.take(80))
             addProperty("limitedAvailability", limited)
             if (expiresAt.isNullOrBlank()) add("expiresAt", com.google.gson.JsonNull.INSTANCE) else addProperty("expiresAt", expiresAt)
+            if (organizationId.isNullOrBlank()) add("organizationId", com.google.gson.JsonNull.INSTANCE) else addProperty("organizationId", organizationId)
         }
         val body = JsonObject().apply {
             addProperty("query", q)
@@ -1119,12 +1154,18 @@ object Api {
         return if (st != null && st.isJsonObject) parseStatus(st.asJsonObject) else null
     }
 
-    private fun parseStatus(o: JsonObject): UserStatus = UserStatus(
-        emoji = o.get("emoji")?.takeIf { !it.isJsonNull }?.asString,
-        message = o.get("message")?.takeIf { !it.isJsonNull }?.asString,
-        limitedAvailability = o.get("indicatesLimitedAvailability")?.takeIf { !it.isJsonNull }?.asBoolean ?: false,
-        expiresAt = o.get("expiresAt")?.takeIf { !it.isJsonNull }?.asString
-    )
+    private fun parseStatus(o: JsonObject): UserStatus {
+        val org = o.get("organization")?.takeIf { it.isJsonObject }?.asJsonObject
+        return UserStatus(
+            emoji = o.get("emoji")?.takeIf { !it.isJsonNull }?.asString,
+            message = o.get("message")?.takeIf { !it.isJsonNull }?.asString,
+            limitedAvailability = o.get("indicatesLimitedAvailability")?.takeIf { !it.isJsonNull }?.asBoolean ?: false,
+            expiresAt = o.get("expiresAt")?.takeIf { !it.isJsonNull }?.asString,
+            organizationId = org?.get("id")?.takeIf { !it.isJsonNull }?.asString,
+            organizationLogin = org?.get("login")?.takeIf { !it.isJsonNull }?.asString,
+            organizationName = org?.get("name")?.takeIf { !it.isJsonNull }?.asString
+        )
+    }
 
     // ---------------- 搜索 ---------------- ----------------
     suspend fun searchRepos(q: String, page: Int = 1, sort: String? = null, order: String? = null, perPage: Int = 30): SearchRepos {

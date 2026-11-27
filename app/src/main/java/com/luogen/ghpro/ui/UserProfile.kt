@@ -31,6 +31,7 @@ import com.luogen.ghpro.data.Bus
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Repo
 import com.luogen.ghpro.data.User
+import com.luogen.ghpro.data.UserStatus
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
@@ -44,6 +45,7 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
     var following by remember { mutableStateOf(UiCache.followOverride(login) ?: UiCache.userFollowing[login] ?: false) }
     var followJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     var followSeq by remember { mutableStateOf(0) }
+    var followPending by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(u == null) }
     var reposLoading by remember { mutableStateOf(repos.isEmpty()) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -58,6 +60,16 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
     val snackbar = remember { SnackbarHostState() }
     val isMe = Cfg.login == login
     val followVer by Bus.followPoke.collectAsState()
+    var otherStatus by remember { mutableStateOf<UserStatus?>(null) }
+
+    // 别人的状态是真实 GitHub 状态；开着主页时轮询，别人清除/修改后这里会自动更新。
+    // 对方设为“仅组织可见”且当前账号不是该组织成员时，GitHub 返回 null，App 不会瞎猜。
+    LaunchedEffect(login) {
+        while (true) {
+            runCatching { Api.userStatus(login) }.onSuccess { otherStatus = it }
+            kotlinx.coroutines.delay(8_000L)
+        }
+    }
 
     suspend fun load() {
         try {
@@ -146,6 +158,12 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
                                         u!!.bio?.takeIf { it.isNotBlank() }?.let {
                                             Text(it, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                         }
+                                        val shownStatus = if (isMe) myStatusLine() else statusLine(otherStatus)
+                                        if (!shownStatus.isNullOrBlank()) {
+                                            Text(shownStatus, fontSize = 11.sp, color = GH.blue,
+                                                maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.padding(top = 2.dp))
+                                        }
                                     }
                                     if (!isMe) OutlinedButton(onClick = {
                                         val target = !following
@@ -154,29 +172,49 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
                                         if (target) u?.let { UiCache.userFollowSnap[login] = it }
                                         u = u?.copy(followers = (u!!.followers + if (target) 1 else -1).coerceAtLeast(0))
                                         Toast.makeText(ctx, if (target) "已关注" else "已取消关注", Toast.LENGTH_SHORT).show()
-                                        followJob?.cancel()
-                                        val seq = ++followSeq
-                                        followJob = Bus.actions.launch {
-                                            try {
-                                                // 快速连点只提交最后一次状态，避免两个请求反序把状态弄反。
-                                                kotlinx.coroutines.delay(250L)
-                                                if (seq != followSeq || following != target) return@launch
-                                                Api.follow(login, target)
-                                                Cfg.markFollow(login, target)
-                                                runCatching { Api.user(login) }.onSuccess { fresh ->
-                                                    u = fresh
-                                                    UiCache.userData[login] = fresh
-                                                }
-                                                runCatching { Api.me() }.onSuccess { my ->
-                                                    UiCache.homeMe = my
-                                                    if (Cfg.login == login) UiCache.userData[login] = my
-                                                }
-                                                Bus.followChanged()
-                                            } catch (e: Exception) {
-                                                if (seq == followSeq && following == target) {
-                                                    following = !target
-                                                    u = u?.copy(followers = (u!!.followers + if (!target) 1 else -1).coerceAtLeast(0))
-                                                    Toast.makeText(ctx, "操作失败：${e.message}", Toast.LENGTH_SHORT).show()
+                                        ++followSeq
+                                        if (followJob?.isActive == true) {
+                                            // 有请求在飞：点击已经立刻改了按钮/数字，这里只标记“回来后再同步最新状态”。
+                                            followPending = true
+                                        } else {
+                                            followJob = Bus.actions.launch {
+                                                var sent = following
+                                                var sentSeq = followSeq
+                                                try {
+                                                    do {
+                                                        followPending = false
+                                                        kotlinx.coroutines.delay(250L)
+                                                        sent = following
+                                                        sentSeq = followSeq
+                                                        Api.follow(login, sent)
+                                                        // 请求期间又点了：不写旧结果，继续发送最新状态，保证 GitHub 最终状态正确。
+                                                        if (sentSeq != followSeq || following != sent) {
+                                                            followPending = true
+                                                            continue
+                                                        }
+                                                        Cfg.markFollow(login, sent)
+                                                        runCatching { Api.user(login) }.getOrNull()?.let { fresh ->
+                                                            if (sentSeq == followSeq && following == sent) {
+                                                                u = fresh
+                                                                UiCache.userData[login] = fresh
+                                                            }
+                                                        }
+                                                        runCatching { Api.me() }.getOrNull()?.let { my ->
+                                                            if (sentSeq == followSeq) {
+                                                                UiCache.homeMe = my
+                                                                if (Cfg.login == login) UiCache.userData[login] = my
+                                                            }
+                                                        }
+                                                        if (sentSeq == followSeq && following == sent) Bus.followChanged()
+                                                        break
+                                                    } while (followPending)
+                                                } catch (e: Exception) {
+                                                    if (sentSeq == followSeq && following == sent) {
+                                                        following = !sent
+                                                        UiCache.setFollow(login, !sent)
+                                                        u = u?.copy(followers = (u!!.followers + if (!sent) 1 else -1).coerceAtLeast(0))
+                                                        Toast.makeText(ctx, "操作失败：${e.message}", Toast.LENGTH_SHORT).show()
+                                                    }
                                                 }
                                             }
                                         }

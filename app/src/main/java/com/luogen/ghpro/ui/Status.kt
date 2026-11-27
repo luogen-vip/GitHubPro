@@ -3,6 +3,7 @@ package com.luogen.ghpro.ui
 import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -20,6 +21,7 @@ import androidx.compose.ui.unit.sp
 import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Bus
 import com.luogen.ghpro.data.Cfg
+import com.luogen.ghpro.data.OrgSummary
 import com.luogen.ghpro.data.UserStatus
 import kotlinx.coroutines.launch
 import java.time.Duration
@@ -76,6 +78,22 @@ private fun StatusDialog(onClose: () -> Unit) {
         })
     }
     var saving by remember { mutableStateOf(false) }
+    var visibility by remember { mutableStateOf(if (Cfg.statusOrgId.isNullOrBlank()) 0 else 1) }
+    var selectedOrg by remember { mutableStateOf(Cfg.statusOrgId) }
+    var orgs by remember { mutableStateOf<List<OrgSummary>>(emptyList()) }
+    var orgErr by remember { mutableStateOf<String?>(null) }
+    var loadingOrgs by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        loadingOrgs = true
+        runCatching { Api.myOrganizations() }
+            .onSuccess {
+                orgs = it
+                if (selectedOrg.isNullOrBlank()) selectedOrg = it.firstOrNull()?.id
+            }
+            .onFailure { orgErr = it.message }
+        loadingOrgs = false
+    }
 
     val preview = buildString {
         if (emoji.isNotBlank()) append(emoji)
@@ -88,7 +106,7 @@ private fun StatusDialog(onClose: () -> Unit) {
         onDismissRequest = { if (!saving) onClose() },
         title = { Text("设置 GitHub 状态", fontSize = 17.sp, fontWeight = FontWeight.Bold) },
         text = {
-            Column(Modifier.fillMaxWidth()) {
+            Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
                 Text(preview, fontSize = 18.sp, color = GH.blue, modifier = Modifier.padding(bottom = 8.dp))
 
                 Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
@@ -118,6 +136,38 @@ private fun StatusDialog(onClose: () -> Unit) {
                             modifier = Modifier.padding(end = 5.dp))
                     }
                 }
+                Text("谁可见", fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    FilterChip(selected = visibility == 0, onClick = { visibility = 0 },
+                        label = { Text("所有人", fontSize = 11.sp) }, modifier = Modifier.padding(end = 5.dp))
+                    FilterChip(selected = visibility == 1, onClick = {
+                        visibility = 1
+                        if (selectedOrg.isNullOrBlank()) selectedOrg = orgs.firstOrNull()?.id
+                    }, label = { Text("仅组织成员", fontSize = 11.sp) })
+                }
+                if (visibility == 1) {
+                    when {
+                        loadingOrgs -> Text("正在读取你的组织…", fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        orgs.isEmpty() -> Text(
+                            if (orgErr.isNullOrBlank()) "你的账号没有加入任何组织，无法使用仅组织可见。"
+                            else "读取组织失败：$orgErr",
+                            fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        else -> Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                            orgs.forEach { o ->
+                                FilterChip(selected = selectedOrg == o.id, onClick = { selectedOrg = o.id },
+                                    label = { Text(o.name?.takeIf { it.isNotBlank() } ?: o.login, fontSize = 11.sp) },
+                                    modifier = Modifier.padding(end = 5.dp))
+                            }
+                        }
+                    }
+                    Text("GitHub 原生只支持「所有人」或「指定组织成员」；没有“仅某几个人/好友可见”。组织范围会真实写到 GitHub。",
+                        fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
+                } else {
+                    Text("所有人可见：任何登录 GitHub 的人都能在你的主页看到，和网页版设置一致。",
+                        fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+
                 Text("头像不能在 App 内换：GitHub 没有开放头像上传 API，GraphQL 也没有；请用下面“头像”入口到网页版上传。状态可以真正改。",
                     fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
             }
@@ -125,17 +175,23 @@ private fun StatusDialog(onClose: () -> Unit) {
         confirmButton = {
             TextButton(enabled = !saving, onClick = {
                 saving = true
-                val previous = UserStatus(Cfg.statusEmoji, Cfg.statusMessage, Cfg.statusBusy, Cfg.statusExpiresAt)
+                val previous = UserStatus(Cfg.statusEmoji, Cfg.statusMessage, Cfg.statusBusy, Cfg.statusExpiresAt,
+                    Cfg.statusOrgId, Cfg.statusOrgLogin, Cfg.statusOrgName)
                 val exp = if (expireHours <= 0) null else Instant.now().plus(Duration.ofHours(expireHours.toLong())).toString()
+                val org = if (visibility == 1) orgs.firstOrNull { it.id == selectedOrg } else null
+                if (visibility == 1 && org == null) {
+                    Toast.makeText(ctx, "请选择一个组织，或改回所有人可见", Toast.LENGTH_SHORT).show()
+                    return@TextButton
+                }
                 // 先本地立即生效，再写服务端；失败会恢复原样，不会假装成功。
-                Cfg.saveStatus(UserStatus(emoji, message.trim(), busy, exp))
+                Cfg.saveStatus(UserStatus(emoji, message.trim(), busy, exp, org?.id, org?.login, org?.name))
                 Bus.statusChanged()
                 scope.launch {
                     try {
-                        val real = Api.changeMyStatus(emoji, message.trim(), busy, exp)
+                        val real = Api.changeMyStatus(emoji, message.trim(), busy, exp, org?.id)
                         Cfg.saveStatus(real)
                         Bus.statusChanged()
-                        Toast.makeText(ctx, "状态已更新，GitHub 已生效", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(ctx, if (real?.organizationLogin.isNullOrBlank()) "状态已更新，GitHub 已生效" else "状态已更新，仅 ${real?.organizationLogin} 成员可见", Toast.LENGTH_SHORT).show()
                         onClose()
                     } catch (e: Exception) {
                         Cfg.saveStatus(previous)
@@ -150,7 +206,8 @@ private fun StatusDialog(onClose: () -> Unit) {
                 if (!Cfg.statusMessage.isNullOrBlank() || !Cfg.statusEmoji.isNullOrBlank() || Cfg.statusBusy) {
                     TextButton(enabled = !saving, onClick = {
                         saving = true
-                        val previous = UserStatus(Cfg.statusEmoji, Cfg.statusMessage, Cfg.statusBusy, Cfg.statusExpiresAt)
+                        val previous = UserStatus(Cfg.statusEmoji, Cfg.statusMessage, Cfg.statusBusy, Cfg.statusExpiresAt,
+                            Cfg.statusOrgId, Cfg.statusOrgLogin, Cfg.statusOrgName)
                         Cfg.saveStatus(null); Bus.statusChanged()
                         scope.launch {
                             try {

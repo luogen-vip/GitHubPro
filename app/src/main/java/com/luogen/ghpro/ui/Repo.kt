@@ -73,6 +73,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
     var starSeq by remember { mutableStateOf(0) }
     var watchSeq by remember { mutableStateOf(0) }
     var watchJob by remember { mutableStateOf<Job?>(null) }
+    var watchPending by remember { mutableStateOf(false) }
     var statPending by remember { mutableStateOf(0) }
     var starReady by remember { mutableStateOf(true) }
     var watching by remember { mutableStateOf(UiCache.repoWatchOverride(key) ?: UiCache.repoWatching[key] ?: false) }
@@ -270,9 +271,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                     IconButton(onClick = {
                         val base = UiCache.repoData[key] ?: repo ?: return@IconButton
                         val target = !watching
-                        val seq = ++watchSeq
-                        // 上一笔还没回来的请求先取消，快速连点只让最后一次状态落地。
-                        watchJob?.cancel()
+                        ++watchSeq
                         watching = target
                         UiCache.setRepoWatch(key, target)
                         if (target) UiCache.repoWatchSnap[key] = base
@@ -280,25 +279,47 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                         repo = optimistic
                         UiCache.repoData[key] = optimistic
                         quickToast(if (target) "已订阅：仓库有动态会收到通知" else "已取消订阅")
+                        // 已有一个请求在飞：只记下“还要再同步一次”，绝不并发发出两个方向相反的请求。
+                        // 等当前请求回来后再发最新状态，GitHub 最终状态才不会反序。
+                        if (watchJob?.isActive == true) {
+                            watchPending = true
+                            return@IconButton
+                        }
                         statPending++
                         watchJob = Bus.actions.launch {
                             try {
-                                delay(150L)
-                                if (seq != watchSeq) return@launch
-                                runCatching { Api.watch(owner, name, target) }
-                                    .onSuccess {
-                                        Cfg.touchRepo(key)
-                                        Cfg.markWatch(key, target)
-                                        Bus.watchChanged()
-                                    }
-                                    .onFailure {
-                                        if (seq == watchSeq) {
-                                            watching = !target; UiCache.setRepoWatch(key, !target); UiCache.repoWatchSnap[key] = base
-                                            repo = base; UiCache.repoData[key] = base
-                                            quickToast("操作失败：${it.message}")
+                                do {
+                                    watchPending = false
+                                    delay(150L)
+                                    val sent = watching
+                                    val sentSeq = watchSeq
+                                    val result = runCatching { Api.watch(owner, name, sent) }
+                                    if (result.isFailure) {
+                                        if (sentSeq == watchSeq && watching == sent) {
+                                            watching = !sent
+                                            UiCache.setRepoWatch(key, !sent)
+                                            UiCache.repoWatchSnap[key] = base
+                                            repo = base
+                                            UiCache.repoData[key] = base
+                                            quickToast("操作失败：${result.exceptionOrNull()?.message}")
                                         }
+                                        break
                                     }
-                            } finally { statPending = (statPending - 1).coerceAtLeast(0) }
+                                    // 请求期间又点了：不要把这笔旧结果写回去，立刻再同步最新一笔。
+                                    if (sentSeq != watchSeq || watching != sent) {
+                                        watchPending = true
+                                        continue
+                                    }
+                                    Cfg.touchRepo(key)
+                                    Cfg.markWatch(key, sent)
+                                    UiCache.setRepoWatch(key, sent)
+                                    Bus.watchChanged()
+                                    break
+                                } while (watchPending)
+                            } finally {
+                                watchPending = false
+                                statPending = (statPending - 1).coerceAtLeast(0)
+                            }
                         }
                     }) { Icon(if (watching) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
                         if (watching) "取消订阅这个仓库" else "订阅这个仓库") }
