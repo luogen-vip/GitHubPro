@@ -8,7 +8,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DoneAll
@@ -143,6 +142,62 @@ fun NotificationsScreen(nav: NavController) {
         scope.launch { snackbar.showSnackbar("已从本机清除 ${ids.size} 条通知") }
     }
 
+    /** 立即进入选择模式：先切 UI，再提示，不等待任何网络请求。 */
+    fun enterSelecting() {
+        selected = emptySet()
+        selecting = true
+        scope.launch {
+            snackbar.currentSnackbarData?.dismiss()
+            snackbar.showSnackbar("选择模式已开启：点通知前的方框勾选")
+        }
+    }
+
+    /**
+     * 全部标记为已读必须“先变 UI、后同步服务端”。
+     * 旧实现先 await Api.markAllRead()，网络慢时用户点 3~4 次都看不到变化；
+     * 这里先写本机已读掩码并立刻清空未读页签，再在后台同步 GitHub。
+     */
+    fun markAllReadNow() {
+        val targets = list.filter { it.unread }
+        if (targets.isEmpty()) {
+            scope.launch {
+                snackbar.currentSnackbarData?.dismiss()
+                snackbar.showSnackbar("没有未读通知")
+            }
+            return
+        }
+        val ids = targets.map { it.id }.toSet()
+        Cfg.notifReadIds = Cfg.notifReadIds + ids
+
+        // 当前页签立即变成已读/清空，不等网络。
+        if (all) {
+            list = list.map { if (it.id in ids) it.copy(unread = false) else it }
+            UiCache.notifSnaps[false] = NotifSnap(emptyList(), 0, 0)
+        } else {
+            list = emptyList()
+            UiCache.notifSnaps[false] = NotifSnap(emptyList(), 0, 0)
+            UiCache.notifSnaps[true]?.let { snap ->
+                UiCache.notifSnaps[true] = snap.copy(
+                    list = snap.list.map { if (it.id in ids) it.copy(unread = false) else it }
+                )
+            }
+        }
+        savePos()
+        scope.launch {
+            snackbar.currentSnackbarData?.dismiss()
+            snackbar.showSnackbar("已全部标记为已读")
+        }
+        scope.launch {
+            try {
+                Api.markAllRead()
+            } catch (e: Exception) {
+                // 本机已经读掉，不把列表退回“未读”让用户又点一次；只提示服务端没同步上。
+                snackbar.currentSnackbarData?.dismiss()
+                snackbar.showSnackbar("本机已标记为已读，GitHub 同步失败：${e.message}")
+            }
+        }
+    }
+
     /** 选择模式顶部“全选/取消全选”；只对当前页签的可见通知生效。 */
     fun selectVisible() {
         val visible = list.map { it.id }.toSet()
@@ -196,8 +251,11 @@ fun NotificationsScreen(nav: NavController) {
         val snap = UiCache.notifSnaps[all]
         if (snap != null) {
             // 快照里可能还没有刚产生的本地动态，先合并再显示，避免“后台通知了但通知页没有”。
+            // 本机已读掩码也要重新套一遍，否则“全部已读”后切到全部页签又会看到旧未读标记。
+            val read = Cfg.notifReadIds
             val locals = localAsNotifications(all)
             val remote = snap.list.filter { !it.id.startsWith("local:") }
+                .map { if (it.id in read) it.copy(unread = false) else it }
             val merged = locals + remote
             list = prune(if (all) merged else merged.filter { it.unread })
             error = null
@@ -249,22 +307,11 @@ fun NotificationsScreen(nav: NavController) {
                         }
                     } else {
                         IconButton({ scope.launch { load(true) } }) { Icon(Icons.Filled.Refresh, "刷新通知") }
-                        IconButton({ selecting = true }, enabled = list.isNotEmpty()) {
-                            Icon(Icons.Filled.Check, "选择通知")
+                        TextButton({ enterSelecting() }, enabled = list.isNotEmpty()) {
+                            Text("选择", fontSize = 12.sp)
                         }
                         IconButton({ confirmClearAll = true }) { Icon(Icons.Filled.Delete, "清除全部通知") }
-                        IconButton({
-                            scope.launch {
-                                try {
-                                    Api.markAllRead()
-                                    Cfg.notifReadIds = Cfg.notifReadIds + list.map { it.id }
-                                    // 未读页签里“全部已读”后必须立刻清空，不能留在列表里装未读
-                                    list = if (all) list.map { it.copy(unread = false) } else emptyList()
-                                    savePos()
-                                    snackbar.showSnackbar("已全部标记为已读")
-                                } catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
-                            }
-                        }) { Icon(Icons.Filled.DoneAll, "全部已读") }
+                        IconButton({ markAllReadNow() }) { Icon(Icons.Filled.DoneAll, "全部标记为已读") }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
@@ -279,6 +326,14 @@ fun NotificationsScreen(nav: NavController) {
                 Spacer(Modifier.weight(1f))
                 Text(if (all) "${list.size} 条" else "${list.count { it.unread }} 未读 / ${list.size} 条",
                     fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (selecting) {
+                Text(
+                    "选择模式：点通知前的方框勾选，顶部可全选或清除所选",
+                    fontSize = 10.sp,
+                    color = GH.blue,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
+                )
             }
             when {
                 loading -> LoadingBox()
