@@ -208,6 +208,45 @@ object Cfg {
         get() = sp.getStringSet("watch_repos", emptySet())?.toMutableSet() ?: mutableSetOf()
         set(v) { sp.edit().putStringSet("watch_repos", v.toSet()).apply() }
 
+    /** 本地记录真实的订阅时间；GitHub 的订阅列表不返回订阅时间，历史订阅只能显示“未记录”。 */
+    var watchTimes: MutableMap<String, Long>
+        get() = parseTimes(sp.getString("watch_times", ""))
+        set(v) { sp.edit().putString("watch_times", encodeTimes(v)).apply() }
+
+    var followTimes: MutableMap<String, Long>
+        get() = parseTimes(sp.getString("follow_times", ""))
+        set(v) { sp.edit().putString("follow_times", encodeTimes(v)).apply() }
+
+    private fun parseTimes(raw: String?): MutableMap<String, Long> {
+        val out = mutableMapOf<String, Long>()
+        raw?.split('|')?.forEach { row ->
+            if (row.isBlank()) return@forEach
+            val i = row.lastIndexOf('@')
+            if (i <= 0) return@forEach
+            val k = row.substring(0, i)
+            val t = row.substring(i + 1).toLongOrNull() ?: return@forEach
+            if (k.isNotBlank()) out[k] = t
+        }
+        return out
+    }
+
+    private fun encodeTimes(v: Map<String, Long>): String =
+        v.entries.joinToString("|") { "${it.key}@${it.value}" }
+
+    fun markWatch(full: String, on: Boolean, at: Long = System.currentTimeMillis()) {
+        val set = watchRepos
+        val times = watchTimes
+        if (on) { set.add(full); times[full] = at } else { set.remove(full); times.remove(full) }
+        watchRepos = set
+        watchTimes = times
+    }
+
+    fun markFollow(login: String, on: Boolean, at: Long = System.currentTimeMillis()) {
+        val times = followTimes
+        if (on) times[login] = at else times.remove(login)
+        followTimes = times
+    }
+
     /** 重装/首次同步后自动把你的仓库和已 Star 的仓库放进监听列表；只播种一次，之后删掉不会再加回来。 */
     fun seedWatchRepos(repos: Collection<String>) {
         if (sp.getBoolean("watch_seeded_v19", false)) return

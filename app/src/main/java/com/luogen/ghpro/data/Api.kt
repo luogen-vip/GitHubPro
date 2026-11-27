@@ -604,6 +604,10 @@ object Api {
         callList("/repos/$o/$r/forks", mapOf("page" to "$page", "per_page" to "$perPage"))
     suspend fun watchers(o: String, r: String, page: Int = 1, perPage: Int = 100): Page<User> =
         callList("/repos/$o/$r/subscribers", mapOf("page" to "$page", "per_page" to "$perPage"))
+
+    /** 当前登录用户真实订阅（watch）的全部仓库；和本地监听列表不同，这是 GitHub 服务端真值。 */
+    suspend fun watchedRepos(page: Int = 1, perPage: Int = 100): Page<Repo> =
+        callList("/user/subscriptions", mapOf("page" to "$page", "per_page" to "$perPage"))
     suspend fun isWatching(o: String, r: String): Boolean = try {
         // GitHub 的 subscription 接口对“未关注”也会返回 200，只是 subscribed=false；
         // 之前只看 200 会把所有仓库都当成已关注，取消后进页面又“变回关注”。

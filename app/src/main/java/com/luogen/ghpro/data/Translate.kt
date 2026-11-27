@@ -73,6 +73,14 @@ object TranslateApi {
         .writeTimeout(25, TimeUnit.SECONDS)
         .build()
 
+    // 谷歌接口在部分网络会直接超时；用一个短超时的客户端，失败就立刻换下一个，
+    // 不让用户在“取消翻译”上干等几十秒。
+    private val fastHttp = OkHttpClient.Builder()
+        .connectTimeout(6, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
+        .build()
+
     private const val UA = "Mozilla/5.0 (Linux; Android 13; WDY-AN00) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
 
     @Volatile private var msToken: String? = null
@@ -324,7 +332,14 @@ object TranslateApi {
                 }
             }
         }
-        val result = Result(out.toString().trim(), detected, provider)
+        val translated = out.toString().trim()
+        if (translated.isBlank()) throw IOException("所有翻译接口都返回空译文")
+        // 有些接口在目标语言不支持时会原样返回；不能把它当成功，否则界面显示“翻译中”结束后
+        // 正文完全没变，用户会以为卡住。短词/专有名词允许相同，长正文必须真的变化。
+        if (translated == source.trim() && source.length >= 12 && !sameLanguage(source, target)) {
+            throw IOException("接口没有真正翻译，请重试或切换目标语言")
+        }
+        val result = Result(translated, detected, provider)
         synchronized(cache) { cache[key] = result }
         result
     }
@@ -353,11 +368,20 @@ object TranslateApi {
             errors.add("彩云：${e.message}")
             if (e is RateLimited) rateLimited = e
         }
-        // 2. 有道公开网页接口：国内网络通常可达，主要覆盖中英互译。
+        // 2. 微软 Edge 翻译：支持语言多、国内通常可达；之前只在代码里定义没接入，
+        //    导致彩云限流后只剩中英互译的有道，日文/俄文等仓库就会长时间失败。
+        try {
+            return msTranslate(chunk, t)
+        } catch (e: Exception) { errors.add("微软：${e.message}") }
+        // 3. 谷歌公开接口：网络允许时作为补充；不通就快速失败，继续后面的兜底。
+        try {
+            return googleTranslate(chunk, t)
+        } catch (e: Exception) { errors.add("谷歌：${e.message}") }
+        // 4. 有道公开网页接口：国内网络通常可达，主要覆盖中英互译。
         try {
             return youdaoTranslate(chunk, t, guessed)
         } catch (e: Exception) { errors.add("有道：${e.message}") }
-        // 3. MyMemory：匿名有每日字符限制，只作为兜底。
+        // 5. MyMemory：匿名有每日字符限制，只作为兜底。
         try {
             return memoryTranslate(chunk, t, guessed)
         } catch (e: Exception) { errors.add("MyMemory：${e.message}") }
@@ -466,7 +490,7 @@ object TranslateApi {
     private fun googleTranslate(chunk: String, t: Lang): Triple<String, String?, String> {
         val url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${t.google}&dt=t&q=${enc(chunk)}"
         val req = Request.Builder().url(url).header("User-Agent", UA).build()
-        http.newCall(req).execute().use { resp ->
+        fastHttp.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
             val text = resp.body?.string().orEmpty()
             val root = JsonParser.parseString(text).asJsonArray

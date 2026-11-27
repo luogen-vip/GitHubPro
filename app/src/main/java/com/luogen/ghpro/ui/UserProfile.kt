@@ -57,6 +57,7 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
     var eventsFor by remember { mutableStateOf("") }
     val snackbar = remember { SnackbarHostState() }
     val isMe = Cfg.login == login
+    val followVer by Bus.followPoke.collectAsState()
 
     suspend fun load() {
         try {
@@ -73,6 +74,16 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
         loading = false
     }
     LaunchedEffect(login) { load() }
+    LaunchedEffect(followVer) {
+        if (followVer > 0) {
+            following = runCatching { Api.isFollowing(login) }.getOrDefault(following)
+            runCatching { Api.user(login) }.onSuccess { fresh ->
+                u = fresh
+                UiCache.userData[login] = fresh
+                if (isMe) UiCache.homeMe = fresh
+            }
+        }
+    }
     // 关注者/正在关注是实时数字：别人关注/取关我、我关注/取关别人，页面开着也要自动更新。
     LaunchedEffect(login) {
         while (true) {
@@ -146,6 +157,7 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
                                                 kotlinx.coroutines.delay(250L)
                                                 if (seq != followSeq || following != target) return@launch
                                                 Api.follow(login, target)
+                                                Cfg.markFollow(login, target)
                                                 runCatching { Api.user(login) }.onSuccess { fresh ->
                                                     u = fresh
                                                     UiCache.userData[login] = fresh
@@ -273,7 +285,7 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
                                             Bus.followChanged()
                                             Toast.makeText(ctx, "已取消关注 ${p.login}", Toast.LENGTH_SHORT).show()
                                             Bus.actions.launch {
-                                                try { Api.follow(p.login, false) }
+                                                try { Api.follow(p.login, false); Cfg.markFollow(p.login, false) }
                                                 catch (e: Exception) {
                                                     people = (people + p).distinctBy { it.id }
                                                     u = u?.copy(following = (u!!.following + 1).coerceAtLeast(0))

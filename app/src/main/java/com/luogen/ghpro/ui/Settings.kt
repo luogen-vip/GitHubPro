@@ -399,7 +399,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
 
         item {
             Spacer(Modifier.height(40.dp))
-            Text("GitHub Pro 1.0.28 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("GitHub Pro 1.0.29 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("数据全部来自 GitHub 官方 REST / GraphQL API", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(30.dp))
         }

@@ -110,6 +110,23 @@ fun UserMoreScreen(nav: NavController) {
                     fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
             }
+            item {
+                Card(Modifier.fillMaxWidth().clickable { nav.navigate("subs") },
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Notifications, null, Modifier.size(24.dp), tint = GH.blue)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("订阅管理", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                            Text("查看全部仓库订阅和用户关注 · 多选取消 · 可撤销 · 支持排序", fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                        Text("进入", fontSize = 11.sp, color = GH.blue)
+                    }
+                }
+            }
             items(features) { f -> MoreCard(f, gistVersion) }
         }
     }

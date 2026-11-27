@@ -146,6 +146,13 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
     val issueVer by Bus.issuePoke.collectAsState()
     val issueLocalVer by Bus.issueLocalPoke.collectAsState()
     val repoVer by Bus.repoPoke.collectAsState()
+    val watchVer by Bus.watchPoke.collectAsState()
+    LaunchedEffect(watchVer) {
+        if (watchVer > 0) runCatching { Api.isWatching(owner, name) }.onSuccess {
+            watching = it
+            UiCache.repoWatching[key] = it
+        }
+    }
     LaunchedEffect(issueVer, issueLocalVer, repoVer) {
         UiCache.repoData[key]?.let { repo = it }
     }
@@ -261,14 +268,18 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                         val optimistic = base.copy(subscribers_count = (base.subscribers_count + if (target) 1 else -1).coerceAtLeast(0))
                         repo = optimistic
                         UiCache.repoData[key] = optimistic
-                        quickToast(if (target) "已关注：仓库有动态会收到通知" else "已取消关注")
+                        quickToast(if (target) "已订阅：仓库有动态会收到通知" else "已取消订阅")
                         statPending++
                         watchJob = Bus.actions.launch {
                             try {
                                 delay(150L)
                                 if (seq != watchSeq) return@launch
                                 runCatching { Api.watch(owner, name, target) }
-                                    .onSuccess { Cfg.touchRepo(key) }
+                                    .onSuccess {
+                                        Cfg.touchRepo(key)
+                                        Cfg.markWatch(key, target)
+                                        Bus.watchChanged()
+                                    }
                                     .onFailure {
                                         if (seq == watchSeq) {
                                             watching = !target; UiCache.repoWatching[key] = !target
@@ -278,7 +289,8 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                                     }
                             } finally { statPending = (statPending - 1).coerceAtLeast(0) }
                         }
-                    }) { Icon(if (watching) Icons.Filled.Visibility else Icons.Filled.VisibilityOff, "关注这个仓库") }
+                    }) { Icon(if (watching) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
+                        if (watching) "取消订阅这个仓库" else "订阅这个仓库") }
                     Box {
                         IconButton(onClick = { showMenu = true }) { Icon(Icons.Filled.MoreVert, "更多") }
                         DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
@@ -293,6 +305,9 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                             })
                             DropdownMenuItem(text = { Text("更多 GitHub 能力") }, leadingIcon = { Icon(Icons.Filled.Extension, null) }, onClick = {
                                 showMenu = false; nav.navigate("more/$owner/$name")
+                            })
+                            DropdownMenuItem(text = { Text("订阅管理") }, leadingIcon = { Icon(Icons.Filled.Bookmark, null) }, onClick = {
+                                showMenu = false; nav.navigate("subs")
                             })
                             DropdownMenuItem(text = { Text("在浏览器打开") }, leadingIcon = { Icon(Icons.Filled.OpenInNew, null) }, onClick = {
                                 showMenu = false; openUrl(ctx, repo?.html_url)
@@ -550,6 +565,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
     var saving by remember { mutableStateOf(false) }
     var readmeTr by remember(owner, name) { mutableStateOf<String?>(null) }
     var readmeTrTarget by remember(owner, name) { mutableStateOf<String?>(null) }
+    var readmeTrSource by remember(owner, name) { mutableStateOf<String?>(null) }
     var readmeShowOriginal by remember(owner, name) { mutableStateOf(false) }
     var readmeTrLoading by remember(owner, name) { mutableStateOf(false) }
     var readmeTarget by remember(owner, name) { mutableStateOf(Cfg.translateTarget) }
@@ -587,6 +603,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
         readmeError = null
         readmeTr = null
         readmeTrTarget = null
+        readmeTrSource = null
         readmeJob = scope.launch {
             try {
                 val translated = withTimeout(180_000L) {
@@ -595,6 +612,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
                 if (seq == readmeSeq) {
                     readmeTr = translated
                     readmeTrTarget = to
+                    readmeTrSource = src
                     readmeShowOriginal = false
                 }
             } catch (e: TimeoutCancellationException) {
@@ -627,7 +645,8 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
     }
 
     LaunchedEffect(readme, readmeTarget) {
-        if (Cfg.translateAuto && !readme.isNullOrBlank() && readmeTranslatable && readmeTr == null &&
+        if (Cfg.translateAuto && !readme.isNullOrBlank() && readmeTranslatable &&
+            (readmeTr == null || readmeTrSource != readme!!.trim()) &&
             !TranslateApi.sameLanguage(readme!!, readmeTarget)) {
             startReadme(readmeTarget)
         }
@@ -677,7 +696,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
                 maxLines = 1, softWrap = false, modifier = Modifier.weight(1f))
             if (!readme.isNullOrBlank()) {
                 val sameLang = readmeSame
-                val hasTr = readmeTr != null && readmeTrTarget == readmeTarget
+                val hasTr = readmeTr != null && readmeTrTarget == readmeTarget && readmeTrSource == readme!!.trim()
                 val action = when {
                     !readmeTranslatable -> "代码/符号，无需翻译"
                     sameLang -> "已是${TranslateApi.label(readmeTarget)}"
@@ -716,10 +735,15 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
                 Cfg.translateTarget = code
                 readmeTr = null
                 readmeTrTarget = null
+                readmeTrSource = null
                 readmeShowOriginal = false
                 readmeError = null
                 if (!Cfg.translateAuto) startReadme(code)
             }, onDismiss = { readmePicker = false })
+        }
+        if (readmeTrLoading && (readme?.length ?: 0) > 10_000) {
+            Text("长文分段翻译中，完成前请勿退出；点“取消翻译”可停止", fontSize = 9.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (readmeError != null && !TranslateApi.sameLanguage(readme.orEmpty(), readmeTarget)) {
             Text("翻译失败：$readmeError", fontSize = 9.sp, color = GH.red,
@@ -730,7 +754,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
             readmeLoading -> LoadingBox()
             readme.isNullOrBlank() -> EmptyBox("这个仓库还没有 README，点右上角「编辑」可以直接创建")
             else -> MdText(
-                if (readmeShowOriginal || readmeSame || readmeTr == null || readmeTrTarget != readmeTarget)
+                if (readmeShowOriginal || readmeSame || readmeTr == null || readmeTrTarget != readmeTarget || readmeTrSource != readme!!.trim())
                     readme!!.take(100_000)
                 else readmeTr!!.take(100_000),
                 baseSize = 13

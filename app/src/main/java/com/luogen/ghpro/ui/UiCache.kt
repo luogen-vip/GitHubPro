@@ -41,6 +41,12 @@ object UiCache {
     /** "owner/name|branch" -> 正在提交删除；自动刷新先让路，避免旧列表把文件“闪回来” */
     val deletingCode = HashSet<String>()
 
+    // ---------------- 订阅管理 ----------------
+    var subsTab = 0
+    var subsSort = "time_desc"
+    var subsScrollIndex = 0
+    var subsScrollOffset = 0
+
     // ---------------- 首页 ----------------
     var homeLoaded = false
     var homeTab = 0

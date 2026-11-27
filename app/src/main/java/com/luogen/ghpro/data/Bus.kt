@@ -17,6 +17,8 @@ object Bus {
     val statusPoke = MutableStateFlow(0L)
     /** 关注/取关某个人后，首页和资料页的关注数要立刻刷新，不能继续显示 0。 */
     val followPoke = MutableStateFlow(0L)
+    /** 仓库订阅/取消订阅后，订阅管理页和仓库详情都要立刻换成真实状态。 */
+    val watchPoke = MutableStateFlow(0L)
     fun poke() { tick.value = tick.value + 1 }
     fun starChanged() { starPoke.value = starPoke.value + 1 }
     fun repoChanged() { repoPoke.value = System.currentTimeMillis() }
@@ -25,4 +27,5 @@ object Bus {
     fun activityChanged() { activityPoke.value = activityPoke.value + 1 }
     fun statusChanged() { statusPoke.value = statusPoke.value + 1 }
     fun followChanged() { followPoke.value = followPoke.value + 1 }
+    fun watchChanged() { watchPoke.value = watchPoke.value + 1 }
 }
