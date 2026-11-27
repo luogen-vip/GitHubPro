@@ -202,7 +202,7 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
     // 代码页实时刷新：别人新建/删除/修改文件，几秒内自动出现
     LaunchedEffect(branch, path) {
         while (isActive) {
-            delay(3_000L)
+            delay(15_000L)
             if (!selecting && !uploading && !deleting && deleteKey !in UiCache.deletingCode) runCatching { load(silent = true) }
         }
     }
@@ -656,7 +656,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
     }
     LaunchedEffect(path) {
         if (!isNew) while (isActive) {
-            delay(3_000L)
+            delay(15_000L)
             if (previewKind == "text" && !editing && !loading && !fatal404 && "$owner/$name|$branch" !in UiCache.deletingCode) runCatching { load(true) }
         }
     }

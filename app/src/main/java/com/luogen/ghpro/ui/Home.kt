@@ -1,5 +1,6 @@
 package com.luogen.ghpro.ui
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,6 +24,9 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Bookmarks
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.snapshotFlow
@@ -43,6 +47,7 @@ import androidx.navigation.NavController
 import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Bus
 import com.luogen.ghpro.data.Cfg
+import com.luogen.ghpro.data.Favorites
 import com.luogen.ghpro.data.Repo
 import com.luogen.ghpro.data.User
 import kotlinx.coroutines.delay
@@ -263,6 +268,7 @@ fun HomeScreen(nav: NavController) {
                             HomeAction(Icons.Filled.Search, "搜索") { nav.navigate("search") },
                             HomeAction(Icons.Filled.Explore, "精选") { nav.navigate("featured") },
                             HomeAction(Icons.Filled.Download, "下载") { nav.navigate("downloads") },
+                            HomeAction(Icons.Filled.Bookmarks, "收藏") { nav.navigate("favorites") },
                             HomeAction(Icons.Filled.Notifications, "通知") { nav.navigate("notifications") },
                             HomeAction(Icons.Filled.Extension, "更多") { nav.navigate("more") }
                         ).forEach { a ->
@@ -408,6 +414,8 @@ fun HomeScreen(nav: NavController) {
 fun RepoRow(repo: Repo, recent: Boolean = false, onClick: () -> Unit) {
     val ctx = LocalContext.current
     var showDesc by remember(repo.full_name) { mutableStateOf(false) }
+    var favSaved by remember(repo.full_name) { mutableStateOf(Favorites.isSaved(repo.full_name)) }
+    var favPicker by remember(repo.full_name) { mutableStateOf(false) }
     // 单击描述必须和卡片其他区域一样快，但又要保留双击看全文。
     // Compose 默认等 300ms 判断双击；这里只等 140ms，单手快速双击仍能识别，
     // 单击进仓库的延迟缩到几乎感觉不到。
@@ -443,7 +451,19 @@ fun RepoRow(repo: Repo, recent: Boolean = false, onClick: () -> Unit) {
                     Text(repo.full_name, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                Spacer(Modifier.width(8.dp))
+                IconButton(
+                    onClick = {
+                        if (favSaved) {
+                            Favorites.remove(repo.full_name); favSaved = false
+                            Toast.makeText(ctx, "已取消收藏", Toast.LENGTH_SHORT).show()
+                        } else favPicker = true
+                    },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(if (favSaved) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder, "收藏",
+                        Modifier.size(16.dp), tint = if (favSaved) GH.yellow else MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Spacer(Modifier.width(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.Star, null, Modifier.size(13.dp), tint = GH.yellow)
                     Spacer(Modifier.width(3.dp))
@@ -497,6 +517,12 @@ fun RepoRow(repo: Repo, recent: Boolean = false, onClick: () -> Unit) {
                     }
                 }
             }
+        }
+    }
+    if (favPicker) {
+        FavPickerDialog(fullName = repo.full_name, onDismiss = { favPicker = false }) { folderName ->
+            favPicker = false; favSaved = true
+            Toast.makeText(ctx, "已收藏到「$folderName」", Toast.LENGTH_SHORT).show()
         }
     }
     if (showDesc) {

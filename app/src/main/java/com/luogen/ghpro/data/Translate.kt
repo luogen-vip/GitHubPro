@@ -4,9 +4,7 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -21,6 +19,28 @@ import java.util.concurrent.TimeUnit
  * 失败再换有道公开网页接口，最后用 MyMemory。没有本地假翻译/占位结果。
  * 单一接口都有各种网络限制，所以做多接口回退；仍然失败会把真实错误抛给界面。
  */
+private class RateLimited(message: String) : IOException(message)
+
+/**
+ * 彩云测试 token 对同一 IP 有明显频率限制，短时间连发会被封一段时间。
+ * 本地先限制每分钟最多 4 次真正发出的彩云请求，超出的直接走后面的备用接口，
+ * 避免测试页连点十几种语言把 IP 打进黑名单。
+ */
+private object CaiyunGate {
+    private const val WINDOW_MS = 60_000L
+    private const val MAX = 5
+    private val stamps = ArrayList<Long>()
+
+    @Synchronized
+    fun tryAcquire(): Boolean {
+        val now = System.currentTimeMillis()
+        stamps.removeAll { now - it > WINDOW_MS }
+        if (stamps.size >= MAX) return false
+        stamps.add(now)
+        return true
+    }
+}
+
 object TranslateApi {
     data class Lang(val code: String, val label: String, val ms: String, val google: String, val memory: String)
     data class Result(val text: String, val detected: String?, val provider: String)
@@ -102,7 +122,7 @@ object TranslateApi {
     }
 
     suspend fun translate(text: String, target: String): Result = withContext(Dispatchers.IO) {
-        val source = text.trim()
+        val source = text.trim().let { if (it.length > 100_000) it.take(100_000) else it }
         if (source.isBlank()) return@withContext Result(source, null, "原文")
         val t = lang(target)
         val guessed = guessLanguage(source)
@@ -112,38 +132,44 @@ object TranslateApi {
         val key = "$target\u0000$source"
         synchronized(cache) { cache[key] }?.let { return@withContext it }
         val chunks = chunk(source)
-        // 分段并发（每组 4 段），长 README 不会一段一段串行等到天荒地老；
-        // 每段内部仍然按 彩云→有道→MyMemory 回退。
-        val parts = coroutineScope {
-            chunks.chunked(4).map { group ->
-                group.map { c -> async(Dispatchers.IO) { translateChunk(c, t, guessed) } }.awaitAll()
-            }.flatten()
-        }
+        // 测试 token 按 IP 限流（每分钟约 5 次）。长 README 固定 1 万字一段，
+        // 每段串行；某一段被限流就等一分钟再单独重试这一段，
+        // 而不是把“彩云 403”直接丢到界面上变成翻译失败。
         val out = StringBuilder()
         var detected: String? = guessed
         var provider = ""
-        parts.forEach { r ->
-            out.append(r.first)
-            detected = r.second ?: detected
-            provider = r.third
+        for (c in chunks) {
+            var waited = 0
+            while (true) {
+                try {
+                    val r = translateChunk(c, t, guessed)
+                    out.append(r.first)
+                    detected = r.second ?: detected
+                    provider = r.third
+                    break
+                } catch (e: RateLimited) {
+                    // 单段被限流时只等这一段，不重翻前面已经成功的段；长文也能一段段啃完。
+                    if (waited >= 2) {
+                        throw IOException("彩云公开接口被限流（每分钟约 5 次），等 1 分钟后再点翻译；已重试仍未恢复。")
+                    }
+                    waited++
+                    delay(62_000L)
+                }
+            }
         }
         val result = Result(out.toString().trim(), detected, provider)
         synchronized(cache) { cache[key] = result }
         result
     }
 
-    private fun chunk(text: String, max: Int = 800): List<String> {
+    private fun chunk(text: String, max: Int = 10_000): List<String> {
+        // 固定长度切分，不按标点回退。40,000 字上限正好 4 段，
+        // 不会因为一个换行符被切成 8 段而触发“每分钟 5 次”的限流。
+        val s = text.replace("\r\n", "\n").replace('\r', '\n')
         val out = ArrayList<String>()
         var start = 0
-        val s = text.replace("\r\n", "\n").replace('\r', '\n')
         while (start < s.length) {
-            var end = (start + max).coerceAtMost(s.length)
-            if (end < s.length) {
-                val slice = s.substring(start, end)
-                val breakAt = slice.lastIndexOfAny(charArrayOf('\n', '。', '！', '？', '.', '!', '?', '；', ';'))
-                if (breakAt > max / 3) end = start + breakAt + 1
-            }
-            if (end <= start) end = (start + max).coerceAtMost(s.length)
+            val end = (start + max).coerceAtMost(s.length)
             out.add(s.substring(start, end))
             start = end
         }
@@ -152,10 +178,14 @@ object TranslateApi {
 
     private fun translateChunk(chunk: String, t: Lang, guessed: String?): Triple<String, String?, String> {
         val errors = ArrayList<String>()
+        var rateLimited: RateLimited? = null
         // 1. 彩云小译公开接口：国内可直连，自动识别源语言，单次 1 万字符实测可用。
         try {
             return caiyunTranslate(chunk, t)
-        } catch (e: Exception) { errors.add("彩云：${e.message}") }
+        } catch (e: Exception) {
+            errors.add("彩云：${e.message}")
+            if (e is RateLimited) rateLimited = e
+        }
         // 2. 有道公开网页接口：国内网络通常可达，主要覆盖中英互译。
         try {
             return youdaoTranslate(chunk, t, guessed)
@@ -164,6 +194,7 @@ object TranslateApi {
         try {
             return memoryTranslate(chunk, t, guessed)
         } catch (e: Exception) { errors.add("MyMemory：${e.message}") }
+        if (rateLimited != null) throw rateLimited
         throw IOException(errors.joinToString("；"))
     }
 
@@ -175,6 +206,7 @@ object TranslateApi {
 
     /** 彩云小译公开 token：无需注册、无需自己申请 key；失败会明确抛错。 */
     private fun caiyunTranslate(chunk: String, t: Lang): Triple<String, String?, String> {
+        if (!CaiyunGate.tryAcquire()) throw RateLimited("本机请求过快，已保护性跳过")
         val body = JsonObject().apply {
             add("source", JsonArray().apply { add(chunk) })
             addProperty("trans_type", caiyunType(t))
@@ -188,11 +220,13 @@ object TranslateApi {
             .post(body).build()
         http.newCall(req).execute().use { resp ->
             val text = resp.body?.string().orEmpty()
+            if (resp.code == 403 || resp.code == 429) throw RateLimited("HTTP ${resp.code}")
             if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
             val obj = JsonParser.parseString(text).asJsonObject
             val rc = obj.get("rc")?.asInt ?: -1
             if (rc != 0) {
                 val msg = obj.get("message")?.asString ?: obj.get("error")?.asString ?: "错误码 $rc"
+                if (msg.contains("rate limit", ignoreCase = true)) throw RateLimited(msg)
                 throw IOException(msg)
             }
             val arr = obj.getAsJsonArray("target") ?: throw IOException("没有译文")
@@ -305,6 +339,11 @@ object TranslateApi {
             val out = obj.getAsJsonObject("responseData")?.get("translatedText")?.asString.orEmpty()
             if (out.isBlank() || out.contains("MYMEMORY WARNING") || out.contains("QUERY LENGTH LIMIT")) {
                 throw IOException(if (out.contains("MYMEMORY WARNING")) "今日免费额度已用完" else "没有译文")
+            }
+            // 有些时段接口会原样返回英文（例如目标俄语却还是 Hello...），不能当成功。
+            val targetGuess = if (t.code == "zh-CN" || t.code == "zh-TW") "zh" else t.code
+            if (guessed != targetGuess && out.trim().equals(chunk.trim(), ignoreCase = true)) {
+                throw IOException("接口没有真正翻译")
             }
             return Triple(out, guessed, "MyMemory")
         }

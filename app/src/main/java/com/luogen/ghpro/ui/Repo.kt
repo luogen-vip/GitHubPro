@@ -13,6 +13,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -45,6 +47,7 @@ import androidx.navigation.NavController
 import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Bus
 import com.luogen.ghpro.data.Cfg
+import com.luogen.ghpro.data.Favorites
 import com.luogen.ghpro.data.Repo
 import com.luogen.ghpro.data.TranslateApi
 import com.luogen.ghpro.data.Page
@@ -69,6 +72,8 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
     var statPending by remember { mutableStateOf(0) }
     var starReady by remember { mutableStateOf(true) }
     var watching by remember { mutableStateOf(UiCache.repoWatching[key] ?: false) }
+    var favSaved by remember { mutableStateOf(Favorites.isSaved(key)) }
+    var showFavPicker by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(UiCache.repoData[key] == null) }
     var error by remember { mutableStateOf<String?>(null) }
     var tab by remember { mutableStateOf(UiCache.repoTab[key] ?: 0) }
@@ -132,6 +137,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
         }
     }
     LaunchedEffect(key) { IssueCounts.ensure(key) }
+    LaunchedEffect(key) { favSaved = Favorites.isSaved(key) }
     LaunchedEffect(tab) { UiCache.repoTab[key] = tab }
     val issueVer by Bus.issuePoke.collectAsState()
     val issueLocalVer by Bus.issueLocalPoke.collectAsState()
@@ -142,7 +148,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
     // 仓库统计（Star/复刻/关注/议题）自动追最新，别人操作也能看到
     LaunchedEffect(owner, name) {
         while (isActive) {
-            delay(3_000L)
+            delay(15_000L)
             if (!loading && statPending == 0) runCatching {
                 val fresh = Api.repo(owner, name)
                 repo = fresh
@@ -164,6 +170,13 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
             onError = { m -> Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show() })
         downloading = null
     }
+    if (showFavPicker) {
+        FavPickerDialog(fullName = key, onDismiss = { showFavPicker = false }) { folderName ->
+            showFavPicker = false
+            favSaved = true
+            quickToast("已收藏到「$folderName」")
+        }
+    }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbar) },
@@ -177,6 +190,14 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                 },
                 navigationIcon = { IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
                 actions = {
+                    IconButton(onClick = {
+                        if (favSaved) {
+                            Favorites.remove(key)
+                            favSaved = false
+                            quickToast("已取消收藏")
+                        } else showFavPicker = true
+                    }) { Icon(if (favSaved) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                        "收藏", tint = if (favSaved) GH.yellow else MaterialTheme.colorScheme.onSurfaceVariant) }
                     if (!starReady) {
                         Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
                             CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
@@ -599,7 +620,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
                                 }
                                 readmeTrLoading = true
                                 try {
-                                    readmeTr = TranslateApi.translate(readme!!.take(40_000), readmeTarget).text
+                                    readmeTr = TranslateApi.translate(readme!!.take(100_000), readmeTarget).text
                                     readmeShowOriginal = false
                                 } catch (e: Exception) {
                                     Toast.makeText(ctx, "README 翻译失败：${e.message}", Toast.LENGTH_LONG).show()
@@ -631,7 +652,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
         when {
             readmeLoading -> LoadingBox()
             readme.isNullOrBlank() -> EmptyBox("这个仓库还没有 README，点右上角「编辑」可以直接创建")
-            else -> MdText((if (!readmeShowOriginal) readmeTr else null) ?: readme!!.take(40000), baseSize = 13)
+            else -> MdText((if (!readmeShowOriginal) readmeTr else null) ?: readme!!.take(100_000), baseSize = 13)
         }
         Spacer(Modifier.height(30.dp))
     }

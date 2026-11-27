@@ -36,6 +36,7 @@ fun NavRoot(onThemeChange: () -> Unit) {
         composable("search") { SearchScreen(nav) }
         composable("featured") { FeaturedScreen(nav) }
         composable("downloads") { DownloadsScreen(nav) }
+        composable("favorites") { FavoritesScreen(nav) }
         composable("more") { UserMoreScreen(nav) }
         composable("more/{owner}/{repo}") { e ->
             RepoMoreScreen(nav, e.arguments?.getString("owner") ?: "", e.arguments?.getString("repo") ?: "")

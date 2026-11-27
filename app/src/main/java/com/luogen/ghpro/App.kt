@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Cfg
+import com.luogen.ghpro.data.Favorites
 import com.luogen.ghpro.sync.CrashReporter
 import com.luogen.ghpro.sync.Notifier
 import com.luogen.ghpro.sync.SyncScheduler
@@ -25,6 +26,7 @@ class App : Application() {
         super.onCreate()
         AppCtx.app = this
         Cfg.init(this)
+        Favorites.init(this)
         Downloader.markInterrupted()
         Api.token = Cfg.token
         Notifier.createChannels(this)
