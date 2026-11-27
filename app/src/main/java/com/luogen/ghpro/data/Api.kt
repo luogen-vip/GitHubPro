@@ -604,7 +604,15 @@ object Api {
         callList("/repos/$o/$r/forks", mapOf("page" to "$page", "per_page" to "$perPage"))
     suspend fun watchers(o: String, r: String, page: Int = 1, perPage: Int = 100): Page<User> =
         callList("/repos/$o/$r/subscribers", mapOf("page" to "$page", "per_page" to "$perPage"))
-    suspend fun isWatching(o: String, r: String): Boolean = try { exec("/repos/$o/$r/subscription").code == 200 } catch (e: ApiException) { false }
+    suspend fun isWatching(o: String, r: String): Boolean = try {
+        // GitHub 的 subscription 接口对“未关注”也会返回 200，只是 subscribed=false；
+        // 之前只看 200 会把所有仓库都当成已关注，取消后进页面又“变回关注”。
+        val obj = JsonParser.parseString(exec("/repos/$o/$r/subscription").body).asJsonObject
+        obj.get("subscribed")?.asBoolean == true
+    } catch (e: ApiException) {
+        // 404 才是真的没有订阅；网络/解析错误交给调用方保留旧状态，不能假装成“未关注”。
+        if (e.code == 404) false else throw e
+    }
     suspend fun watch(o: String, r: String, on: Boolean) {
         val body = JsonObject().apply { addProperty("subscribed", on) }.toString()
         exec("/repos/$o/$r/subscription", "PUT", body)

@@ -80,6 +80,7 @@ fun HomeScreen(nav: NavController) {
     val starVer by Bus.starPoke.collectAsState()
     val activityVer by Bus.activityPoke.collectAsState()
     val statusVer by Bus.statusPoke.collectAsState()
+    val followVer by Bus.followPoke.collectAsState()
     val safeMode = Cfg.safeMode
     val recent = Cfg.recentRepos.filter { Cfg.activityAt(it) > 0 }
 
@@ -175,6 +176,9 @@ fun HomeScreen(nav: NavController) {
     LaunchedEffect(tick) { if (tick > 0 && !safeMode && Cfg.autoRefresh) refreshSilently() }
     // 仓库真实操作后，首页立刻按最新活动重新排序（纯浏览不会触发）
     LaunchedEffect(activityVer) { if (activityVer > 0) repos = repos.toList() }
+    LaunchedEffect(followVer) {
+        if (followVer > 0) runCatching { Api.me() }.onSuccess { me = it; UiCache.homeMe = it }
+    }
     LaunchedEffect(starVer) {
         if (starVer > 0 && tab == 1) {
             repos = UiCache.homeRepos
@@ -187,14 +191,14 @@ fun HomeScreen(nav: NavController) {
 
     LaunchedEffect(Unit) {
         if (!Cfg.token.isNullOrBlank()) runCatching { Api.myStatus() }.onSuccess { Cfg.saveStatus(it); Bus.statusChanged() }
-        if (me == null) runCatching { Api.me() }.onSuccess { me = it; UiCache.homeMe = it }
+        // 每次进首页都拉一次真实资料，关注者/正在关注不能一直用旧缓存。
+        runCatching { Api.me() }.onSuccess { me = it; UiCache.homeMe = it }
         if (safeMode) return@LaunchedEffect
         while (isActive) {
             delay(5_000L)
-            if (Cfg.autoRefresh && !loading && !loadingMore) {
-                runCatching { if (me == null) { me = Api.me(); UiCache.homeMe = me } }
-                refreshSilently()
-            }
+            // 关注数不受“自动刷新仓库”开关影响：它必须始终反映真实数字。
+            runCatching { Api.me() }.onSuccess { me = it; UiCache.homeMe = it }
+            if (Cfg.autoRefresh && !loading && !loadingMore) refreshSilently()
         }
     }
 
@@ -351,8 +355,12 @@ fun HomeScreen(nav: NavController) {
                     if (me != null) {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
                             Text("${me!!.public_repos} 个公开仓库", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text("  ·  ${me!!.followers} 关注者  ·  ${me!!.following} 正在关注",
-                                fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("  ·  ${me!!.followers} 关注者", fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.clickable { nav.navigate("user/${me!!.login}/0") })
+                            Text("  ·  ${me!!.following} 正在关注", fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.clickable { nav.navigate("user/${me!!.login}/1") })
                         }
                     }
                 }

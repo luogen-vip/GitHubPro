@@ -12,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -52,6 +53,7 @@ import java.io.File
 fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
     val cacheKey = "$owner/$name"
     var list by remember { mutableStateOf(UiCache.repoReleases[cacheKey] ?: emptyList()) }
     var loading by remember { mutableStateOf(list.isEmpty()) }
@@ -190,7 +192,7 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                 loading && list.isEmpty() -> LoadingBox()
                 error != null && list.isEmpty() -> ErrorBox(error) { scope.launch { load(1, true) } }
                 list.isEmpty() -> EmptyBox("还没有发行版")
-                else -> LazyColumn(Modifier.fillMaxSize()) {
+                else -> LazyColumn(Modifier.fillMaxSize(), state = listState) {
                     items(list, key = { it.id }) { rel ->
                         Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(12.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically,
@@ -216,11 +218,17 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                                 if (!rel.body.isNullOrBlank()) {
                                     Spacer(Modifier.height(8.dp))
                                     // 发行版说明也需要翻译；用紧凑控件，翻译/目标语言不挤占正文排版。
+                                    val itemIndex = list.indexOfFirst { it.id == rel.id }.coerceAtLeast(0)
                                     TranslateBlock(
                                         text = rel.body!!.take(20_000),
                                         style = TextStyle(fontSize = 12.sp, lineHeight = 18.sp),
                                         auto = Cfg.translateAuto,
-                                        compact = true
+                                        compact = true,
+                                        onTranslated = {
+                                            // 翻译改变正文高度时 LazyColumn 的像素锚点会漂移；
+                                            // 翻完把这条发行版顶部拉回来，用户不用再向上找译文。
+                                            scope.launch { runCatching { listState.animateScrollToItem(itemIndex) } }
+                                        }
                                     )
                                 } else {
                                     Spacer(Modifier.height(6.dp))

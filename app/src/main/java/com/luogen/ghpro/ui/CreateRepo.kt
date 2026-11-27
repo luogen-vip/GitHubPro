@@ -226,7 +226,11 @@ fun EditRepoScreen(nav: NavController, owner: String, name: String) {
     var loading by remember { mutableStateOf(true) }
     var busy by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var screenActive by remember { mutableStateOf(true) }
     val snackbar = remember { SnackbarHostState() }
+    // 保存必须脱离本页生命周期：用户点保存后按返回，保存继续在后台完成，
+    // 但不能再执行 popBackStack，否则会把已经返回的仓库页也弹掉，直接回到首页。
+    DisposableEffect(Unit) { onDispose { screenActive = false } }
 
     LaunchedEffect(owner, name) {
         runCatching { Api.repo(owner, name) }.onSuccess {
@@ -253,7 +257,7 @@ fun EditRepoScreen(nav: NavController, owner: String, name: String) {
                 navigationIcon = { IconButton({ nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
                 actions = {
                     TextButton(enabled = !busy && repo != null, onClick = {
-                        scope.launch {
+                        Bus.actions.launch {
                             busy = true
                             try {
                                 if (newName != name) Api.renameRepo(owner, name, newName.trim())
@@ -280,10 +284,15 @@ fun EditRepoScreen(nav: NavController, owner: String, name: String) {
                                 Bus.poke()
                                 // 只让“已保存并生效”停留到能看清，随后立刻关闭编辑页；
                                 // 不再等 Snackbar 默认的几秒自动消失，避免保存按钮点了像没反应。
+                                if (!screenActive) {
+                                    // 用户已经按返回回到仓库页：保存结果已写缓存/通知刷新，不再动导航栈。
+                                    return@launch
+                                }
                                 snackbar.currentSnackbarData?.dismiss()
-                                scope.launch { snackbar.showSnackbar("已保存并生效", duration = SnackbarDuration.Short) }
+                                snackbar.showSnackbar("已保存并生效", duration = SnackbarDuration.Short)
                                 delay(700)
                                 snackbar.currentSnackbarData?.dismiss()
+                                if (!screenActive) return@launch
                                 if (newName != name) {
                                     // 改名后旧 URL 已经不存在，直接替换掉旧仓库页，避免返回后 404
                                     nav.popBackStack("repo/$owner/$name", inclusive = true)
@@ -294,7 +303,7 @@ fun EditRepoScreen(nav: NavController, owner: String, name: String) {
                             } catch (e: Exception) { snackbar.showSnackbar("保存失败：${e.message}") }
                             busy = false
                         }
-                    }) { Text("保存") }
+                    }) { Text(if (busy) "保存中…" else "保存") }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )

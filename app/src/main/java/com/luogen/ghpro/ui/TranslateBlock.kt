@@ -5,7 +5,9 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -38,6 +40,9 @@ import kotlinx.coroutines.withTimeout
 /**
  * 原文和译文共用同一块位置：自动翻译开着时直接显示译文，点“原文”能随时恢复；
  * 翻译失败会把真实错误显示出来，不偷偷回退成假内容。目标语言可直接在这里改。
+ *
+ * 关键状态全部绑定“这段原文 + 当前目标语言”：切语言后旧译文立刻失效，
+ * 不会出现“显示原文”其实是上一次译文的情况。
  */
 @Composable
 fun TranslateBlock(
@@ -48,19 +53,26 @@ fun TranslateBlock(
     maxLines: Int = Int.MAX_VALUE,
     overflow: TextOverflow = TextOverflow.Clip,
     showControls: Boolean = true,
-    compact: Boolean = false
+    compact: Boolean = false,
+    onTranslated: (() -> Unit)? = null
 ) {
     val scope = rememberCoroutineScope()
+    val original = remember(text) { text }
     var target by remember(text, Cfg.translateTarget) { mutableStateOf(Cfg.translateTarget) }
     var result by remember(text, Cfg.translateTarget) { mutableStateOf(TranslateApi.cached(text.trim(), Cfg.translateTarget)) }
+    var resultTarget by remember(text, Cfg.translateTarget) { mutableStateOf(if (result != null) Cfg.translateTarget else null) }
     var loading by remember(text, Cfg.translateTarget) { mutableStateOf(false) }
     var error by remember(text, Cfg.translateTarget) { mutableStateOf<String?>(null) }
     var showOriginal by remember(text, Cfg.translateTarget) { mutableStateOf(false) }
     var picker by remember { mutableStateOf(false) }
     var job by remember(text) { mutableStateOf<Job?>(null) }
     var reqSeq by remember(text) { mutableStateOf(0) }
+
+    val translatable = remember(text) { TranslateApi.isTranslatable(text) }
     val guessed = remember(text) { TranslateApi.guessLanguage(text) }
-    val same = guessed != null && TranslateApi.sameLanguage(text, target)
+    val already = guessed != null && TranslateApi.sameLanguage(text, target)
+    val same = !translatable || already
+    val hasResult = result != null && resultTarget == target
 
     fun cancel() {
         job?.cancel()
@@ -73,12 +85,23 @@ fun TranslateBlock(
     fun start(to: String) {
         val src = text.trim()
         if (src.isBlank()) return
+        if (!TranslateApi.isTranslatable(src)) {
+            error = "代码/符号，无需翻译"
+            loading = false
+            return
+        }
         if (TranslateApi.sameLanguage(src, to)) {
+            result = null
+            resultTarget = null
             error = "原文已经是${TranslateApi.label(to)}，不需要强行翻译"
+            loading = false
             return
         }
         job?.cancel()
         val seq = ++reqSeq
+        // 切语言时先把旧译文清空，加载期间显示真正的原文，绝不让旧语言冒充新译文。
+        result = null
+        resultTarget = null
         loading = true
         error = null
         job = scope.launch {
@@ -86,11 +109,14 @@ fun TranslateBlock(
                 val r = withTimeout(180_000L) { TranslateApi.translate(src, to) }
                 if (seq == reqSeq) {
                     result = r
+                    resultTarget = to
                     showOriginal = false
+                    onTranslated?.invoke()
                 }
             } catch (e: TimeoutCancellationException) {
                 if (seq == reqSeq) {
                     result = null
+                    resultTarget = null
                     error = "翻译超时：网络中断或接口太久没响应，点重试"
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -99,6 +125,7 @@ fun TranslateBlock(
             } catch (e: Exception) {
                 if (seq == reqSeq) {
                     result = null
+                    resultTarget = null
                     error = e.message ?: "翻译失败"
                 }
             } finally {
@@ -108,7 +135,7 @@ fun TranslateBlock(
     }
 
     LaunchedEffect(text, auto, target) {
-        if (auto && text.isNotBlank() && !same && result == null) start(target)
+        if (auto && TranslateApi.isTranslatable(text) && text.isNotBlank() && !same && !hasResult) start(target)
     }
 
     if (picker) {
@@ -118,6 +145,7 @@ fun TranslateBlock(
             target = code
             Cfg.translateTarget = code
             result = null
+            resultTarget = null
             showOriginal = false
             error = null
             if (!auto) start(code)
@@ -125,59 +153,68 @@ fun TranslateBlock(
     }
 
     Column(modifier) {
-        Text(
-            // 原文已经是目标语言时，绝不显示上一次缓存的译文；
-            // 否则用户会看到“已是简体中文”却同时出现“显示原文/显示译文”，很困惑。
-            text = if (same || showOriginal || result == null) text else result!!.text,
-            style = style,
-            maxLines = maxLines,
-            overflow = overflow
-        )
-        if (showControls && text.isNotBlank()) {
-            val actionSize = if (compact) 9.sp else 10.sp
-            val metaSize = if (compact) 8.sp else 9.sp
+        val controls: @Composable () -> Unit = {
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 10.dp)
             ) {
+                val actionSize = if (compact) 9.sp else 10.sp
+                val metaSize = if (compact) 8.sp else 9.sp
                 val action = when {
+                    !translatable -> "代码/符号，无需翻译"
                     same -> "已是${TranslateApi.label(target)}"
                     loading -> "翻译中…"
-                    result != null && showOriginal -> "显示译文"
-                    result != null -> "显示原文"
+                    hasResult && showOriginal -> "显示译文"
+                    hasResult -> "显示原文"
                     error != null -> "重试"
                     else -> "翻译"
                 }
                 Text(action, fontSize = actionSize,
-                    color = if (same) MaterialTheme.colorScheme.onSurfaceVariant else GH.blue,
+                    color = if (same || !translatable) MaterialTheme.colorScheme.onSurfaceVariant else GH.blue,
                     maxLines = 1, softWrap = false,
-                    modifier = Modifier.clickable(enabled = !same && !loading) {
-                        if (result != null) showOriginal = !showOriginal else start(target)
+                    modifier = Modifier.clickable(enabled = translatable && !same && !loading) {
+                        if (hasResult) showOriginal = !showOriginal else start(target)
                     }.padding(horizontal = 1.dp, vertical = 2.dp))
                 if (loading) {
                     Text("取消", fontSize = actionSize, color = GH.red, maxLines = 1, softWrap = false,
                         modifier = Modifier.clickable { cancel() }.padding(horizontal = 1.dp, vertical = 2.dp))
                 }
-                if (!compact) {
-                    Text("原文：${TranslateApi.detectedLabel(text) ?: "自动识别"}", fontSize = metaSize,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
-                }
+                Text("原文：${if (!translatable) "代码/符号" else TranslateApi.detectedLabel(text) ?: "自动识别"}",
+                    fontSize = metaSize, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                 Text("目标：${TranslateApi.label(target)} ▾", fontSize = metaSize, color = GH.blue,
                     maxLines = 1, softWrap = false, modifier = Modifier.clickable {
                         job?.cancel()
                         picker = true
                     })
-                if (!compact && !same) result?.let { r ->
+                if (!compact && hasResult && !same) result?.let { r ->
                     val det = r.detected?.let { TranslateApi.label(it) }
                     Text((det?.let { "译自 $it · " } ?: "") + r.provider, fontSize = metaSize,
                         color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                 }
             }
-            if (error != null && !same) {
-                Text("失败：$error", fontSize = metaSize, color = GH.red,
-                    maxLines = 3, overflow = TextOverflow.Ellipsis)
-            }
+        }
+
+        // 发行版说明把翻译控件放在正文上方：展开就能看到，翻完不用再滑到底部找语言。
+        if (compact && showControls && text.isNotBlank()) {
+            controls()
+            Spacer(Modifier.height(5.dp))
+        }
+        Text(
+            // 目标语言跟当前原文一致，或者用户点了显示原文，或者旧译文不属于当前目标语言时，
+            // 一律显示最初的原文，绝不拿上一次翻译结果冒充原文。
+            text = if (same || showOriginal || !hasResult) original else result!!.text,
+            style = style,
+            maxLines = maxLines,
+            overflow = overflow
+        )
+        if (showControls && text.isNotBlank() && !compact) {
+            Spacer(Modifier.height(3.dp))
+            controls()
+        }
+        if (showControls && error != null && !same && translatable) {
+            Text("失败：$error", fontSize = if (compact) 8.sp else 9.sp, color = GH.red,
+                maxLines = 3, overflow = TextOverflow.Ellipsis)
         }
     }
 }

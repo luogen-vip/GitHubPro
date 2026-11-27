@@ -144,6 +144,41 @@ object TranslateApi {
     }
 
     /** 给界面显示“原文：简体中文 / 繁體中文 / 多语言”，而不是笼统的“中文”。 */
+    /**
+     * 代码、纯符号、纯表情、纯链接没有自然语言，不应该送翻译接口；
+     * 否则会一直“翻译中”，甚至把变量名/代码结构翻成乱码。
+     */
+    fun isTranslatable(text: String): Boolean {
+        val s = text.trim()
+        if (s.isBlank()) return false
+        val fenced = Regex("""```[\s\S]*?```""")
+        val inline = Regex("""`[^`\n]+`""")
+        val url = Regex("""https?://[^\s)\]]+""")
+        val stripped = s.replace(fenced, " ").replace(inline, " ").replace(url, " ").trim()
+        if (stripped.isBlank()) return false
+        val sc = scripts(stripped)
+        val letters = sc.cjk + sc.latin + sc.kana + sc.hangul + sc.thai + sc.arab + sc.cyr
+        // 表情、标点、数字、纯符号：没有足够自然语言字符。
+        if (letters < 2) return false
+        val lines = s.replace("\r\n", "\n").split('\n').map { it.trim() }.filter { it.isNotBlank() }
+        if (lines.size >= 3) {
+            val codeLines = lines.count { line ->
+                line.startsWith("```") || line.startsWith("~~~") ||
+                    line.startsWith("{") || line.startsWith("}") ||
+                    line.startsWith("//") || line.startsWith("#include") ||
+                    line.startsWith("import ") || line.startsWith("const ") ||
+                    line.startsWith("func ") || line.startsWith("def ") ||
+                    line.startsWith("class ") || line.startsWith("public ") ||
+                    line.startsWith("private ") || line.startsWith("val ") ||
+                    line.startsWith("var ") || line.contains("=>") ||
+                    line.matches(Regex("""^[\s{}\[\]();,./\\|&=+\-*<>!:#@]+$"""))
+            }
+            // 六成以上都是代码行，整段当代码，不翻译。
+            if (codeLines * 10 >= lines.size * 6) return false
+        }
+        return true
+    }
+
     fun detectedLabel(text: String): String? {
         val s = scripts(text)
         if (s.cjk == 0 && s.latin == 0 && s.kana == 0 && s.hangul == 0 &&
@@ -200,9 +235,61 @@ object TranslateApi {
         }
     }
 
+    private data class Seg(val text: String, val code: Boolean)
+
+    /**
+     * Markdown 里的代码块原样保留，只翻译周围的自然语言；
+     * 否则接口会把变量名、缩进、花括号当文字翻成乱码。
+     */
+    private fun splitFenced(source: String): List<Seg> {
+        val re = Regex("""```[\s\S]*?```""")
+        val out = ArrayList<Seg>()
+        var last = 0
+        for (m in re.findAll(source)) {
+            if (m.range.first > last) out.add(Seg(source.substring(last, m.range.first), false))
+            out.add(Seg(m.value, true))
+            last = m.range.last + 1
+        }
+        if (last < source.length) out.add(Seg(source.substring(last), false))
+        return out.ifEmpty { listOf(Seg(source, false)) }
+    }
+
     suspend fun translate(text: String, target: String): Result = withContext(Dispatchers.IO) {
         val source = text.trim().let { if (it.length > 100_000) it.take(100_000) else it }
         if (source.isBlank()) return@withContext Result(source, null, "原文")
+        if (!isTranslatable(source)) return@withContext Result(source, null, "代码/符号，无需翻译")
+        val key = "$target\u0000$source"
+        synchronized(cache) { cache[key] }?.let { return@withContext it }
+        val parts = splitFenced(source)
+        if (parts.size <= 1) return@withContext translatePlain(source, target)
+        val out = StringBuilder()
+        var detected: String? = null
+        val providers = ArrayList<String>()
+        for (part in parts) {
+            if (part.code) {
+                out.append(part.text)
+                continue
+            }
+            if (!isTranslatable(part.text)) {
+                out.append(part.text)
+                continue
+            }
+            val r = translatePlain(part.text, target)
+            out.append(r.text)
+            detected = detected ?: r.detected
+            if (r.provider !in providers) providers.add(r.provider)
+        }
+        val result = Result(out.toString().trim(), detected, providers.joinToString(" + ").ifBlank { "原文" })
+        synchronized(cache) { cache[key] = result }
+        result
+    }
+
+    private suspend fun translatePlain(text: String, target: String): Result = withContext(Dispatchers.IO) {
+        val source = text.trim().let { if (it.length > 100_000) it.take(100_000) else it }
+        if (source.isBlank()) return@withContext Result(source, null, "原文")
+        if (!isTranslatable(source)) {
+            return@withContext Result(source, null, "代码/符号，无需翻译")
+        }
         val t = lang(target)
         val guessed = guessLanguage(source)
         if (guessed != null && sameLanguage(source, target)) {

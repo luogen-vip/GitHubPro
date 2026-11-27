@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.luogen.ghpro.data.Api
+import com.luogen.ghpro.data.Bus
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Repo
 import com.luogen.ghpro.data.User
@@ -35,18 +36,20 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun UserScreen(nav: NavController, login: String) {
+fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var u by remember { mutableStateOf(UiCache.userData[login]) }
     var repos by remember { mutableStateOf(UiCache.userRepos[login] ?: emptyList()) }
     var following by remember { mutableStateOf(false) }
+    var followJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var followSeq by remember { mutableStateOf(0) }
     var loading by remember { mutableStateOf(u == null) }
     var reposLoading by remember { mutableStateOf(repos.isEmpty()) }
     var error by remember { mutableStateOf<String?>(null) }
     var tab by remember { mutableStateOf(UiCache.userTab[login] ?: 0) }
-    var peopleDialog by remember { mutableStateOf(0) }
-    var showPeople by remember { mutableStateOf(false) }
+    var peopleDialog by remember { mutableStateOf(if (initialPeople >= 0) initialPeople else 0) }
+    var showPeople by remember { mutableStateOf(initialPeople >= 0) }
     var selectedEvent by remember { mutableStateOf<com.luogen.ghpro.data.GhEvent?>(null) }
     var people by remember { mutableStateOf<List<User>>(emptyList()) }
     var events by remember { mutableStateOf<List<com.luogen.ghpro.data.GhEvent>>(emptyList()) }
@@ -70,6 +73,17 @@ fun UserScreen(nav: NavController, login: String) {
         loading = false
     }
     LaunchedEffect(login) { load() }
+    // 关注者/正在关注是实时数字：别人关注/取关我、我关注/取关别人，页面开着也要自动更新。
+    LaunchedEffect(login) {
+        while (true) {
+            kotlinx.coroutines.delay(5_000L)
+            runCatching { Api.user(login) }.onSuccess { fresh ->
+                u = fresh
+                UiCache.userData[login] = fresh
+                if (Cfg.login == login) UiCache.homeMe = fresh
+            }
+        }
+    }
     LaunchedEffect(tab) { UiCache.userTab[login] = tab }
     LaunchedEffect(tab, login) {
         if (tab == 1 && eventsFor != login) {
@@ -124,12 +138,29 @@ fun UserScreen(nav: NavController, login: String) {
                                         following = target
                                         u = u?.copy(followers = (u!!.followers + if (target) 1 else -1).coerceAtLeast(0))
                                         Toast.makeText(ctx, if (target) "已关注" else "已取消关注", Toast.LENGTH_SHORT).show()
-                                        scope.launch {
-                                            try { Api.follow(login, target) }
-                                            catch (e: Exception) {
-                                                following = !target
-                                                u = u?.copy(followers = (u!!.followers + if (!target) 1 else -1).coerceAtLeast(0))
-                                                Toast.makeText(ctx, "操作失败：${e.message}", Toast.LENGTH_SHORT).show()
+                                        followJob?.cancel()
+                                        val seq = ++followSeq
+                                        followJob = Bus.actions.launch {
+                                            try {
+                                                // 快速连点只提交最后一次状态，避免两个请求反序把状态弄反。
+                                                kotlinx.coroutines.delay(250L)
+                                                if (seq != followSeq || following != target) return@launch
+                                                Api.follow(login, target)
+                                                runCatching { Api.user(login) }.onSuccess { fresh ->
+                                                    u = fresh
+                                                    UiCache.userData[login] = fresh
+                                                }
+                                                runCatching { Api.me() }.onSuccess { my ->
+                                                    UiCache.homeMe = my
+                                                    if (Cfg.login == login) UiCache.userData[login] = my
+                                                }
+                                                Bus.followChanged()
+                                            } catch (e: Exception) {
+                                                if (seq == followSeq && following == target) {
+                                                    following = !target
+                                                    u = u?.copy(followers = (u!!.followers + if (!target) 1 else -1).coerceAtLeast(0))
+                                                    Toast.makeText(ctx, "操作失败：${e.message}", Toast.LENGTH_SHORT).show()
+                                                }
                                             }
                                         }
                                     }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)) {
@@ -230,7 +261,32 @@ fun UserScreen(nav: NavController, login: String) {
                                     verticalAlignment = Alignment.CenterVertically) {
                                     Avatar(p.avatar_url, 27, name = p.login)
                                     Spacer(Modifier.width(8.dp))
-                                    Text(p.login, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(p.login, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f))
+                                    if (isMe && peopleDialog == 1) {
+                                        TextButton(onClick = {
+                                            // 先让列表和数字立即变化，再真实提交；失败再回滚并提示。
+                                            people = people.filter { it.id != p.id }
+                                            u = u?.copy(following = (u!!.following - 1).coerceAtLeast(0))
+                                            UiCache.userData[login] = u!!
+                                            UiCache.homeMe = u
+                                            Bus.followChanged()
+                                            Toast.makeText(ctx, "已取消关注 ${p.login}", Toast.LENGTH_SHORT).show()
+                                            Bus.actions.launch {
+                                                try { Api.follow(p.login, false) }
+                                                catch (e: Exception) {
+                                                    people = (people + p).distinctBy { it.id }
+                                                    u = u?.copy(following = (u!!.following + 1).coerceAtLeast(0))
+                                                    UiCache.userData[login] = u!!
+                                                    UiCache.homeMe = u
+                                                    Bus.followChanged()
+                                                    Toast.makeText(ctx, "取消失败：${e.message}", Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                        }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 1.dp)) {
+                                            Text("取消关注", fontSize = 10.sp, color = GH.red)
+                                        }
+                                    }
                                 }
                                 Divider1()
                             }
