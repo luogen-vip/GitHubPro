@@ -30,6 +30,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -105,7 +106,7 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
     // 发行版/APK 实时刷新：别人刚上传也能在几秒内出现
     LaunchedEffect(Unit) {
         while (isActive) {
-            delay(2_000L)
+            delay(15_000L)
             if (page == 1 && !loading) runCatching { load(1, true, silent = true) }
         }
     }
@@ -214,7 +215,13 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                             if (expanded == rel.id) {
                                 if (!rel.body.isNullOrBlank()) {
                                     Spacer(Modifier.height(8.dp))
-                                    MdText(rel.body!!.take(20000), baseSize = 12)
+                                    // 发行版说明也需要翻译；用紧凑控件，翻译/目标语言不挤占正文排版。
+                                    TranslateBlock(
+                                        text = rel.body!!.take(20_000),
+                                        style = TextStyle(fontSize = 12.sp, lineHeight = 18.sp),
+                                        auto = Cfg.translateAuto,
+                                        compact = true
+                                    )
                                 } else {
                                     Spacer(Modifier.height(6.dp))
                                     Text("这个发行版没有填写说明", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)

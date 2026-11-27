@@ -84,13 +84,29 @@ object TranslateApi {
 
     fun cached(text: String, target: String): Result? = synchronized(cache) { cache["$target\u0000$text"] }
 
+    // 简体中文和繁體中文都是“中文”，只靠 Unicode 范围分不出来；
+    // 用常用繁体专用字判断，避免用户选“繁體中文”时被误判成“已是简体中文”而不翻译。
+    private val traditionalOnly = "們這來個時為與學說對會還麼樣點發現實應該無數據網頁載體驗軟硬檔讀寫選擇轉換語言臺灣華龍鳳龜髮鬥鬱麵鹹後裡著於並從將產專業區問題幾張開關門間頭長萬爲"
+
+    fun isTraditionalChinese(text: String): Boolean =
+        text.any { traditionalOnly.contains(it) }
+
     fun sameLanguage(text: String, target: String): Boolean {
         val guess = guessLanguage(text) ?: return false
         val t = lang(target)
         return when (t.code) {
-            "zh-CN", "zh-TW" -> guess == "zh"
+            "zh-CN" -> guess == "zh" && !isTraditionalChinese(text)
+            "zh-TW" -> guess == "zh" && isTraditionalChinese(text)
             else -> guess == t.code
         }
+    }
+
+    /** 给界面显示“原文：简体中文 / 繁體中文”，而不是笼统的“中文”。 */
+    fun detectedLabel(text: String): String? {
+        val guess = guessLanguage(text) ?: return null
+        return if (guess == "zh") {
+            if (isTraditionalChinese(text)) "繁體中文" else "简体中文"
+        } else label(guess)
     }
 
     /** 只做非常明确的文字系统判断，用于“原文已经是目标语言就不强行翻译”和给 MyMemory 源语言。 */
@@ -329,7 +345,10 @@ object TranslateApi {
     }
 
     private fun memoryTranslate(chunk: String, t: Lang, guessed: String?): Triple<String, String?, String> {
-        val src = guessed ?: "en"
+        val src = when {
+            guessed == "zh" -> if (isTraditionalChinese(chunk)) "zh-TW" else "zh-CN"
+            else -> guessed ?: "en"
+        }
         val url = "https://api.mymemory.translated.net/get?q=${enc(chunk)}&langpair=${src}|${t.memory}"
         val req = Request.Builder().url(url).header("User-Agent", UA).build()
         http.newCall(req).execute().use { resp ->

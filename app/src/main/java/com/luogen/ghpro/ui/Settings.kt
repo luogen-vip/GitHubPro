@@ -155,7 +155,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
 
         item {
             SectionTitle("翻译")
-            SwitchRow("自动翻译仓库描述/议题/PR 正文", transAuto) {
+            SwitchRow("自动翻译（总开关）", transAuto) {
                 transAuto = it
                 Cfg.translateAuto = it
             }
@@ -169,7 +169,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
                     }, label = { Text(lang.label, fontSize = 11.sp) })
                 }
             }
-            Text("自动识别原文语言；原文已经是目标语言时会直接提示，不强行翻译。译文旁可随时切回原文。",
+            Text("打开后，仓库描述、议题/PR 正文、README、发行版说明只要不是目标语言就自动翻译；切换目标语言会重新翻译。译文旁可切回原文，翻译中可取消，超时会提示重试。",
                 fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("免费接口顺序：彩云小译 → 有道 → MyMemory，前一个失败自动换下一个；彩云公开接口无需自己申请 key，也不经过本软件服务器。",
                 fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -399,7 +399,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
 
         item {
             Spacer(Modifier.height(40.dp))
-            Text("GitHub Pro 1.0.25 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("GitHub Pro 1.0.26 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("数据全部来自 GitHub 官方 REST / GraphQL API", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(30.dp))
         }

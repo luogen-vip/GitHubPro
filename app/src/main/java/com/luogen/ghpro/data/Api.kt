@@ -170,10 +170,14 @@ object Api {
             .header("X-GitHub-Api-Version", "2022-11-28")
         token?.takeIf { it.isNotBlank() }?.let { b.header("Authorization", "Bearer $it") }
         extraHeaders.forEach { (k, v) -> b.header(k, v) }
-        val rawBody = when (method) {
-            "GET" -> null
-            "DELETE" -> "".toRequestBody(JSON)
-            else -> (body ?: "{}").toRequestBody(JSON)
+        val rawBody = when {
+            method == "GET" -> null
+            // DELETE 也要带上 body：删除 GitHub 文件必须提交 sha/message/branch，
+            // 之前这里无条件发空 body，GitHub 会返回 422 "Invalid request."，
+            // 界面就表现为单文件、多选全部删除失败。
+            body != null -> body.toRequestBody(JSON)
+            method == "DELETE" -> "".toRequestBody(JSON)
+            else -> "{}".toRequestBody(JSON)
         }
         val rb = if (rawBody != null && onProgress != null) ProgressRequestBody(rawBody, onProgress) else rawBody
         b.method(method, rb)

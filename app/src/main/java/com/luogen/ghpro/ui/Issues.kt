@@ -313,7 +313,13 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             TopAppBar(
-                title = { Text("议题 #$number", fontSize = 15.sp) },
+                title = {
+                    Column(Modifier.clickable { nav.navigate("repo/$owner/$name") }) {
+                        Text("议题 #$number", fontSize = 15.sp, maxLines = 1, softWrap = false)
+                        Text("$owner/$name", fontSize = 10.sp, color = GH.blue,
+                            maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                    }
+                },
                 navigationIcon = { IconButton({ nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
                 actions = {
                     val issueNow = issue

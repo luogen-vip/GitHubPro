@@ -1,8 +1,10 @@
 package com.luogen.ghpro.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -17,6 +19,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -41,15 +44,21 @@ import java.util.Locale
 fun FavoritesScreen(nav: NavController) {
     val ctx = LocalContext.current
     var folders by remember { mutableStateOf(Favorites.all()) }
-    var selectedId by remember { mutableStateOf<String?>(null) }
+    // 用 rememberSaveable 保存“当前打开了哪个收藏夹”，从仓库详情返回时不会掉回首页。
+    var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     var showCreate by remember { mutableStateOf(false) }
     var showEdit by remember { mutableStateOf(false) }
     var showDelete by remember { mutableStateOf(false) }
     var noteTarget by remember { mutableStateOf<String?>(null) }
+    // 从收藏夹里的仓库返回时，保留原来滑到的位置，而不是重新回到顶部。
+    val detailListState = rememberLazyListState()
 
     fun refresh() { folders = Favorites.all() }
 
     val selected = folders.firstOrNull { it.id == selectedId }
+
+    // 系统返回键：先退出收藏夹详情、回到收藏夹总列表；只有总列表再按返回才离开收藏页。
+    BackHandler(enabled = selectedId != null) { selectedId = null }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -128,7 +137,7 @@ fun FavoritesScreen(nav: NavController) {
             }
         } else {
             val s = selected
-            LazyColumn(Modifier.fillMaxSize().padding(pad), contentPadding = PaddingValues(12.dp)) {
+            LazyColumn(Modifier.fillMaxSize().padding(pad), state = detailListState, contentPadding = PaddingValues(12.dp)) {
                 item {
                     if (s.note.isNotBlank()) {
                         Text(s.note, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,

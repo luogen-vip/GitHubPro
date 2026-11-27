@@ -172,6 +172,7 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
     var artifacts by remember { mutableStateOf(UiCache.runArtifacts[runId] ?: emptyList()) }
     val dlStates by Downloader.state.collectAsState()
     var loading by remember { mutableStateOf(run == null) }
+    var refreshing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var auto by remember { mutableStateOf(true) }
     var expanded by remember { mutableStateOf<Long?>(null) }
@@ -181,7 +182,8 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
     var stepLogError by remember { mutableStateOf<String?>(null) }
     val snackbar = remember { SnackbarHostState() }
 
-    suspend fun load() {
+    suspend fun load(showToast: Boolean = false) {
+        if (showToast) refreshing = true
         try {
             run = Api.run(owner, name, runId)
             jobs = Api.runJobs(owner, name, runId)
@@ -190,8 +192,14 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
             UiCache.runJobs[runId] = jobs
             UiCache.runArtifacts[runId] = artifacts
             error = null
-        } catch (e: Exception) { error = e.message }
-        loading = false
+            if (showToast) Toast.makeText(ctx, "已刷新运行状态", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            error = e.message
+            if (showToast) Toast.makeText(ctx, "刷新失败：${e.message}", Toast.LENGTH_LONG).show()
+        } finally {
+            loading = false
+            if (showToast) refreshing = false
+        }
     }
     LaunchedEffect(runId) { load() }
     LaunchedEffect(auto, run?.status) {
@@ -210,7 +218,12 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
             TopAppBar(
                 title = { Text("工作流运行 #${run?.run_number ?: runId}", fontSize = 15.sp) },
                 navigationIcon = { IconButton({ nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
-                actions = { IconButton({ scope.launch { load() } }) { Icon(Icons.Filled.Refresh, "刷新") } },
+                actions = {
+                    IconButton(enabled = !refreshing, onClick = { scope.launch { load(showToast = true) } }) {
+                        if (refreshing) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        else Icon(Icons.Filled.Refresh, "刷新")
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )
         }

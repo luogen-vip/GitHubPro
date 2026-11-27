@@ -266,6 +266,15 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
             }
         }
 
+        if (deleting) {
+            Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 10.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("正在从 GitHub 真实删除，请稍候…", fontSize = 11.sp, color = GH.red)
+            }
+        }
+
         if (selecting) {
             val all = listing?.items ?: emptyList()
             Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 10.dp, vertical = 2.dp),
@@ -421,8 +430,8 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
                     if (paths.isEmpty()) return@TextButton
                     deleting = true
                     UiCache.deletingCode.add(deleteKey)
-                    // 先本地移除，界面立即消失；后台真实提交期间禁止自动刷新回填
-                    listing = snapshot?.copy(items = snapshot.items.filter { it.path !in paths })
+                    // 不再先假装删掉：列表保持原样并显示“正在删除”，GitHub 真实提交成功后才消失；
+                    // 失败就原地不动，避免用户看到“空目录又回滚”的假象。
                     selecting = false
                     selected.clear()
                     Bus.actions.launch {
@@ -431,18 +440,17 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
                             if (deleted <= 0) throw java.io.IOException("没有找到要删除的文件，可能已经被删除")
                             Cfg.touchRepo("$owner/$name")
                             UiCache.codeListing.keys.filter { it.startsWith("$owner/$name|") }.forEach { UiCache.codeListing.remove(it) }
-                            // 已经真实提交成功：保持本地移除，不再显示旧列表；再用静默请求校准一次
-                            UiCache.deletingCode.remove(deleteKey)
+                            listing = snapshot?.copy(items = snapshot.items.filter { it.path !in paths })
                             deleting = false
                             Toast.makeText(ctx, "已真实删除 $deleted 个文件", Toast.LENGTH_LONG).show()
-                            // 不再立刻请求旧缓存列表：删除成功后保持本地已移除的状态
-                            // 下次进入目录/手动刷新自然会从服务器取到最新结果
+                            // 服务器提交成功，再静默拉一次校准；失败也不会把文件“变回来”。
+                            runCatching { load(silent = true) }
                         } catch (e: Exception) {
-                            // 只有真的失败才恢复原列表，并明确提示文件还在
                             listing = snapshot
-                            UiCache.deletingCode.remove(deleteKey)
                             deleting = false
                             Toast.makeText(ctx, "删除失败：${e.message}（文件仍在）", Toast.LENGTH_LONG).show()
+                        } finally {
+                            UiCache.deletingCode.remove(deleteKey)
                         }
                     }
                 }) { Text("确认删除", color = GH.red) }
@@ -497,6 +505,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
     var fatal404 by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
     var confirmDelete by remember { mutableStateOf(false) }
+    var deletingFile by remember { mutableStateOf(false) }
     var isFile by remember { mutableStateOf(true) }
     var lfsRef by remember { mutableStateOf<LfsRef?>(null) }
     var knownSize by remember { mutableStateOf(0L) }
@@ -722,7 +731,10 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
                         }) { Icon(if (searchOpen) Icons.Filled.Close else Icons.Filled.Search, "文件内搜索") }
                         IconButton({ downloadFile(path.substringAfterLast('/')) }) { Icon(Icons.Filled.Download, "下载") }
                         if (!isNew) {
-                            IconButton({ confirmDelete = true }) { Icon(Icons.Filled.Delete, "删除", tint = GH.red) }
+                            IconButton(enabled = !deletingFile, onClick = { confirmDelete = true }) {
+                                if (deletingFile) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                                else Icon(Icons.Filled.Delete, "删除", tint = GH.red)
+                            }
                         }
                     }
                 },
@@ -879,31 +891,29 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
             title = { Text("删除文件") },
             text = { Text("将从仓库中删除 $path 并创建一个提交，确定吗？") },
             confirmButton = {
-                TextButton(onClick = {
+                TextButton(enabled = !deletingFile, onClick = {
                     confirmDelete = false
+                    deletingFile = true
                     val delKey = "$owner/$name|$branch"
-                    // 先把界面和缓存里的文件移除并返回列表，真实删除在后台继续，不让用户等网络
-                    UiCache.fileContent.remove(fileKey)
-                    UiCache.codeListing.keys.filter { it.startsWith("$owner/$name|") }.forEach { k ->
-                        val d = UiCache.codeListing[k] ?: return@forEach
-                        UiCache.codeListing[k] = d.copy(items = d.items.filter { it.path != path })
-                    }
                     UiCache.deletingCode.add(delKey)
-                    nav.popBackStack()
-                    val appCtx = ctx.applicationContext
-                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO).launch {
+                    // 等 GitHub 真正删除成功后再返回并移除缓存；失败就留在当前文件页，
+                    // 用户能看到文件仍在，不会出现“先消失又回来”。
+                    scope.launch {
                         try {
                             val realSha = sha ?: Api.fileItem(owner, name, path, branch).sha
                             Api.deleteFile(owner, name, path, "delete $path", realSha, branch)
                             Cfg.touchRepo("$owner/$name")
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(appCtx, "已删除 $path", Toast.LENGTH_LONG).show()
+                            UiCache.fileContent.remove(fileKey)
+                            UiCache.codeListing.keys.filter { it.startsWith("$owner/$name|") }.forEach { k ->
+                                val d = UiCache.codeListing[k] ?: return@forEach
+                                UiCache.codeListing[k] = d.copy(items = d.items.filter { it.path != path })
                             }
+                            Toast.makeText(ctx, "已真实删除 $path", Toast.LENGTH_LONG).show()
+                            nav.popBackStack()
                         } catch (e: Exception) {
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(appCtx, "删除失败：${e.message}（文件仍在）", Toast.LENGTH_LONG).show()
-                            }
+                            Toast.makeText(ctx, "删除失败：${e.message}（文件仍在）", Toast.LENGTH_LONG).show()
                         } finally {
+                            deletingFile = false
                             UiCache.deletingCode.remove(delKey)
                         }
                     }

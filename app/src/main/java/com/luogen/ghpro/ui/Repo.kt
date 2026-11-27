@@ -57,6 +57,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -547,6 +550,58 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
     var readmeTrLoading by remember(owner, name) { mutableStateOf(false) }
     var readmeTarget by remember(owner, name) { mutableStateOf(Cfg.translateTarget) }
     var readmePicker by remember { mutableStateOf(false) }
+    var readmeError by remember(owner, name) { mutableStateOf<String?>(null) }
+    var readmeJob by remember(owner, name) { mutableStateOf<Job?>(null) }
+    var readmeSeq by remember(owner, name) { mutableStateOf(0) }
+
+    fun cancelReadme() {
+        readmeJob?.cancel()
+        readmeJob = null
+        readmeSeq++
+        readmeTrLoading = false
+        Toast.makeText(ctx, "已取消 README 翻译", Toast.LENGTH_SHORT).show()
+    }
+
+    fun startReadme(to: String) {
+        val src = readme?.trim().orEmpty()
+        if (src.isBlank()) return
+        if (TranslateApi.sameLanguage(src, to)) {
+            readmeError = "原文已经是${TranslateApi.label(to)}，不需要强行翻译"
+            Toast.makeText(ctx, readmeError, Toast.LENGTH_SHORT).show()
+            return
+        }
+        readmeJob?.cancel()
+        val seq = ++readmeSeq
+        readmeTrLoading = true
+        readmeError = null
+        readmeJob = scope.launch {
+            try {
+                val translated = withTimeout(180_000L) {
+                    TranslateApi.translate(src.take(100_000), to).text
+                }
+                if (seq == readmeSeq) {
+                    readmeTr = translated
+                    readmeShowOriginal = false
+                }
+            } catch (e: TimeoutCancellationException) {
+                if (seq == readmeSeq) {
+                    readmeTr = null
+                    readmeError = "翻译超时：网络中断或接口太久没响应，点重试"
+                    Toast.makeText(ctx, readmeError, Toast.LENGTH_LONG).show()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (seq == readmeSeq) {
+                    readmeTr = null
+                    readmeError = e.message ?: "翻译失败"
+                    Toast.makeText(ctx, "README 翻译失败：$readmeError", Toast.LENGTH_LONG).show()
+                }
+            } finally {
+                if (seq == readmeSeq) readmeTrLoading = false
+            }
+        }
+    }
 
     LaunchedEffect(owner, name) {
         readmeLoading = true
@@ -555,6 +610,13 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
             .getOrNull()
         readmeSha = runCatching { Api.fileItem(owner, name, "README.md", r.default_branch).sha }.getOrNull()
         readmeLoading = false
+    }
+
+    LaunchedEffect(readme, readmeTarget) {
+        if (Cfg.translateAuto && !readme.isNullOrBlank() && readmeTr == null &&
+            !TranslateApi.sameLanguage(readme!!, readmeTarget)) {
+            startReadme(readmeTarget)
+        }
     }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
@@ -603,30 +665,20 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
                 val sameLang = TranslateApi.sameLanguage(readme!!, readmeTarget)
                 val action = when {
                     sameLang -> "已是${TranslateApi.label(readmeTarget)}"
-                    readmeTrLoading -> "翻译中"
+                    readmeTrLoading -> "取消翻译"
                     readmeTr != null && readmeShowOriginal -> "显示译文"
                     readmeTr != null -> "显示原文"
+                    readmeError != null -> "重试"
                     else -> "翻译"
                 }
-                Text(action, fontSize = 10.sp, color = if (sameLang) MaterialTheme.colorScheme.onSurfaceVariant else GH.blue,
+                Text(action, fontSize = 10.sp,
+                    color = when { sameLang -> MaterialTheme.colorScheme.onSurfaceVariant; readmeTrLoading -> GH.red; else -> GH.blue },
                     maxLines = 1, softWrap = false,
-                    modifier = Modifier.clickable(enabled = !readmeTrLoading && !sameLang) {
+                    modifier = Modifier.clickable(enabled = !sameLang) {
                         when {
+                            readmeTrLoading -> cancelReadme()
                             readmeTr != null -> readmeShowOriginal = !readmeShowOriginal
-                            else -> scope.launch {
-                                if (TranslateApi.sameLanguage(readme!!, readmeTarget)) {
-                                    Toast.makeText(ctx, "原文已经是${TranslateApi.label(readmeTarget)}，不需要翻译", Toast.LENGTH_SHORT).show()
-                                    return@launch
-                                }
-                                readmeTrLoading = true
-                                try {
-                                    readmeTr = TranslateApi.translate(readme!!.take(100_000), readmeTarget).text
-                                    readmeShowOriginal = false
-                                } catch (e: Exception) {
-                                    Toast.makeText(ctx, "README 翻译失败：${e.message}", Toast.LENGTH_LONG).show()
-                                }
-                                readmeTrLoading = false
-                            }
+                            else -> startReadme(readmeTarget)
                         }
                     }.padding(horizontal = 6.dp, vertical = 2.dp))
                 Text("目标：${TranslateApi.label(readmeTarget)} ▾", fontSize = 9.sp, color = GH.blue,
@@ -642,11 +694,19 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
         if (readmePicker) {
             LanguagePickerDialog(selected = readmeTarget, onPick = { code ->
                 readmePicker = false
+                readmeJob?.cancel()
+                readmeSeq++
                 readmeTarget = code
                 Cfg.translateTarget = code
                 readmeTr = null
                 readmeShowOriginal = false
+                readmeError = null
+                if (!Cfg.translateAuto) startReadme(code)
             }, onDismiss = { readmePicker = false })
+        }
+        if (readmeError != null && !TranslateApi.sameLanguage(readme.orEmpty(), readmeTarget)) {
+            Text("翻译失败：$readmeError", fontSize = 9.sp, color = GH.red,
+                maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         Spacer(Modifier.height(6.dp))
         when {

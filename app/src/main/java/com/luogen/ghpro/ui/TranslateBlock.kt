@@ -30,7 +30,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.TranslateApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 
 /**
  * 原文和译文共用同一块位置：自动翻译开着时直接显示译文，点“原文”能随时恢复；
@@ -44,53 +47,80 @@ fun TranslateBlock(
     auto: Boolean = Cfg.translateAuto,
     maxLines: Int = Int.MAX_VALUE,
     overflow: TextOverflow = TextOverflow.Clip,
-    showControls: Boolean = true
+    showControls: Boolean = true,
+    compact: Boolean = false
 ) {
     val scope = rememberCoroutineScope()
-    var target by remember(text) { mutableStateOf(Cfg.translateTarget) }
-    var result by remember(text) { mutableStateOf(TranslateApi.cached(text.trim(), Cfg.translateTarget)) }
-    var loading by remember(text) { mutableStateOf(false) }
-    var error by remember(text) { mutableStateOf<String?>(null) }
-    var showOriginal by remember(text) { mutableStateOf(false) }
+    var target by remember(text, Cfg.translateTarget) { mutableStateOf(Cfg.translateTarget) }
+    var result by remember(text, Cfg.translateTarget) { mutableStateOf(TranslateApi.cached(text.trim(), Cfg.translateTarget)) }
+    var loading by remember(text, Cfg.translateTarget) { mutableStateOf(false) }
+    var error by remember(text, Cfg.translateTarget) { mutableStateOf<String?>(null) }
+    var showOriginal by remember(text, Cfg.translateTarget) { mutableStateOf(false) }
     var picker by remember { mutableStateOf(false) }
+    var job by remember(text) { mutableStateOf<Job?>(null) }
+    var reqSeq by remember(text) { mutableStateOf(0) }
     val guessed = remember(text) { TranslateApi.guessLanguage(text) }
     val same = guessed != null && TranslateApi.sameLanguage(text, target)
 
-    suspend fun perform(to: String) {
+    fun cancel() {
+        job?.cancel()
+        job = null
+        reqSeq++
+        loading = false
+        error = "已取消翻译"
+    }
+
+    fun start(to: String) {
         val src = text.trim()
         if (src.isBlank()) return
         if (TranslateApi.sameLanguage(src, to)) {
             error = "原文已经是${TranslateApi.label(to)}，不需要强行翻译"
             return
         }
+        job?.cancel()
+        val seq = ++reqSeq
         loading = true
         error = null
-        try {
-            result = TranslateApi.translate(src, to)
-            showOriginal = false
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            error = e.message ?: "翻译失败"
-            result = null
-        } finally {
-            loading = false
+        job = scope.launch {
+            try {
+                val r = withTimeout(180_000L) { TranslateApi.translate(src, to) }
+                if (seq == reqSeq) {
+                    result = r
+                    showOriginal = false
+                }
+            } catch (e: TimeoutCancellationException) {
+                if (seq == reqSeq) {
+                    result = null
+                    error = "翻译超时：网络中断或接口太久没响应，点重试"
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                if (seq == reqSeq) error = "已取消翻译"
+                throw e
+            } catch (e: Exception) {
+                if (seq == reqSeq) {
+                    result = null
+                    error = e.message ?: "翻译失败"
+                }
+            } finally {
+                if (seq == reqSeq) loading = false
+            }
         }
     }
 
     LaunchedEffect(text, auto, target) {
-        if (auto && text.isNotBlank() && !same && result == null) perform(target)
+        if (auto && text.isNotBlank() && !same && result == null) start(target)
     }
 
     if (picker) {
         LanguagePickerDialog(selected = target, onPick = { code ->
             picker = false
+            job?.cancel()
             target = code
             Cfg.translateTarget = code
             result = null
             showOriginal = false
             error = null
-            if (!auto) scope.launch { perform(code) }
+            if (!auto) start(code)
         }, onDismiss = { picker = false })
     }
 
@@ -102,36 +132,48 @@ fun TranslateBlock(
             overflow = overflow
         )
         if (showControls && text.isNotBlank()) {
+            val actionSize = if (compact) 9.sp else 10.sp
+            val metaSize = if (compact) 8.sp else 9.sp
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 10.dp)
             ) {
                 val action = when {
                     same -> "已是${TranslateApi.label(target)}"
-                    loading -> "翻译中"
+                    loading -> "翻译中…"
                     result != null && showOriginal -> "显示译文"
                     result != null -> "显示原文"
                     error != null -> "重试"
                     else -> "翻译"
                 }
-                Text(action, fontSize = 10.sp, color = if (same) MaterialTheme.colorScheme.onSurfaceVariant else GH.blue,
+                Text(action, fontSize = actionSize,
+                    color = if (same) MaterialTheme.colorScheme.onSurfaceVariant else GH.blue,
                     maxLines = 1, softWrap = false,
-                    modifier = Modifier.clickable(enabled = !loading && !same) {
-                        if (result != null) showOriginal = !showOriginal else scope.launch { perform(target) }
-                    }.padding(horizontal = 2.dp, vertical = 2.dp))
-                Text("原文：${guessed?.let { TranslateApi.label(it) } ?: "自动识别"}", fontSize = 9.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
-                Text("目标：${TranslateApi.label(target)} ▾", fontSize = 9.sp, color = GH.blue,
-                    maxLines = 1, softWrap = false, modifier = Modifier.clickable { picker = true })
-                result?.let { r ->
+                    modifier = Modifier.clickable(enabled = !same && !loading) {
+                        if (result != null) showOriginal = !showOriginal else start(target)
+                    }.padding(horizontal = 1.dp, vertical = 2.dp))
+                if (loading) {
+                    Text("取消", fontSize = actionSize, color = GH.red, maxLines = 1, softWrap = false,
+                        modifier = Modifier.clickable { cancel() }.padding(horizontal = 1.dp, vertical = 2.dp))
+                }
+                if (!compact) {
+                    Text("原文：${TranslateApi.detectedLabel(text) ?: "自动识别"}", fontSize = metaSize,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
+                }
+                Text("目标：${TranslateApi.label(target)} ▾", fontSize = metaSize, color = GH.blue,
+                    maxLines = 1, softWrap = false, modifier = Modifier.clickable {
+                        job?.cancel()
+                        picker = true
+                    })
+                if (!compact) result?.let { r ->
                     val det = r.detected?.let { TranslateApi.label(it) }
-                    Text((det?.let { "译自 $it · " } ?: "") + r.provider, fontSize = 9.sp,
+                    Text((det?.let { "译自 $it · " } ?: "") + r.provider, fontSize = metaSize,
                         color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                 }
             }
             if (error != null && !same) {
-                Text("失败：$error", fontSize = 9.sp, color = GH.red,
+                Text("失败：$error", fontSize = metaSize, color = GH.red,
                     maxLines = 3, overflow = TextOverflow.Ellipsis)
             }
         }
