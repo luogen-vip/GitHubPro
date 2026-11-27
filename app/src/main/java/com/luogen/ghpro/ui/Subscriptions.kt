@@ -65,6 +65,7 @@ import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Repo
 import com.luogen.ghpro.data.User
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -118,6 +119,7 @@ fun SubscriptionsScreen(nav: NavController) {
     var localRev by remember { mutableStateOf(0) }
     var cancelJob by remember { mutableStateOf<Job?>(null) }
     var snackJob by remember { mutableStateOf<Job?>(null) }
+    var justRestored by remember { mutableStateOf<Set<String>>(emptySet()) }
     val listState = rememberLazyListState(
         initialFirstVisibleItemIndex = UiCache.subsScrollIndex,
         initialFirstVisibleItemScrollOffset = UiCache.subsScrollOffset
@@ -133,7 +135,7 @@ fun SubscriptionsScreen(nav: NavController) {
             UiCache.subsScrollOffset = listState.firstVisibleItemScrollOffset
         }
     }
-    LaunchedEffect(tab) { UiCache.subsTab = tab; selected = emptySet() }
+    LaunchedEffect(tab) { UiCache.subsTab = tab; selected = emptySet(); justRestored = emptySet() }
     LaunchedEffect(sort) { UiCache.subsSort = sort }
 
     suspend fun loadRepos() {
@@ -145,7 +147,18 @@ fun SubscriptionsScreen(nav: NavController) {
             if (!pg.hasNext) break
             page++
         }
-        repos = all.distinctBy { it.id }
+        // GitHub 的订阅列表有短暂服务端延迟：刚取消的仓库可能还会被返回一次。
+        // 以本地刚操作的真实状态为准，避免列表在“消失后滑一下又回来”。
+        val out = ArrayList<Repo>()
+        for (r in all.distinctBy { it.id }) {
+            if (UiCache.repoWatchOverride(r.full_name) == false) continue
+            out.add(r)
+        }
+        // 撤销/本机刚订阅成功、但服务端列表还没刷新时，先用本地快照补上。
+        UiCache.repoWatchSnap.values.forEach { r ->
+            if (UiCache.repoWatchOverride(r.full_name) == true && out.none { it.full_name == r.full_name }) out.add(r)
+        }
+        repos = out.distinctBy { it.id }
     }
 
     suspend fun loadUsers() {
@@ -159,7 +172,15 @@ fun SubscriptionsScreen(nav: NavController) {
             if (!pg.hasNext) break
             page++
         }
-        users = all.distinctBy { it.id }
+        val out = ArrayList<User>()
+        for (u in all.distinctBy { it.id }) {
+            if (UiCache.followOverride(u.login) == false) continue
+            out.add(u)
+        }
+        UiCache.userFollowSnap.values.forEach { u ->
+            if (UiCache.followOverride(u.login) == true && out.none { it.login == u.login }) out.add(u)
+        }
+        users = out.distinctBy { it.id }
     }
 
     LaunchedEffect(tab, refresh, watchVer, followVer) {
@@ -172,26 +193,28 @@ fun SubscriptionsScreen(nav: NavController) {
         localRev++
     }
 
-    val repoRows = remember(repos, sort, localRev) {
+    val repoRows = remember(repos, sort, localRev, justRestored) {
         val times = Cfg.watchTimes
         val rows = repos.map { RepoSub(it, times[it.full_name]) }
+        val pin = compareBy<RepoSub> { if (it.repo.full_name in justRestored) 0 else 1 }
         when (sort) {
-            "time_asc" -> rows.sortedWith(compareBy<RepoSub> { it.at ?: Long.MAX_VALUE }.thenBy { it.repo.full_name.lowercase() })
-            "name" -> rows.sortedBy { it.repo.full_name.lowercase() }
-            "updated" -> rows.sortedWith(compareByDescending<RepoSub> { it.repo.updated_at ?: "" }.thenByDescending { it.at ?: 0L })
-            "stars" -> rows.sortedWith(compareByDescending<RepoSub> { it.repo.stargazers_count }.thenBy { it.repo.full_name.lowercase() })
-            else -> rows.sortedWith(compareByDescending<RepoSub> { it.at ?: Long.MIN_VALUE }.thenByDescending { it.repo.updated_at ?: "" })
+            "time_asc" -> rows.sortedWith(pin.thenBy { it.at ?: Long.MAX_VALUE }.thenBy { it.repo.full_name.lowercase() })
+            "name" -> rows.sortedWith(pin.thenBy { it.repo.full_name.lowercase() })
+            "updated" -> rows.sortedWith(pin.thenByDescending { it.repo.updated_at ?: "" }.thenByDescending { it.at ?: 0L })
+            "stars" -> rows.sortedWith(pin.thenByDescending { it.repo.stargazers_count }.thenBy { it.repo.full_name.lowercase() })
+            else -> rows.sortedWith(pin.thenByDescending { it.at ?: Long.MIN_VALUE }.thenByDescending { it.repo.updated_at ?: "" })
         }
     }
-    val userRows = remember(users, sort, localRev) {
+    val userRows = remember(users, sort, localRev, justRestored) {
         val times = Cfg.followTimes
         val rows = users.map { UserSub(it, times[it.login]) }
+        val pin = compareBy<UserSub> { if (it.user.login in justRestored) 0 else 1 }
         when (sort) {
-            "time_asc" -> rows.sortedWith(compareBy<UserSub> { it.at ?: Long.MAX_VALUE }.thenBy { it.user.login.lowercase() })
-            "name" -> rows.sortedBy { it.user.login.lowercase() }
-            "updated" -> rows.sortedWith(compareByDescending<UserSub> { it.user.updated_at ?: "" }.thenByDescending { it.at ?: 0L })
-            "stars" -> rows.sortedWith(compareByDescending<UserSub> { it.user.followers }.thenBy { it.user.login.lowercase() })
-            else -> rows.sortedWith(compareByDescending<UserSub> { it.at ?: Long.MIN_VALUE }.thenByDescending { it.user.updated_at ?: "" })
+            "time_asc" -> rows.sortedWith(pin.thenBy { it.at ?: Long.MAX_VALUE }.thenBy { it.user.login.lowercase() })
+            "name" -> rows.sortedWith(pin.thenBy { it.user.login.lowercase() })
+            "updated" -> rows.sortedWith(pin.thenByDescending { it.user.updated_at ?: "" }.thenByDescending { it.at ?: 0L })
+            "stars" -> rows.sortedWith(pin.thenByDescending { it.user.followers }.thenBy { it.user.login.lowercase() })
+            else -> rows.sortedWith(pin.thenByDescending { it.at ?: Long.MIN_VALUE }.thenByDescending { it.user.updated_at ?: "" })
         }
     }
     val visibleKeys = if (tab == 0) repoRows.map { repoKey(it.repo) } else userRows.map { it.user.login }
@@ -210,7 +233,9 @@ fun SubscriptionsScreen(nav: NavController) {
             val snap = repoRows.filter { it.repo.full_name in keys }
             repos = repos.filter { it.full_name !in keys }
             selected = emptySet()
+            snap.forEach { UiCache.setRepoWatch(it.repo.full_name, false); UiCache.repoWatchSnap.remove(it.repo.full_name) }
             localRev++
+            Bus.watchChanged()
             snackJob?.cancel()
             val job = Bus.actions.launch {
                 var failed = ArrayList<RepoSub>()
@@ -218,10 +243,11 @@ fun SubscriptionsScreen(nav: NavController) {
                     try {
                         Api.watch(s.repo.full_name.substringBefore('/'), s.repo.name, false)
                         Cfg.markWatch(s.repo.full_name, false)
-                        UiCache.repoWatching[s.repo.full_name] = false
+                        UiCache.setRepoWatch(s.repo.full_name, false)
                     } catch (e: Exception) { failed.add(s) }
                 }
                 if (failed.isNotEmpty()) {
+                    failed.forEach { UiCache.setRepoWatch(it.repo.full_name, true); UiCache.repoWatchSnap[it.repo.full_name] = it.repo }
                     repos = (repos + failed.map { it.repo }).distinctBy { it.id }
                     localRev++
                     Toast.makeText(ctx, "部分取消失败：${failed.firstOrNull()?.repo?.full_name}", Toast.LENGTH_SHORT).show()
@@ -232,17 +258,30 @@ fun SubscriptionsScreen(nav: NavController) {
             snackJob = scope.launch {
                 val r = snackbar.showSnackbar("已取消订阅 ${snap.size} 个仓库", actionLabel = "撤销", duration = SnackbarDuration.Short)
                 if (r == SnackbarResult.ActionPerformed) {
-                    repos = (repos + snap.map { it.repo }).distinctBy { it.id }
+                    val restored = snap.map { it.repo.full_name }.toSet()
+                    repos = (snap.map { it.repo } + repos).distinctBy { it.id }
                     selected = emptySet()
+                    justRestored = restored
+                    snap.forEach { UiCache.setRepoWatch(it.repo.full_name, true); UiCache.repoWatchSnap[it.repo.full_name] = it.repo }
                     localRev++
+                    Bus.watchChanged()
+                    scope.launch { listState.scrollToItem(0) }
+                    scope.launch {
+                        delay(7_000L)
+                        if (justRestored == restored) justRestored = emptySet()
+                    }
                     Bus.actions.launch {
                         cancelJob?.join()
                         for (s in snap) {
                             try {
                                 Api.watch(s.repo.full_name.substringBefore('/'), s.repo.name, true)
                                 Cfg.markWatch(s.repo.full_name, true, s.at ?: System.currentTimeMillis())
-                                UiCache.repoWatching[s.repo.full_name] = true
+                                UiCache.setRepoWatch(s.repo.full_name, true)
                             } catch (e: Exception) {
+                                UiCache.setRepoWatch(s.repo.full_name, false)
+                                UiCache.repoWatchSnap.remove(s.repo.full_name)
+                                repos = repos.filter { it.full_name != s.repo.full_name }
+                                localRev++
                                 Toast.makeText(ctx, "撤销失败：${s.repo.full_name}", Toast.LENGTH_SHORT).show()
                             }
                         }
@@ -254,7 +293,9 @@ fun SubscriptionsScreen(nav: NavController) {
             val snap = userRows.filter { it.user.login in keys }
             users = users.filter { it.login !in keys }
             selected = emptySet()
+            snap.forEach { UiCache.setFollow(it.user.login, false); UiCache.userFollowSnap.remove(it.user.login) }
             localRev++
+            Bus.followChanged()
             snackJob?.cancel()
             val job = Bus.actions.launch {
                 var failed = ArrayList<UserSub>()
@@ -265,6 +306,7 @@ fun SubscriptionsScreen(nav: NavController) {
                     } catch (e: Exception) { failed.add(s) }
                 }
                 if (failed.isNotEmpty()) {
+                    failed.forEach { UiCache.setFollow(it.user.login, true); UiCache.userFollowSnap[it.user.login] = it.user }
                     users = (users + failed.map { it.user }).distinctBy { it.id }
                     localRev++
                     Toast.makeText(ctx, "部分取消失败：${failed.firstOrNull()?.user?.login}", Toast.LENGTH_SHORT).show()
@@ -275,16 +317,30 @@ fun SubscriptionsScreen(nav: NavController) {
             snackJob = scope.launch {
                 val r = snackbar.showSnackbar("已取消关注 ${snap.size} 个用户", actionLabel = "撤销", duration = SnackbarDuration.Short)
                 if (r == SnackbarResult.ActionPerformed) {
-                    users = (users + snap.map { it.user }).distinctBy { it.id }
+                    val restored = snap.map { it.user.login }.toSet()
+                    users = (snap.map { it.user } + users).distinctBy { it.id }
                     selected = emptySet()
+                    justRestored = restored
+                    snap.forEach { UiCache.setFollow(it.user.login, true); UiCache.userFollowSnap[it.user.login] = it.user }
                     localRev++
+                    Bus.followChanged()
+                    scope.launch { listState.scrollToItem(0) }
+                    scope.launch {
+                        delay(7_000L)
+                        if (justRestored == restored) justRestored = emptySet()
+                    }
                     Bus.actions.launch {
                         cancelJob?.join()
                         for (s in snap) {
                             try {
                                 Api.follow(s.user.login, true)
                                 Cfg.markFollow(s.user.login, true, s.at ?: System.currentTimeMillis())
+                                UiCache.setFollow(s.user.login, true)
                             } catch (e: Exception) {
+                                UiCache.setFollow(s.user.login, false)
+                                UiCache.userFollowSnap.remove(s.user.login)
+                                users = users.filter { it.login != s.user.login }
+                                localRev++
                                 Toast.makeText(ctx, "撤销失败：${s.user.login}", Toast.LENGTH_SHORT).show()
                             }
                         }

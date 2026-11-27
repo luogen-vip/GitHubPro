@@ -41,7 +41,7 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
     val scope = rememberCoroutineScope()
     var u by remember { mutableStateOf(UiCache.userData[login]) }
     var repos by remember { mutableStateOf(UiCache.userRepos[login] ?: emptyList()) }
-    var following by remember { mutableStateOf(false) }
+    var following by remember { mutableStateOf(UiCache.followOverride(login) ?: UiCache.userFollowing[login] ?: false) }
     var followJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     var followSeq by remember { mutableStateOf(0) }
     var loading by remember { mutableStateOf(u == null) }
@@ -67,7 +67,8 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
             reposLoading = false
             u?.let { UiCache.userData[login] = it }
             UiCache.userRepos[login] = repos
-            following = runCatching { Api.isFollowing(login) }.getOrDefault(false)
+            following = UiCache.followOverride(login)
+                ?: runCatching { Api.isFollowing(login) }.getOrDefault(false)
             error = null
         } catch (e: Exception) { error = e.message }
         reposLoading = false
@@ -76,7 +77,9 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
     LaunchedEffect(login) { load() }
     LaunchedEffect(followVer) {
         if (followVer > 0) {
-            following = runCatching { Api.isFollowing(login) }.getOrDefault(following)
+            val local = UiCache.followOverride(login)
+            if (local != null) following = local
+            else following = runCatching { Api.isFollowing(login) }.getOrDefault(following)
             runCatching { Api.user(login) }.onSuccess { fresh ->
                 u = fresh
                 UiCache.userData[login] = fresh
@@ -147,6 +150,8 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
                                     if (!isMe) OutlinedButton(onClick = {
                                         val target = !following
                                         following = target
+                                        UiCache.setFollow(login, target)
+                                        if (target) u?.let { UiCache.userFollowSnap[login] = it }
                                         u = u?.copy(followers = (u!!.followers + if (target) 1 else -1).coerceAtLeast(0))
                                         Toast.makeText(ctx, if (target) "已关注" else "已取消关注", Toast.LENGTH_SHORT).show()
                                         followJob?.cancel()
@@ -279,6 +284,7 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
                                         TextButton(onClick = {
                                             // 先让列表和数字立即变化，再真实提交；失败再回滚并提示。
                                             people = people.filter { it.id != p.id }
+                                            UiCache.setFollow(p.login, false)
                                             u = u?.copy(following = (u!!.following - 1).coerceAtLeast(0))
                                             UiCache.userData[login] = u!!
                                             UiCache.homeMe = u
@@ -288,6 +294,8 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
                                                 try { Api.follow(p.login, false); Cfg.markFollow(p.login, false) }
                                                 catch (e: Exception) {
                                                     people = (people + p).distinctBy { it.id }
+                                                    UiCache.setFollow(p.login, true)
+                                                    UiCache.userFollowSnap[p.login] = p
                                                     u = u?.copy(following = (u!!.following + 1).coerceAtLeast(0))
                                                     UiCache.userData[login] = u!!
                                                     UiCache.homeMe = u

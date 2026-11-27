@@ -75,7 +75,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
     var watchJob by remember { mutableStateOf<Job?>(null) }
     var statPending by remember { mutableStateOf(0) }
     var starReady by remember { mutableStateOf(true) }
-    var watching by remember { mutableStateOf(UiCache.repoWatching[key] ?: false) }
+    var watching by remember { mutableStateOf(UiCache.repoWatchOverride(key) ?: UiCache.repoWatching[key] ?: false) }
     var favSaved by remember { mutableStateOf(Favorites.isSaved(key)) }
     var showFavPicker by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(UiCache.repoData[key] == null) }
@@ -110,7 +110,11 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                 UiCache.repoStarred[key] = st
                 Cfg.setStarredCached(key, st)
             }
-            runCatching { watching = Api.isWatching(owner, name); UiCache.repoWatching[key] = watching }
+            runCatching {
+                val real = Api.isWatching(owner, name)
+                val local = UiCache.repoWatchOverride(key)
+                if (local == null) { watching = real; UiCache.repoWatching[key] = real }
+            }
             runCatching { languages = Api.languages(owner, name); UiCache.repoLangs[key] = languages }
             runCatching { Api.releases(owner, name).items.firstOrNull()?.published_at?.let { v -> latestReleaseAt = v } }
         } catch (e: Exception) {
@@ -134,8 +138,9 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                 runCatching { Api.isStarred(owner, name) }.onSuccess {
                     starred = it; starReady = true; UiCache.repoStarred[key] = it; Cfg.setStarredCached(key, it)
                 }
-                runCatching { Api.isWatching(owner, name) }.onSuccess {
-                    watching = it; UiCache.repoWatching[key] = it
+                runCatching { Api.isWatching(owner, name) }.onSuccess { real ->
+                    val local = UiCache.repoWatchOverride(key)
+                    if (local == null) { watching = real; UiCache.repoWatching[key] = real }
                 }
             }
         }
@@ -148,9 +153,14 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
     val repoVer by Bus.repoPoke.collectAsState()
     val watchVer by Bus.watchPoke.collectAsState()
     LaunchedEffect(watchVer) {
-        if (watchVer > 0) runCatching { Api.isWatching(owner, name) }.onSuccess {
-            watching = it
-            UiCache.repoWatching[key] = it
+        if (watchVer > 0) {
+            val local = UiCache.repoWatchOverride(key)
+            if (local != null) {
+                watching = local
+            } else runCatching { Api.isWatching(owner, name) }.onSuccess {
+                watching = it
+                UiCache.repoWatching[key] = it
+            }
         }
     }
     LaunchedEffect(issueVer, issueLocalVer, repoVer) {
@@ -264,7 +274,8 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                         // 上一笔还没回来的请求先取消，快速连点只让最后一次状态落地。
                         watchJob?.cancel()
                         watching = target
-                        UiCache.repoWatching[key] = target
+                        UiCache.setRepoWatch(key, target)
+                        if (target) UiCache.repoWatchSnap[key] = base
                         val optimistic = base.copy(subscribers_count = (base.subscribers_count + if (target) 1 else -1).coerceAtLeast(0))
                         repo = optimistic
                         UiCache.repoData[key] = optimistic
@@ -282,7 +293,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                                     }
                                     .onFailure {
                                         if (seq == watchSeq) {
-                                            watching = !target; UiCache.repoWatching[key] = !target
+                                            watching = !target; UiCache.setRepoWatch(key, !target); UiCache.repoWatchSnap[key] = base
                                             repo = base; UiCache.repoData[key] = base
                                             quickToast("操作失败：${it.message}")
                                         }
@@ -741,7 +752,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
                 if (!Cfg.translateAuto) startReadme(code)
             }, onDismiss = { readmePicker = false })
         }
-        if (readmeTrLoading && (readme?.length ?: 0) > 10_000) {
+        if (readmeTrLoading && (readme?.length ?: 0) > 3_000) {
             Text("长文分段翻译中，完成前请勿退出；点“取消翻译”可停止", fontSize = 9.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }

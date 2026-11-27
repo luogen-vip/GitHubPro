@@ -15,9 +15,9 @@ import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 /**
- * 真实可用的免 key 翻译：优先彩云小译公开接口（国内可直连、自动识别、支持长文本），
- * 失败再换有道公开网页接口，最后用 MyMemory。没有本地假翻译/占位结果。
- * 单一接口都有各种网络限制，所以做多接口回退；仍然失败会把真实错误抛给界面。
+ * 真实可用的免 key 翻译：B 站公开 Index-Translate（全语言）→ 彩云小译公开接口
+ * → MyMemory 匿名接口。只保留公开、无需申请 key 的入口；没有本地假翻译/占位结果。
+ * 单一接口都有网络/额度限制，所以做多接口回退；仍然失败会把真实错误抛给界面。
  */
 private class RateLimited(message: String) : IOException(message)
 
@@ -73,18 +73,15 @@ object TranslateApi {
         .writeTimeout(25, TimeUnit.SECONDS)
         .build()
 
-    // 谷歌接口在部分网络会直接超时；用一个短超时的客户端，失败就立刻换下一个，
-    // 不让用户在“取消翻译”上干等几十秒。
-    private val fastHttp = OkHttpClient.Builder()
-        .connectTimeout(6, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
-        .writeTimeout(10, TimeUnit.SECONDS)
+    // B 站公开的 Index-Translate 演示接口：无需注册、无需 key，支持 150 种语言。
+    // 长文生成比普通翻译接口慢，所以单独给更长的读超时；失败会继续走后面的公开接口。
+    private val biliHttp = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(90, TimeUnit.SECONDS)
+        .writeTimeout(35, TimeUnit.SECONDS)
         .build()
 
     private const val UA = "Mozilla/5.0 (Linux; Android 13; WDY-AN00) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
-
-    @Volatile private var msToken: String? = null
-    @Volatile private var msTokenAt = 0L
 
     private val cache = object : LinkedHashMap<String, Result>(80, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Result>?) = size > 120
@@ -361,32 +358,78 @@ object TranslateApi {
     private fun translateChunk(chunk: String, t: Lang, guessed: String?): Triple<String, String?, String> {
         val errors = ArrayList<String>()
         var rateLimited: RateLimited? = null
-        // 1. 彩云小译公开接口：国内可直连，自动识别源语言，单次 1 万字符实测可用。
+        // 1. B 站公开 Index-Translate：无需注册和 key，支持 150 种语言。
+        //    这是目前实测最稳定的全语言入口；长文也交给它（每次最多 1 万字）。
         try {
-            return caiyunTranslate(chunk, t)
+            val out = bilibiliTranslate(chunk, t)
+            if (isSameOrUntranslated(out, chunk)) throw IOException("B站接口原样返回")
+            return Triple(out, null, "B站翻译")
+        } catch (e: Exception) { errors.add("B站：${e.message}") }
+        // 2. 彩云小译公开接口：国内可直连，自动识别源语言。公开 token 每分钟约 5 次，
+        //    所以放在第二；短文本/单段通常直接成功，长文则由 B 站先分担。
+        try {
+            val out = caiyunTranslate(chunk, t)
+            if (isSameOrUntranslated(out.first, chunk)) throw IOException("彩云接口原样返回")
+            return out
         } catch (e: Exception) {
             errors.add("彩云：${e.message}")
             if (e is RateLimited) rateLimited = e
         }
-        // 2. 微软 Edge 翻译：支持语言多、国内通常可达；之前只在代码里定义没接入，
-        //    导致彩云限流后只剩中英互译的有道，日文/俄文等仓库就会长时间失败。
+        // 3. MyMemory：公开匿名接口，有每日额度；只作为最后兜底。
         try {
-            return msTranslate(chunk, t)
-        } catch (e: Exception) { errors.add("微软：${e.message}") }
-        // 3. 谷歌公开接口：网络允许时作为补充；不通就快速失败，继续后面的兜底。
-        try {
-            return googleTranslate(chunk, t)
-        } catch (e: Exception) { errors.add("谷歌：${e.message}") }
-        // 4. 有道公开网页接口：国内网络通常可达，主要覆盖中英互译。
-        try {
-            return youdaoTranslate(chunk, t, guessed)
-        } catch (e: Exception) { errors.add("有道：${e.message}") }
-        // 5. MyMemory：匿名有每日字符限制，只作为兜底。
-        try {
-            return memoryTranslate(chunk, t, guessed)
+            val out = memoryTranslate(chunk, t, guessed)
+            if (isSameOrUntranslated(out.first, chunk)) throw IOException("MyMemory 原样返回")
+            return out
         } catch (e: Exception) { errors.add("MyMemory：${e.message}") }
         if (rateLimited != null) throw rateLimited
         throw IOException(errors.joinToString("；"))
+    }
+
+    private fun isSameOrUntranslated(out: String, src: String): Boolean {
+        // 短词/专有名词可能本来就相同；长正文如果完全一样，说明接口没真正翻译。
+        return out.trim() == src.trim() && src.trim().length >= 12
+    }
+
+    /** B 站公开演示接口：OpenAI 兼容，任意占位 key 可用；只接受纯译文。 */
+    private fun bilibiliTranslate(chunk: String, t: Lang): String {
+        // 实测该公开网关在 1800 字左右会 503，所以内部按 1400 字切开再拼接。
+        if (chunk.length > 1400) {
+            val out = StringBuilder()
+            for (part in chunk.chunked(1400)) out.append(bilibiliOne(part, t))
+            return out.toString().trim()
+        }
+        return bilibiliOne(chunk, t)
+    }
+
+    private fun bilibiliOne(chunk: String, t: Lang): String {
+        val prompt = "请将下面的文本翻译成${t.label}，只输出译文，不要解释、不要加引号、不要输出原文：\n\n$chunk"
+        val body = JsonObject().apply {
+            addProperty("model", "Index-Translate-35B-A3B")
+            add("messages", JsonArray().apply {
+                add(JsonObject().apply {
+                    addProperty("role", "user")
+                    addProperty("content", prompt)
+                })
+            })
+            addProperty("temperature", 0)
+        }.toString().toRequestBody("application/json".toMediaType())
+        val req = Request.Builder().url("https://index-translate.bilibili.com/v1/chat/completions")
+            .header("Authorization", "Bearer GitHubPro")
+            .header("Content-Type", "application/json")
+            .header("User-Agent", UA)
+            .post(body).build()
+        biliHttp.newCall(req).execute().use { resp ->
+            val text = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
+            val obj = JsonParser.parseString(text).asJsonObject
+            val choices = obj.getAsJsonArray("choices") ?: throw IOException("返回为空")
+            val first = choices.firstOrNull()?.asJsonObject ?: throw IOException("返回为空")
+            val content = first.getAsJsonObject("message")?.get("content")?.asString
+                ?: throw IOException("没有译文")
+            val out = content.trim()
+            if (out.isBlank()) throw IOException("译文为空")
+            return out
+        }
     }
 
     private fun hasLargeLatinPart(text: String): Boolean {
@@ -437,95 +480,6 @@ object TranslateApi {
             val tt = obj.get("trans_type")?.asString.orEmpty()
             val src = tt.substringBefore("2").takeIf { it.isNotBlank() }
             return Triple(out.toString(), src, "彩云")
-        }
-    }
-
-    private fun ensureMsToken(): String {
-        val old = msToken
-        if (old != null && System.currentTimeMillis() - msTokenAt < 8 * 60_000L) return old
-        val req = Request.Builder().url("https://edge.microsoft.com/translate/auth")
-            .header("User-Agent", UA).build()
-        http.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
-            val token = resp.body?.string()?.trim().orEmpty()
-            if (token.isBlank() || token.length < 20) throw IOException("令牌为空")
-            msToken = token
-            msTokenAt = System.currentTimeMillis()
-            return token
-        }
-    }
-
-    private fun msTranslate(chunk: String, t: Lang): Triple<String, String?, String> {
-        var token = ensureMsToken()
-        repeat(2) { attempt ->
-            val body = JsonArray().apply {
-                add(JsonObject().apply { addProperty("Text", chunk) })
-            }.toString().toRequestBody("application/json".toMediaType())
-            val url = "https://api-edge.cognitive.microsofttranslator.com/translate?api-version=3.0&to=${t.ms}"
-            val req = Request.Builder().url(url)
-                .header("Authorization", "Bearer $token")
-                .header("User-Agent", UA)
-                .header("Content-Type", "application/json")
-                .post(body).build()
-            http.newCall(req).execute().use { resp ->
-                val text = resp.body?.string().orEmpty()
-                if (resp.code == 401 && attempt == 0) {
-                    msToken = null
-                    token = ensureMsToken()
-                    return@use
-                }
-                if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
-                val arr = JsonParser.parseString(text).asJsonArray
-                val first = arr.firstOrNull()?.asJsonObject ?: throw IOException("返回为空")
-                val trans = first.getAsJsonArray("translations")?.firstOrNull()?.asJsonObject
-                    ?: throw IOException("没有译文")
-                val out = trans.get("text")?.asString ?: throw IOException("没有译文")
-                val det = first.getAsJsonObject("detectedLanguage")?.get("language")?.asString
-                return Triple(out, det, "微软")
-            }
-        }
-        throw IOException("令牌失效")
-    }
-
-    private fun googleTranslate(chunk: String, t: Lang): Triple<String, String?, String> {
-        val url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${t.google}&dt=t&q=${enc(chunk)}"
-        val req = Request.Builder().url(url).header("User-Agent", UA).build()
-        fastHttp.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
-            val text = resp.body?.string().orEmpty()
-            val root = JsonParser.parseString(text).asJsonArray
-            val parts = root.firstOrNull()?.asJsonArray ?: throw IOException("返回为空")
-            val sb = StringBuilder()
-            for (i in 0 until parts.size()) {
-                val row = parts.get(i).asJsonArray
-                if (row.size() > 0) sb.append(row.get(0).asString)
-            }
-            if (sb.isEmpty()) throw IOException("没有译文")
-            val det = runCatching { root.get(2).asString }.getOrNull()
-            return Triple(sb.toString(), det, "谷歌")
-        }
-    }
-
-    private fun youdaoTranslate(chunk: String, t: Lang, guessed: String?): Triple<String, String?, String> {
-        val type = when {
-            guessed == "en" && t.code == "zh-CN" -> "EN2ZH_CN"
-            guessed == "zh" && t.code == "en" -> "ZH_CN2EN"
-            t.code == "zh-CN" -> "AUTO"
-            else -> "AUTO"
-        }
-        val url = "https://fanyi.youdao.com/translate?&doctype=json&type=$type&i=${enc(chunk)}"
-        val req = Request.Builder().url(url).header("User-Agent", UA).build()
-        http.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
-            val text = resp.body?.string().orEmpty()
-            val arr = JsonParser.parseString(text).asJsonObject
-            val code = arr.get("errorCode")?.asInt ?: -1
-            if (code != 0) throw IOException("错误码 $code")
-            val list = arr.getAsJsonArray("translation") ?: throw IOException("没有译文")
-            val sb = StringBuilder()
-            for (i in 0 until list.size()) sb.append(list.get(i).asString)
-            if (sb.isEmpty()) throw IOException("没有译文")
-            return Triple(sb.toString(), guessed, "有道")
         }
     }
 

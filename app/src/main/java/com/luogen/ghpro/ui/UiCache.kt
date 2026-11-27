@@ -74,7 +74,43 @@ object UiCache {
     val repoLangs = lruCache<String, Map<String, Long>>(40)
     val repoStarred = HashMap<String, Boolean>()
     val repoWatching = HashMap<String, Boolean>()
+    /** 本地刚订阅/取消订阅的时间；GitHub 的 /user/subscriptions 有短暂延迟，不能立刻被旧结果覆盖。 */
+    private val repoWatchAt = HashMap<String, Long>()
+    val repoWatchSnap = HashMap<String, Repo>()
+    val userFollowing = HashMap<String, Boolean>()
+    private val userFollowAt = HashMap<String, Long>()
+    val userFollowSnap = HashMap<String, User>()
     val repoTab = HashMap<String, Int>()
+
+    private const val LOCAL_SUB_GRACE_MS = 90_000L
+
+    fun setRepoWatch(key: String, on: Boolean, at: Long = System.currentTimeMillis()) {
+        repoWatching[key] = on
+        repoWatchAt[key] = at
+        if (on) repoData[key]?.let { repoWatchSnap[key] = it }
+    }
+
+    fun repoWatchOverride(key: String): Boolean? {
+        val at = repoWatchAt[key] ?: return null
+        if (System.currentTimeMillis() - at > LOCAL_SUB_GRACE_MS) {
+            repoWatchAt.remove(key); return null
+        }
+        return repoWatching[key]
+    }
+
+    fun setFollow(login: String, on: Boolean, at: Long = System.currentTimeMillis()) {
+        userFollowing[login] = on
+        userFollowAt[login] = at
+        if (on) userData[login]?.let { userFollowSnap[login] = it }
+    }
+
+    fun followOverride(login: String): Boolean? {
+        val at = userFollowAt[login] ?: return null
+        if (System.currentTimeMillis() - at > LOCAL_SUB_GRACE_MS) {
+            userFollowAt.remove(login); return null
+        }
+        return userFollowing[login]
+    }
 
     fun invalidateRepo(full: String) {
         repoData.remove(full)

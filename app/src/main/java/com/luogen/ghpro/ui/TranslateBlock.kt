@@ -198,7 +198,7 @@ fun TranslateBlock(
         // 发行版说明把翻译控件放在正文上方：展开就能看到，翻完不用再滑到底部找语言。
         if (compact && showControls && text.isNotBlank()) {
             controls()
-            if (loading && text.length > 10_000) {
+            if (loading && text.length > 3_000) {
                 Text("长文分段翻译中，完成前请勿退出；点“取消”可停止", fontSize = 8.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -215,7 +215,7 @@ fun TranslateBlock(
         if (showControls && text.isNotBlank() && !compact) {
             Spacer(Modifier.height(3.dp))
             controls()
-            if (loading && text.length > 10_000) {
+            if (loading && text.length > 3_000) {
                 Text("长文分段翻译中，完成前请勿退出；点“取消”可停止", fontSize = 9.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
