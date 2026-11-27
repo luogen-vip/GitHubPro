@@ -273,6 +273,7 @@ fun SubscriptionsScreen(nav: NavController) {
                         Api.watch(s.repo.full_name.substringBefore('/'), s.repo.name, false)
                         Cfg.markWatch(s.repo.full_name, false)
                         UiCache.setRepoWatch(s.repo.full_name, false)
+                        Cfg.removeLocalNoticesForRepo(s.repo.full_name)
                     } catch (e: Exception) { failed.add(s) }
                 }
                 if (failed.isNotEmpty()) {

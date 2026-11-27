@@ -60,6 +60,7 @@ private class HomeAction(val icon: ImageVector, val label: String, val go: () ->
 
 @Composable
 fun HomeScreen(nav: NavController) {
+    val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var me by remember { mutableStateOf(UiCache.homeMe) }
     val bootSnap = UiCache.homeSnaps["${UiCache.homeTab}|${UiCache.homeSort}"]
@@ -101,8 +102,17 @@ fun HomeScreen(nav: NavController) {
         if (login.isBlank()) { peopleLoading = false; return@LaunchedEffect }
         runCatching {
             if (peopleKind == 0) Api.followers(login, 1) else Api.following(login, 1)
-        }.onSuccess { pg -> people = pg.items; peopleHasMore = pg.hasNext }
-            .onFailure { peopleError = it.message ?: "加载失败" }
+        }.onSuccess { pg ->
+            people = if (peopleKind == 1) {
+                // GitHub 列表偶尔比刚取关的状态慢半拍；本地刚取关的人先过滤掉，刚关注的人补进来。
+                val base = pg.items.filter { UiCache.followOverride(it.login) != false }
+                val extra = UiCache.userFollowSnap.values.filter {
+                    UiCache.followOverride(it.login) == true && base.none { b -> b.login == it.login }
+                }
+                (base + extra).distinctBy { it.login }
+            } else pg.items
+            peopleHasMore = pg.hasNext
+        }.onFailure { peopleError = it.message ?: "加载失败" }
         peopleLoading = false
     }
 
@@ -200,6 +210,16 @@ fun HomeScreen(nav: NavController) {
     LaunchedEffect(activityVer) { if (activityVer > 0) repos = repos.toList() }
     LaunchedEffect(followVer) {
         if (followVer > 0) runCatching { Api.me() }.onSuccess { me = it; UiCache.homeMe = it }
+    }
+    // 关注状态一变，首页弹窗里的“正在关注”立刻同步，不能等下一次重新打开才刷新。
+    LaunchedEffect(followVer, showPeople, peopleKind) {
+        if (showPeople && peopleKind == 1 && followVer > 0) {
+            val kept = people.filter { UiCache.followOverride(it.login) != false }
+            val extra = UiCache.userFollowSnap.values.filter {
+                UiCache.followOverride(it.login) == true && kept.none { b -> b.login == it.login }
+            }
+            people = (kept + extra).distinctBy { it.login }
+        }
     }
     LaunchedEffect(starVer) {
         if (starVer > 0 && tab == 1) {
@@ -438,6 +458,29 @@ fun HomeScreen(nav: NavController) {
         }
     }
 
+    fun unfollowFromHome(p: User) {
+        val before = people
+        people = people.filter { it.login != p.login }
+        me = me?.copy(following = ((me?.following ?: 0) - 1).coerceAtLeast(0))
+        UiCache.setFollow(p.login, false)
+        Bus.followChanged()
+        Toast.makeText(ctx, "已取消关注 ${p.login}", Toast.LENGTH_SHORT).show()
+        scope.launch {
+            try {
+                Api.follow(p.login, false)
+                Cfg.markFollow(p.login, false)
+                Bus.followChanged()
+            } catch (e: Exception) {
+                // 失败就恢复，不能假装已经取关。
+                people = before
+                me = me?.copy(following = ((me?.following ?: 0) + 1))
+                UiCache.setFollow(p.login, true)
+                Bus.followChanged()
+                Toast.makeText(ctx, "取消失败：${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     if (showPeople) {
         AlertDialog(
             onDismissRequest = { showPeople = false },
@@ -458,6 +501,12 @@ fun HomeScreen(nav: NavController) {
                                     Spacer(Modifier.width(8.dp))
                                     Text(p.login, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                                         modifier = Modifier.weight(1f))
+                                    if (peopleKind == 1) {
+                                        TextButton(onClick = { unfollowFromHome(p) },
+                                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 1.dp)) {
+                                            Text("取消关注", fontSize = 10.sp, color = GH.red)
+                                        }
+                                    }
                                 }
                                 Divider1()
                             }
@@ -472,7 +521,8 @@ fun HomeScreen(nav: NavController) {
                                             else Api.following(login, peoplePage + 1)
                                         }.getOrNull()
                                         if (pg != null) {
-                                            people = (people + pg.items).distinctBy { it.id }
+                                            val add = if (peopleKind == 1) pg.items.filter { UiCache.followOverride(it.login) != false } else pg.items
+                                            people = (people + add).distinctBy { it.id }
                                             peoplePage += 1
                                             peopleHasMore = pg.hasNext
                                         }

@@ -168,7 +168,7 @@ fun reasonCn(r: String?): String = when (r) {
     "author" -> "你创建的"
     "comment" -> "你参与过"
     "state_change" -> "状态变化"
-    "subscribed" -> "GitHub 订阅/参与"
+    "subscribed" -> "仓库动态"
     "manual" -> "手动关注"
     "security_alert" -> "安全提醒"
     "ci_activity" -> "工作流动态"

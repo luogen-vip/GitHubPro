@@ -246,9 +246,10 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 StateChip(null, r.status, r.conclusion)
                                 Spacer(Modifier.width(6.dp))
-                                Text("${r.event ?: ""} · ${r.head_branch ?: "-"} · #${r.run_number ?: runId}", fontSize = 10.sp,
+                                Text("$owner/$name · ${r.event ?: ""} · ${r.head_branch ?: "-"} · #${r.run_number ?: runId}", fontSize = 10.sp,
                                     maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    color = GH.blue,
+                                    modifier = Modifier.clickable { nav.navigate("repo/$owner/$name") })
                             }
                         }
                         Box {

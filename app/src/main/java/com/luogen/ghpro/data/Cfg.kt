@@ -325,6 +325,34 @@ object Cfg {
         Api.token = null
     }
 
+    // 精选仓库上次真实搜索结果：App 冷启动先显示这一份，再后台校准，避免每次都干等 Search API。
+    fun featuredCache(sort: String): String? = sp.getString("featured_cache_$sort", null)
+    fun saveFeaturedCache(sort: String, json: String) {
+        sp.edit().putString("featured_cache_$sort", json).apply()
+    }
+
+    // 最近一次 README 译文（同一仓库/同一原文/同一目标语言才复用），再进同一页可以秒开。
+    fun readmeTranslation(key: String): String? {
+        if (sp.getString("readme_tr_key", null) != key) return null
+        return sp.getString("readme_tr_text", null)
+    }
+    fun saveReadmeTranslation(key: String, text: String) {
+        if (text.length > 120_000) return
+        sp.edit().putString("readme_tr_key", key).putString("readme_tr_text", text).apply()
+    }
+
+    /** 取消订阅/取消关注后，把本地已经生成的旧通知一起清掉，避免还弹出“已订阅”。 */
+    fun removeLocalNoticesForRepo(full: String) {
+        if (full.isBlank()) return
+        val keep = localNotices.filterNot { n ->
+            val route = n.route.orEmpty()
+            // route 形如 commit/owner/repo/sha、release/owner/repo/id、repo/owner/repo
+            val seg = route.split("/")
+            seg.size >= 3 && "${seg[1]}/${seg[2]}" == full
+        }
+        if (keep.size != localNotices.size) localNotices = keep
+    }
+
     /** 上次真实下载成功的镜像排到第一，避免每次都先撞上刚好变慢的那一个。 */
     var preferredMirror: String
         get() = sp.getString("preferred_mirror", "") ?: ""

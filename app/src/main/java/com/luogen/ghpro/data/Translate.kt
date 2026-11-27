@@ -88,9 +88,10 @@ object TranslateApi {
     // B 站公开的 Index-Translate 演示接口：无需注册、无需 key，支持 150 种语言。
     // 长文生成比普通翻译接口慢，所以单独给更长的读超时；失败会继续走后面的公开接口。
     private val biliHttp = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(90, TimeUnit.SECONDS)
-        .writeTimeout(35, TimeUnit.SECONDS)
+        .connectTimeout(12, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(55, TimeUnit.SECONDS)
         .build()
 
     private const val UA = "Mozilla/5.0 (Linux; Android 13; WDY-AN00) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
@@ -319,19 +320,22 @@ object TranslateApi {
         val key = "$target\u0000$source"
         synchronized(cache) { cache[key] }?.let { return@withContext it }
         val chunks = chunk(source)
-        // 长 README 不再“一段等完再下一段”：第一段先出结果，剩下的并行走网络，
-        // B 站接口全局最多 4 个并发（实测 6 个会 503），既快又不触发限流。
+        // 第一屏先翻 1400 字：长 README 也不用等前 1 万字全部翻完才看到译文。
+        // 第一段完成后，剩余 1400 字小块和其他 1 万字大块统一走 4 并发，总请求量不变。
+        val firstChunk = chunks.first()
+        val firstParts = if (firstChunk.length > 1400) firstChunk.chunked(1400) else listOf(firstChunk)
         val out = StringBuilder()
         var detected: String? = guessed
         var provider = ""
-        val first = translateChunk(chunks.first(), t, guessed)
+        val first = translateChunk(firstParts.first(), t, guessed)
         out.append(first.first)
         detected = first.second ?: detected
         provider = first.third
         onPartial?.invoke(out.toString().trim())
-        if (chunks.size > 1) {
+        val restParts = firstParts.drop(1) + chunks.drop(1)
+        if (restParts.isNotEmpty()) {
             val rest = coroutineScope {
-                chunks.drop(1).map { c -> async(Dispatchers.IO) { translateChunk(c, t, guessed) } }.awaitAll()
+                restParts.map { c -> async(Dispatchers.IO) { translateChunk(c, t, guessed) } }.awaitAll()
             }
             for (r in rest) {
                 out.append(r.first)

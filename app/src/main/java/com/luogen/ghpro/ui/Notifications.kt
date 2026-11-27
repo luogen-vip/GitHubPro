@@ -216,8 +216,22 @@ fun NotificationsScreen(nav: NavController) {
                                 if (n.unread) Box(Modifier.size(7.dp).background(GH.blue, androidx.compose.foundation.shape.CircleShape))
                             }
                             Spacer(Modifier.height(3.dp))
-                            Text("${n.repository?.full_name ?: ""} · ${reasonCn(n.reason)} · ${timeAgo(n.updated_at)}",
-                                fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                val repo = n.repository?.full_name ?: ""
+                                if (repo.isNotBlank()) {
+                                    Text(repo, fontSize = 10.sp, color = GH.blue,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.clickable {
+                                            // 单独点仓库名只进仓库首页；点其他区域仍然进具体议题/PR/提交。
+                                            savePos()
+                                            nav.navigate("repo/$repo")
+                                        })
+                                }
+                                Text(" · ${reasonCn(n.reason)} · ${timeAgo(n.updated_at)}",
+                                    fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false))
+                            }
                         }
                         Divider1()
                     }

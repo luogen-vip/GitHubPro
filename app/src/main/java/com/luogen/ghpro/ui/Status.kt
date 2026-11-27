@@ -30,6 +30,27 @@ import java.time.Instant
 
 private val statusPresets = listOf("💬", "🏠", "🏢", "🚀", "🎯", "💤", "🍜", "🎮", "📚", "🛠️", "🧪", "👀", "✅", "🔥", "❤️", "☕")
 
+/** GitHub 状态只接受一个 emoji（或 :shortcode:）；文字/数字会被服务端忽略，必须在保存前拦截。 */
+private fun isStatusEmoji(raw: String): Boolean {
+    val t = raw.trim()
+    if (t.isEmpty() || t.length > 20) return false
+    if (Regex("^:[a-zA-Z0-9_+\\-]+:$").matches(t)) return true
+    var hasEmoji = false
+    var i = 0
+    while (i < t.length) {
+        val cp = t.codePointAt(i)
+        val next = if (i + Character.charCount(cp) < t.length) t.codePointAt(i + Character.charCount(cp)) else -1
+        // 字母绝对不行；数字只有组成 keycap（1️⃣）时才允许。
+        if (Character.isLetter(cp)) return false
+        if (Character.isDigit(cp) && next != 0xFE0F && next != 0x20E3) return false
+        if (cp in 0x1F000..0x1FAFF || cp in 0x2600..0x27BF || cp in 0x2B00..0x2BFF ||
+            cp in 0x1F1E6..0x1F1FF || cp == 0xFE0F || cp == 0x200D || cp == 0x20E3 ||
+            cp in 0x2190..0x21FF || cp in 0x2300..0x23FF) hasEmoji = true
+        i += Character.charCount(cp)
+    }
+    return hasEmoji
+}
+
 @Composable
 fun MyStatusCard() {
     val ver by Bus.statusPoke.collectAsState()
@@ -63,6 +84,7 @@ private fun StatusDialog(onClose: () -> Unit) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     var emoji by remember { mutableStateOf(prettyStatusEmoji(Cfg.statusEmoji)) }
+    var emojiErr by remember { mutableStateOf<String?>(null) }
     var message by remember { mutableStateOf(Cfg.statusMessage.orEmpty()) }
     var busy by remember { mutableStateOf(Cfg.statusBusy) }
     var expireHours by remember {
@@ -117,11 +139,15 @@ private fun StatusDialog(onClose: () -> Unit) {
                     }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(emoji, { emoji = it.take(8) }, Modifier.width(86.dp),
-                        label = { Text("表情") }, singleLine = true)
+                    OutlinedTextField(emoji, { emoji = it.take(20); if (emojiErr != null) emojiErr = null }, Modifier.width(96.dp),
+                        label = { Text("表情") }, singleLine = true,
+                        isError = emojiErr != null)
                     Spacer(Modifier.width(8.dp))
                     OutlinedTextField(message, { message = it.take(80) }, Modifier.weight(1f),
                         label = { Text("留言（最多 80 字）") }, singleLine = true)
+                }
+                if (emojiErr != null) {
+                    Text(emojiErr!!, fontSize = 10.sp, color = GH.red, modifier = Modifier.padding(top = 3.dp))
                 }
                 Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -175,6 +201,14 @@ private fun StatusDialog(onClose: () -> Unit) {
         },
         confirmButton = {
             TextButton(enabled = !saving, onClick = {
+                val e = emoji.trim()
+                if (e.isNotBlank() && !isStatusEmoji(e)) {
+                    emojiErr = "这里只能填 1 个表情（如 😀），不能填文字或数字；不想填表情就留空"
+                    Toast.makeText(ctx, emojiErr!!, Toast.LENGTH_LONG).show()
+                    return@TextButton
+                }
+                emoji = e
+                emojiErr = null
                 saving = true
                 val previous = UserStatus(Cfg.statusEmoji, Cfg.statusMessage, Cfg.statusBusy, Cfg.statusExpiresAt,
                     Cfg.statusOrgId, Cfg.statusOrgLogin, Cfg.statusOrgName)

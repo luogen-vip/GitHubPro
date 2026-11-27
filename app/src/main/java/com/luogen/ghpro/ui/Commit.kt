@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -62,9 +63,13 @@ fun CommitDetailScreen(nav: NavController, owner: String, name: String, sha: Str
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
+                    Column(Modifier.clickable { nav.navigate("repo/$owner/$name") }) {
                         Text("提交 ${sha.take(7)}", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                        Text("$owner/$name", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("$owner/$name", fontSize = 11.sp, color = GH.blue)
+                            Spacer(Modifier.width(4.dp))
+                            Text("查看仓库 ›", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 },
                 navigationIcon = { IconButton({ nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },

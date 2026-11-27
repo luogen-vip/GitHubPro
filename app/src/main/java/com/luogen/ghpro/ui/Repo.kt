@@ -311,6 +311,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                                     Cfg.touchRepo(key)
                                     Cfg.markWatch(key, sent)
                                     UiCache.setRepoWatch(key, sent)
+                                    if (!sent) Cfg.removeLocalNoticesForRepo(key)
                                     Bus.watchChanged()
                                     break
                                 } while (watchPending)
@@ -631,6 +632,18 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
         }
         readmeJob?.cancel()
         val seq = ++readmeSeq
+        val cacheKey = "$owner/$name|${src.length}|${src.hashCode()}|$to"
+        // 同一个仓库、同一份 README、同一个目标语言，第二次直接秒出，不再重新等接口。
+        Cfg.readmeTranslation(cacheKey)?.let { cached ->
+            readmeTrLoading = false
+            readmeError = null
+            readmeTr = cached
+            readmeTrTarget = to
+            readmeTrSource = src
+            readmeShowOriginal = false
+            Toast.makeText(ctx, "已读取上次翻译，秒开", Toast.LENGTH_SHORT).show()
+            return
+        }
         readmeTrLoading = true
         readmeError = null
         readmeTr = null
@@ -656,6 +669,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
                     readmeTrTarget = to
                     readmeTrSource = src
                     readmeShowOriginal = false
+                    Cfg.saveReadmeTranslation(cacheKey, translated)
                 }
             } catch (e: TimeoutCancellationException) {
                 if (seq == readmeSeq) {
@@ -785,7 +799,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
             }, onDismiss = { readmePicker = false })
         }
         if (readmeTrLoading && (readme?.length ?: 0) > 3_000) {
-            Text("长文分段翻译中，完成前请勿退出；点“取消翻译”可停止", fontSize = 9.sp,
+            Text("正在分段翻译，已出来的部分可以直接读；全文会自动继续补齐", fontSize = 9.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (readmeError != null && !TranslateApi.sameLanguage(readme.orEmpty(), readmeTarget)) {

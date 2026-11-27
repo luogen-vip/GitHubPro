@@ -102,9 +102,10 @@ object SyncEngine {
                 if (n.id in seen) return@filter false
                 val repo = n.repository?.full_name ?: ""
                 if (repo.isNotBlank() && Cfg.isRepoMuted(repo)) return@filter false
-                // GitHub 会把“在某条议题/PR 下参与过”标成 subscribed；用户没订阅仓库时不再冒充“你关注的仓库”。
-                if (n.reason == "subscribed" && n.subject?.type?.let { it == "Issue" || it == "PullRequest" } == true &&
-                    serverWatchNames != null && repo.isNotBlank() && repo !in serverWatchNames) return@filter false
+                // GitHub 会把“在某条议题/PR/发行版下参与过”标成 subscribed；用户没订阅仓库时，
+                // 这些通知不再冒充“你关注的仓库”。自己的仓库仍然保留。
+                if (n.reason == "subscribed" && serverWatchNames != null && repo.isNotBlank() &&
+                    repo !in serverWatchNames && repo.substringBefore('/') != Cfg.login) return@filter false
                 true
             }
             val newSeen = (seen + list.map { it.id }).toList().takeLast(300).toSet()

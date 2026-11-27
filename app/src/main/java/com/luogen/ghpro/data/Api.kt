@@ -618,8 +618,19 @@ object Api {
         if (e.code == 404) false else throw e
     }
     suspend fun watch(o: String, r: String, on: Boolean) {
-        val body = JsonObject().apply { addProperty("subscribed", on) }.toString()
-        exec("/repos/$o/$r/subscription", "PUT", body)
+        // 取消订阅必须走 DELETE；GitHub 文档里 PUT {"subscribed":false} 并不会真正取消，
+        // 这也是之前“列表里消失了，但服务端还继续发订阅通知”的根因。
+        if (on) {
+            val body = JsonObject().apply { addProperty("subscribed", true) }.toString()
+            exec("/repos/$o/$r/subscription", "PUT", body)
+        } else {
+            // 已经取消过（服务端 404）也算成功，不能因此把本地列表又“回滚”成已订阅。
+            try {
+                exec("/repos/$o/$r/subscription", "DELETE")
+            } catch (e: ApiException) {
+                if (e.code != 404) throw e
+            }
+        }
     }
     suspend fun fork(o: String, r: String): Repo {
         val body = JsonObject().apply { addProperty("default_branch_only", true) }.toString()

@@ -20,13 +20,24 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.luogen.ghpro.data.Api
+import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Repo
 import com.luogen.ghpro.data.RepoOwner
+import com.google.gson.Gson
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 private data class FSort(val key: String, val label: String)
+
+/** 磁盘里的精选快照；只存 GitHub Search 真正返回过的仓库，绝不存内置假数据。 */
+private data class FeaturedDisk(val at: Long = 0L, val total: Long = 0L, val items: List<Repo> = emptyList())
+
+private fun loadFeaturedDisk(sort: String): FeaturedSnap? = runCatching {
+    val json = Cfg.featuredCache(sort) ?: return null
+    val d = Gson().fromJson(json, FeaturedDisk::class.java) ?: return null
+    if (d.items.isEmpty()) null else FeaturedSnap(d.items, d.total, d.at, 0, 0)
+}.getOrNull()
 
 private val FEATURED_SORTS = listOf(
     FSort("stars", "最热门"),
@@ -41,7 +52,9 @@ fun FeaturedScreen(nav: NavController) {
     val scope = rememberCoroutineScope()
     var sort by rememberSaveable { mutableStateOf(UiCache.featuredSort) }
     val initialSnap = remember {
-        UiCache.featuredSnaps[UiCache.featuredSort]?.takeIf { it.list.isNotEmpty() }
+        val mem = UiCache.featuredSnaps[UiCache.featuredSort]?.takeIf { it.list.isNotEmpty() }
+        // 冷启动没有内存快照时，先用上次真实搜索落盘的列表，Search API 再后台校准。
+        mem ?: loadFeaturedDisk(UiCache.featuredSort)?.also { UiCache.featuredSnaps[UiCache.featuredSort] = it }
     }
     var list by remember { mutableStateOf<List<Repo>>(initialSnap?.list ?: emptyList()) }
     var total by remember { mutableStateOf(initialSnap?.total ?: 0L) }
@@ -83,6 +96,10 @@ fun FeaturedScreen(nav: NavController) {
             error = null
             offlineNote = null
             lastSync = System.currentTimeMillis()
+            // 落盘真实结果：下次冷启动先显示，不再让用户干等 1–3 分钟。
+            runCatching {
+                Cfg.saveFeaturedCache(s, Gson().toJson(FeaturedDisk(lastSync, total, items)))
+            }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
