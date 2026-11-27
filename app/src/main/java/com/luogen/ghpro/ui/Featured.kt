@@ -78,7 +78,7 @@ fun FeaturedScreen(nav: NavController) {
         if (!silent) loading = true
         try {
             val q = if (s == "updated") "stars:>500 pushed:>2020-01-01" else "stars:>1000"
-            val r = withTimeout(12_000L) { Api.searchReposFeatured(q, s, perPage = 30) }
+            val r = withTimeout(20_000L) { Api.searchReposFeatured(q, s, perPage = 30) }
             if (gen != loadGen || s != sort) return
             val items = when (s) {
                 "updated" -> r.items.sortedByDescending { it.pushed_at ?: it.updated_at ?: "" }
@@ -112,7 +112,7 @@ fun FeaturedScreen(nav: NavController) {
                     list = emptyList(); total = 0; lastSync = 0
                 }
                 loading = false
-                error = "精选加载超过 12 秒还没返回，网络或 GitHub 响应太慢；点重试，不会一直转圈"
+                error = "精选加载超过 20 秒还没返回，网络或 GitHub 响应太慢；点重试，不会一直转圈"
             }
             return
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -174,14 +174,14 @@ fun FeaturedScreen(nav: NavController) {
     LaunchedEffect(list) { if (list.isNotEmpty()) IssueCounts.loadBatch(list) }
 
     // 有些网络/代理会让 OkHttp 的阻塞请求迟迟不返回，协程超时也不一定立刻打断。
-    // 这里再加一个界面级看门狗：超过 15 秒仍在转圈且没有列表，就明确报超时并自动重试一次，
+    // 这里再加一个界面级看门狗：超过 24 秒仍在转圈且没有列表，就明确报超时并自动重试一次，
     // 绝不让用户对着“正在挑选高质量仓库”等一两分钟。
     LaunchedEffect(attempt) {
         if (attempt <= 0) return@LaunchedEffect
-        delay(15_000L)
+        delay(24_000L)
         if (loading && list.isEmpty()) {
             loading = false
-            error = "精选加载超过 15 秒还没返回，网络或 GitHub 响应太慢；正在自动重试一次"
+            error = "精选加载超过 24 秒还没返回，网络或 GitHub 响应太慢；正在自动重试一次"
             if (!autoRetried) {
                 autoRetried = true
                 scope.launch {
@@ -265,7 +265,7 @@ fun FeaturedScreen(nav: NavController) {
                     CircularProgressIndicator(Modifier.size(36.dp))
                     Spacer(Modifier.height(10.dp))
                     Text("正在挑选高质量仓库…", fontSize = 12.sp)
-                    Text("正在使用轻量接口；超过 15 秒会提示超时并自动重试一次", fontSize = 10.sp,
+                    Text("正在使用轻量接口；失败会自动换备用搜索，超时会提示并重试", fontSize = 10.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
                 }
                 error != null && list.isEmpty() -> ErrorBox(error) { scope.launch { load() } }

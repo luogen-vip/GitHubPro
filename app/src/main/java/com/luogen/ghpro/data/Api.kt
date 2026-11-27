@@ -1213,20 +1213,30 @@ object Api {
      * 不改动全局 searchRepos，避免搜索结果页依赖的 topics/open_issues 等字段被裁掉。
      */
     suspend fun searchReposFeatured(q: String, sort: String? = null, perPage: Int = 30): SearchRepos {
-        // 登录后只用 GraphQL 轻量搜索：16KB、1–3 秒。绝不再回退到 25 秒的 REST 大响应，
-        // 否则精选页会从“几秒”变成“转圈 40 秒”，用户会以为根本加载不出来。
+        // 第一优先仍是 16KB 的 GraphQL 轻量搜索；但它一旦失败/超时，不能直接判死刑，
+        // 用户会看到一个永远转圈的精选页。这里补一次 REST 备用搜索，网络/代理只挡 GraphQL
+        // 时仍能出结果；结果仍是真实 GitHub 数据，不塞假仓库。
         if (!token.isNullOrBlank()) {
-            return try {
-                withTimeout(10_000L) { searchReposLean(q, sort, perPage) }
+            val lean = try {
+                withTimeout(9_000L) { searchReposLean(q, sort, perPage) }
+            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                null
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                throw IOException("搜索请求失败：${e.message ?: "网络中断"}，点重试")
+                null
             }
+            if (lean != null && lean.items.isNotEmpty()) return lean
         }
         val query = mapOf("q" to q, "page" to "1", "per_page" to "$perPage", "sort" to sort, "order" to "desc")
-        val r = execOnce("/search/repositories", "GET", null, query, "application/vnd.github+json",
-            null, emptyMap(), null, searchHttp)
+        val r = try {
+            execOnce("/search/repositories", "GET", null, query, "application/vnd.github+json",
+                null, emptyMap(), null, searchHttp)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw IOException("搜索请求失败：${e.message ?: "网络中断"}，点重试")
+        }
         return parse(r.body, SearchRepos::class.java)
     }
 
