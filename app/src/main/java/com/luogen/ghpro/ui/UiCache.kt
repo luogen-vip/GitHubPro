@@ -23,6 +23,10 @@ data class HomeSnap(val repos: List<Repo>, val page: Int, val hasNext: Boolean)
 data class NotifSnap(val list: List<Notification>, val index: Int, val offset: Int)
 data class FeaturedSnap(val list: List<Repo>, val total: Long, val lastSync: Long, val index: Int, val offset: Int)
 
+private fun <K, V> lruCache(max: Int) = object : LinkedHashMap<K, V>(16, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<K, V>?): Boolean = size > max
+}
+
 object UiCache {
 
     // ---------------- 通知 ----------------
@@ -60,8 +64,8 @@ object UiCache {
     }
 
     // ---------------- 仓库详情 ----------------
-    val repoData = HashMap<String, Repo>()
-    val repoLangs = HashMap<String, Map<String, Long>>()
+    val repoData = lruCache<String, Repo>(40)
+    val repoLangs = lruCache<String, Map<String, Long>>(40)
     val repoStarred = HashMap<String, Boolean>()
     val repoWatching = HashMap<String, Boolean>()
     val repoTab = HashMap<String, Int>()
@@ -74,29 +78,29 @@ object UiCache {
     }
 
     // ---------------- 用户主页 ----------------
-    val userData = HashMap<String, User>()
-    val userRepos = HashMap<String, List<Repo>>()
+    val userData = lruCache<String, User>(30)
+    val userRepos = lruCache<String, List<Repo>>(30)
     val userTab = HashMap<String, Int>()
     val userIndex = HashMap<String, Int>()
 
     // ---------------- 代码浏览 ----------------
     val codePath = HashMap<String, String>()          // owner/name|branch -> 当前目录
-    val codeListing = HashMap<String, com.luogen.ghpro.data.DirListing>() // owner/name|branch|path
-    val fileContent = HashMap<String, String>()       // owner/name|branch|path
+    val codeListing = lruCache<String, com.luogen.ghpro.data.DirListing>(24) // owner/name|branch|path
+    val fileContent = lruCache<String, String>(16)       // owner/name|branch|path
     val codeScroll = HashMap<String, Int>()
     val codeScrollOffset = HashMap<String, Int>()
 
     // ---------------- 仓库各 Tab 列表 ----------------
-    val repoRuns = HashMap<String, List<Run>>()
-    val runData = HashMap<Long, Run>()
-    val runJobs = HashMap<Long, List<Job>>()
-    val runArtifacts = HashMap<Long, List<Artifact>>()
-    val repoIssues = HashMap<String, List<Issue>>()
+    val repoRuns = lruCache<String, List<Run>>(24)
+    val runData = lruCache<Long, Run>(80)
+    val runJobs = lruCache<Long, List<Job>>(50)
+    val runArtifacts = lruCache<Long, List<Artifact>>(50)
+    val repoIssues = lruCache<String, List<Issue>>(24)
     val issueOverrides = HashMap<String, Pair<Issue, Long>>()   // owner/name#number -> 本地乐观状态（10 秒内不被服务端旧数据覆盖）
-    val repoPulls = HashMap<String, List<PullRequest>>()
-    val repoReleases = HashMap<String, List<Release>>()
-    val repoContributors = HashMap<String, List<User>>()
-    val repoDiscussions = HashMap<String, List<Discussion>>()
+    val repoPulls = lruCache<String, List<PullRequest>>(24)
+    val repoReleases = lruCache<String, List<Release>>(24)
+    val repoContributors = lruCache<String, List<User>>(24)
+    val repoDiscussions = lruCache<String, List<Discussion>>(24)
     var pendingRelease: Long? = null
     var pendingReleaseTag: String? = null
     val repoCommits = HashMap<String, List<GitCommit>>()

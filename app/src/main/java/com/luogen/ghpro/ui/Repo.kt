@@ -151,7 +151,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
     // 仓库统计（Star/复刻/关注/议题）自动追最新，别人操作也能看到
     LaunchedEffect(owner, name) {
         while (isActive) {
-            delay(15_000L)
+            delay(5_000L)
             if (!loading && statPending == 0) runCatching {
                 val fresh = Api.repo(owner, name)
                 repo = fresh
@@ -550,6 +550,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
     var readmeTrLoading by remember(owner, name) { mutableStateOf(false) }
     var readmeTarget by remember(owner, name) { mutableStateOf(Cfg.translateTarget) }
     var readmePicker by remember { mutableStateOf(false) }
+    val readmeSame = readme?.let { TranslateApi.sameLanguage(it, readmeTarget) } ?: false
     var readmeError by remember(owner, name) { mutableStateOf<String?>(null) }
     var readmeJob by remember(owner, name) { mutableStateOf<Job?>(null) }
     var readmeSeq by remember(owner, name) { mutableStateOf(0) }
@@ -662,7 +663,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
             Text("README", fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
                 maxLines = 1, softWrap = false, modifier = Modifier.weight(1f))
             if (!readme.isNullOrBlank()) {
-                val sameLang = TranslateApi.sameLanguage(readme!!, readmeTarget)
+                val sameLang = readmeSame
                 val action = when {
                     sameLang -> "已是${TranslateApi.label(readmeTarget)}"
                     readmeTrLoading -> "取消翻译"
@@ -712,7 +713,11 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
         when {
             readmeLoading -> LoadingBox()
             readme.isNullOrBlank() -> EmptyBox("这个仓库还没有 README，点右上角「编辑」可以直接创建")
-            else -> MdText((if (!readmeShowOriginal) readmeTr else null) ?: readme!!.take(100_000), baseSize = 13)
+            else -> MdText(
+                if (readmeShowOriginal || readmeSame) readme!!.take(100_000)
+                else readmeTr ?: readme!!.take(100_000),
+                baseSize = 13
+            )
         }
         Spacer(Modifier.height(30.dp))
     }

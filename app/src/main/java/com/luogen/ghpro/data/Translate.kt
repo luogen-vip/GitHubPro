@@ -84,29 +84,92 @@ object TranslateApi {
 
     fun cached(text: String, target: String): Result? = synchronized(cache) { cache["$target\u0000$text"] }
 
-    // 简体中文和繁體中文都是“中文”，只靠 Unicode 范围分不出来；
-    // 用常用繁体专用字判断，避免用户选“繁體中文”时被误判成“已是简体中文”而不翻译。
-    private val traditionalOnly = "們這來個時為與學說對會還麼樣點發現實應該無數據網頁載體驗軟硬檔讀寫選擇轉換語言臺灣華龍鳳龜髮鬥鬱麵鹹後裡著於並從將產專業區問題幾張開關門間頭長萬爲"
+    // 只放“简体里绝不会出现”的繁体字。不要把「著 / 於 / 硬 / 後 / 面」这类
+    // 简体也会合法使用的字算进来，否则正常简体文本会被误判成繁体。
+    private val traditionalOnly = "們這來個時為與學說對會還麼樣點發現實應該無數據網頁載體驗軟檔讀寫選擇轉換語言臺灣華龍鳳龜髮鬥鬱鹹並從將產專業區問題幾張開關門間頭長萬爲"
+
+    // 只放“繁体里基本不会出现”的简体字，用于识别简繁混排。
+    private val simplifiedOnly = "们这个时与学说对会还么样点发现实应该无数据网页载体验软档读写选择转换语言华龙凤龟发并从将产专业区问题几张开关门间头长为湾证认识让给"
+
+    private data class Scripts(
+        val cjk: Int, val latin: Int, val kana: Int, val hangul: Int,
+        val cyr: Int, val arab: Int, val thai: Int
+    )
+
+    private fun scripts(text: String): Scripts {
+        var cjk = 0; var latin = 0; var kana = 0; var hangul = 0; var cyr = 0; var arab = 0; var thai = 0
+        for (c in text) {
+            val cp = c.code
+            when {
+                cp in 0x3040..0x30FF -> kana++
+                cp in 0xAC00..0xD7AF -> hangul++
+                cp in 0x4E00..0x9FFF -> cjk++
+                cp in 0x0400..0x04FF -> cyr++
+                cp in 0x0600..0x06FF -> arab++
+                cp in 0x0E00..0x0E7F -> thai++
+                cp in 'a'.code..'z'.code || cp in 'A'.code..'Z'.code -> latin++
+            }
+        }
+        return Scripts(cjk, latin, kana, hangul, cyr, arab, thai)
+    }
 
     fun isTraditionalChinese(text: String): Boolean =
         text.any { traditionalOnly.contains(it) }
 
+    fun hasSimplifiedChinese(text: String): Boolean =
+        text.any { simplifiedOnly.contains(it) }
+
+    private fun hasOtherScriptForZh(s: Scripts): Boolean =
+        s.kana > 3 || s.hangul > 3 || s.cyr > 3 || s.arab > 3 || s.thai > 3 ||
+            // 中文里夹大段英文/法文等拉丁文字，也要交给翻译，不能直接判定“已是中文”
+            s.latin > s.cjk * 0.2 + 6
+
     fun sameLanguage(text: String, target: String): Boolean {
-        val guess = guessLanguage(text) ?: return false
         val t = lang(target)
+        val s = scripts(text)
         return when (t.code) {
-            "zh-CN" -> guess == "zh" && !isTraditionalChinese(text)
-            "zh-TW" -> guess == "zh" && isTraditionalChinese(text)
-            else -> guess == t.code
+            "zh-CN" -> s.cjk > 0 && !isTraditionalChinese(text) && !hasOtherScriptForZh(s)
+            "zh-TW" -> s.cjk > 0 && !hasSimplifiedChinese(text) && !hasOtherScriptForZh(s)
+            "en" -> s.latin > 0 && s.cjk == 0 && s.kana == 0 && s.hangul == 0 &&
+                s.cyr == 0 && s.arab == 0 && s.thai == 0
+            "ja" -> s.kana > 0 && s.hangul < 4 && s.cyr < 4 &&
+                s.arab < 4 && s.thai < 4 && s.latin <= (s.cjk + s.kana) * 0.25 + 8
+            "ko" -> s.hangul > 0 && s.cjk < 4 && s.cyr < 4 && s.arab < 4 && s.thai < 4 &&
+                s.latin <= s.hangul * 0.25 + 8
+            "ru" -> s.cyr > 0 && s.cjk < 4 && s.kana < 4 && s.hangul < 4 && s.arab < 4 && s.thai < 4
+            "ar" -> s.arab > 0 && s.cjk < 4 && s.kana < 4 && s.hangul < 4 && s.cyr < 4 && s.thai < 4
+            "th" -> s.thai > 0 && s.cjk < 4 && s.kana < 4 && s.hangul < 4 && s.cyr < 4 && s.arab < 4
+            else -> guessLanguage(text) == t.code
         }
     }
 
-    /** 给界面显示“原文：简体中文 / 繁體中文”，而不是笼统的“中文”。 */
+    /** 给界面显示“原文：简体中文 / 繁體中文 / 多语言”，而不是笼统的“中文”。 */
     fun detectedLabel(text: String): String? {
-        val guess = guessLanguage(text) ?: return null
-        return if (guess == "zh") {
-            if (isTraditionalChinese(text)) "繁體中文" else "简体中文"
-        } else label(guess)
+        val s = scripts(text)
+        if (s.cjk == 0 && s.latin == 0 && s.kana == 0 && s.hangul == 0 &&
+            s.cyr == 0 && s.arab == 0 && s.thai == 0) return null
+        val kinds = ArrayList<String>()
+        // 有假名时优先按日语显示；纯汉字仍按中文显示。
+        if (s.cjk > 0 && s.kana < 4) {
+            val trad = isTraditionalChinese(text)
+            val simp = hasSimplifiedChinese(text)
+            kinds += when {
+                trad && simp -> "简繁混排中文"
+                trad -> "繁體中文"
+                simp -> "简体中文"
+                else -> "中文"
+            }
+        }
+        if (s.kana > 3) kinds += "日本語"
+        if (s.hangul > 3) kinds += "한국어"
+        if (s.cyr > 3) kinds += "Русский"
+        if (s.arab > 3) kinds += "العربية"
+        if (s.thai > 3) kinds += "ไทย"
+        if (s.latin > 4 && (s.cjk > 0 || s.kana > 0 || s.hangul > 0 || s.cyr > 0 || s.arab > 0 || s.thai > 0)) {
+            kinds += "拉丁文字"
+        }
+        if (kinds.isEmpty()) return null
+        return if (kinds.size > 1) "多语言（${kinds.joinToString("+")}）" else kinds[0]
     }
 
     /** 只做非常明确的文字系统判断，用于“原文已经是目标语言就不强行翻译”和给 MyMemory 源语言。 */
@@ -214,9 +277,19 @@ object TranslateApi {
         throw IOException(errors.joinToString("；"))
     }
 
-    private fun caiyunType(t: Lang): String = when (t.code) {
-        "zh-CN" -> "auto2zh"
-        "zh-TW" -> "auto2zh-Hant"
+    private fun hasLargeLatinPart(text: String): Boolean {
+        val s = scripts(text)
+        if (s.latin < 6) return false
+        return s.cjk > 0 && s.latin > s.cjk * 0.2 + 6
+    }
+
+    private fun caiyunType(t: Lang, chunk: String): String = when {
+        // 中文里混入大段英文/法文时，auto 可能只识别其中一种语言、把另一种原样留下；
+        // 固定用 en 作源语言再翻成中文，彩云会连同混排的其他外语一起处理。
+        t.code == "zh-CN" && hasLargeLatinPart(chunk) -> "en2zh"
+        t.code == "zh-TW" && hasLargeLatinPart(chunk) -> "en2zh-Hant"
+        t.code == "zh-CN" -> "auto2zh"
+        t.code == "zh-TW" -> "auto2zh-Hant"
         else -> "auto2${t.code}"
     }
 
@@ -225,7 +298,7 @@ object TranslateApi {
         if (!CaiyunGate.tryAcquire()) throw RateLimited("本机请求过快，已保护性跳过")
         val body = JsonObject().apply {
             add("source", JsonArray().apply { add(chunk) })
-            addProperty("trans_type", caiyunType(t))
+            addProperty("trans_type", caiyunType(t, chunk))
             addProperty("request_id", "ghpro-" + System.currentTimeMillis())
             addProperty("detect", true)
         }.toString().toRequestBody("application/json".toMediaType())

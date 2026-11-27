@@ -71,7 +71,7 @@ fun PullListTab(nav: NavController, owner: String, name: String) {
     }
     LaunchedEffect(state) {
         while (isActive) {
-            delay(15_000L)
+            delay(5_000L)
             if (page == 1 && !loading) runCatching { load(1, true, silent = true) }
         }
     }
@@ -166,7 +166,7 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
     LaunchedEffect(number) { load() }
     LaunchedEffect(number) {
         while (isActive) {
-            delay(15_000L)
+            delay(5_000L)
             if (!busy) runCatching { load() }
         }
     }

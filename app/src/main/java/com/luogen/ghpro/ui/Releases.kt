@@ -106,7 +106,7 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
     // 发行版/APK 实时刷新：别人刚上传也能在几秒内出现
     LaunchedEffect(Unit) {
         while (isActive) {
-            delay(15_000L)
+            delay(1_500L)
             if (page == 1 && !loading) runCatching { load(1, true, silent = true) }
         }
     }

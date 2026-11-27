@@ -126,7 +126,9 @@ fun TranslateBlock(
 
     Column(modifier) {
         Text(
-            text = if (!showOriginal && result != null) result!!.text else text,
+            // 原文已经是目标语言时，绝不显示上一次缓存的译文；
+            // 否则用户会看到“已是简体中文”却同时出现“显示原文/显示译文”，很困惑。
+            text = if (same || showOriginal || result == null) text else result!!.text,
             style = style,
             maxLines = maxLines,
             overflow = overflow
@@ -166,7 +168,7 @@ fun TranslateBlock(
                         job?.cancel()
                         picker = true
                     })
-                if (!compact) result?.let { r ->
+                if (!compact && !same) result?.let { r ->
                     val det = r.detected?.let { TranslateApi.label(it) }
                     Text((det?.let { "译自 $it · " } ?: "") + r.provider, fontSize = metaSize,
                         color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
