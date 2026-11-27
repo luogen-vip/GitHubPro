@@ -1,8 +1,9 @@
 package com.luogen.ghpro.ui
 
-import android.widget.MediaController
+import android.widget.Toast
 import android.widget.VideoView
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.*
@@ -11,6 +12,8 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -30,6 +33,7 @@ import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.luogen.ghpro.download.Downloader
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -112,17 +116,92 @@ private fun ImagePreview(file: File) {
 @Composable
 private fun VideoPreview(file: File) {
     val ctx = LocalContext.current
+    var prepared by remember(file.absolutePath) { mutableStateOf(false) }
+    var playing by remember(file.absolutePath) { mutableStateOf(false) }
+    var duration by remember(file.absolutePath) { mutableStateOf(0) }
+    var position by remember(file.absolutePath) { mutableStateOf(0) }
+    var dragging by remember(file.absolutePath) { mutableStateOf<Float?>(null) }
     val video = remember(file.absolutePath) {
         VideoView(ctx).apply {
             setVideoPath(file.absolutePath)
-            val mc = MediaController(ctx)
-            mc.setAnchorView(this)
-            setMediaController(mc)
-            setOnPreparedListener { mp -> mp.isLooping = false; start() }
+            setMediaController(null)
+            setOnPreparedListener { mp ->
+                mp.isLooping = false
+                duration = mp.duration.coerceAtLeast(0)
+                prepared = true
+                start()
+                playing = true
+            }
+            setOnCompletionListener { playing = false; position = duration }
+            setOnErrorListener { _, what, extra ->
+                Toast.makeText(ctx, "视频播放失败（$what/$extra）", Toast.LENGTH_SHORT).show()
+                prepared = false; playing = false
+                true
+            }
         }
     }
     DisposableEffect(video) { onDispose { runCatching { video.stopPlayback() } } }
-    AndroidView(factory = { video }, modifier = Modifier.fillMaxSize())
+    LaunchedEffect(video) {
+        while (true) {
+            if (prepared) {
+                duration = runCatching { video.duration }.getOrDefault(duration).coerceAtLeast(0)
+                if (dragging == null) position = runCatching { video.currentPosition }.getOrDefault(position)
+                playing = runCatching { video.isPlaying }.getOrDefault(playing)
+            }
+            delay(300L)
+        }
+    }
+    Box(Modifier.fillMaxSize()) {
+        AndroidView(factory = { video }, modifier = Modifier.fillMaxSize())
+        Column(
+            Modifier.fillMaxWidth().align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .background(Color.Black.copy(alpha = 0.62f))
+                .padding(horizontal = 8.dp, vertical = 8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                IconButton(onClick = {
+                    if (!prepared) return@IconButton
+                    if (video.isPlaying) {
+                        video.pause(); playing = false; position = runCatching { video.currentPosition }.getOrDefault(position)
+                    } else {
+                        if (position >= duration && duration > 0) video.seekTo(0)
+                        video.start(); playing = true
+                    }
+                }) {
+                    Icon(if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        if (playing) "暂停" else "播放", tint = Color.White, modifier = Modifier.size(25.dp))
+                }
+                Text(formatVideoTime(if (dragging != null) (dragging!! * duration).toInt() else position),
+                    color = Color.White, fontSize = 11.sp)
+                Slider(
+                    value = (dragging ?: if (duration > 0) position.toFloat() / duration else 0f).coerceIn(0f, 1f),
+                    onValueChange = { dragging = it },
+                    onValueChangeFinished = {
+                        val p = dragging
+                        if (p != null && duration > 0) {
+                            val ms = (p * duration).toInt().coerceIn(0, duration)
+                            video.seekTo(ms); position = ms
+                        }
+                        dragging = null
+                    },
+                    enabled = prepared && duration > 0,
+                    modifier = Modifier.weight(1f).padding(horizontal = 3.dp)
+                )
+                Text(formatVideoTime(duration), color = Color.White, fontSize = 11.sp)
+            }
+            Text("点播放/暂停，拖动进度条快进或快退", color = Color.White.copy(alpha = 0.55f),
+                fontSize = 9.sp, modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
+        }
+    }
+}
+
+private fun formatVideoTime(ms: Int): String {
+    val s = (ms / 1000).coerceAtLeast(0)
+    val h = s / 3600
+    val m = (s % 3600) / 60
+    val sec = s % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, sec) else "%d:%02d".format(m, sec)
 }
 
 @Composable

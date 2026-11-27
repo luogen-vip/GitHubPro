@@ -313,14 +313,29 @@ object Downloader {
 
     fun categoryOf(name: String): String {
         val n = name.lowercase()
+        val ext = n.substringAfterLast('.', "")
         return when {
-            n.endsWith(".apk") || n.endsWith(".xapk") || n.endsWith(".apks") -> "应用"
-            n.endsWith(".jpg") || n.endsWith(".jpeg") || n.endsWith(".png") || n.endsWith(".webp") || n.endsWith(".gif") -> "图片"
-            n.endsWith(".mp4") || n.endsWith(".mkv") || n.endsWith(".mov") || n.endsWith(".webm") || n.endsWith(".avi") -> "视频"
-            n.endsWith(".mp3") || n.endsWith(".flac") || n.endsWith(".wav") || n.endsWith(".m4a") || n.endsWith(".ogg") -> "音频"
-            n.endsWith(".zip") || n.endsWith(".7z") || n.endsWith(".rar") || n.endsWith(".tar") || n.endsWith(".gz") -> "压缩包"
-            n.endsWith(".iso") || n.endsWith(".esd") || n.endsWith(".img") || n.endsWith(".wim") -> "镜像"
-            n.endsWith(".pdf") || n.endsWith(".doc") || n.endsWith(".docx") || n.endsWith(".xls") || n.endsWith(".xlsx") || n.endsWith(".txt") || n.endsWith(".md") -> "文档"
+            // 应用/安装包（含安卓分卷、Windows、Linux、iOS）
+            ext in setOf("apk", "xapk", "apks", "aab", "ipa", "exe", "msi", "msix", "pkg", "deb", "rpm", "obb", "jar") ||
+                n.contains(".apk.") -> "应用"
+            ext in setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "svg", "heic", "heif", "avif", "tiff", "ico") -> "图片"
+            ext in setOf("mp4", "mkv", "mov", "webm", "avi", "3gp", "m4v", "mpg", "mpeg", "ts", "ogv") -> "视频"
+            ext in setOf("mp3", "flac", "wav", "m4a", "ogg", "opus", "aac", "wma", "amr", "mid", "midi") -> "音频"
+            // 复合后缀/分卷：tar.gz、tar.zst、7z.001、zip.001 都算压缩包
+            ext in setOf("zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "zst", "lz4", "lzma", "cab", "001", "002", "003") ||
+                n.endsWith(".tar.gz") || n.endsWith(".tar.bz2") || n.endsWith(".tar.xz") ||
+                n.endsWith(".tar.zst") || n.contains(".7z.") || n.contains(".zip.") || n.contains(".rar.") -> "压缩包"
+            ext in setOf("iso", "esd", "img", "wim", "vhd", "vhdx", "dmg", "qcow2", "vmdk") -> "镜像"
+            ext in setOf("pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "log", "rtf",
+                "odt", "ods", "odp", "epub", "mobi", "azw3", "pages", "numbers", "key") -> "文档"
+            ext in setOf("kt", "kts", "java", "py", "js", "mjs", "cjs", "ts", "tsx", "jsx", "c", "cc", "cpp",
+                "h", "hpp", "cs", "go", "rs", "rb", "php", "swift", "sh", "bash", "bat", "cmd", "ps1",
+                "html", "htm", "css", "scss", "sass", "less", "vue", "gradle", "make", "mk", "wasm", "asm") -> "代码"
+            ext in setOf("json", "xml", "csv", "tsv", "yaml", "yml", "toml", "ini", "conf", "properties",
+                "sql", "db", "sqlite", "parquet", "avro", "ipynb", "reg", "pem", "crt", "cer", "key", "p12") -> "数据"
+            ext in setOf("ttf", "otf", "woff", "woff2", "eot", "fon", "ttc") -> "字体"
+            ext in setOf("stl", "obj", "fbx", "glb", "gltf", "blend", "3ds", "dae", "ply", "3mf", "step", "stp") -> "3D模型"
+            ext == "torrent" -> "种子"
             else -> "其他"
         }
     }
@@ -488,20 +503,53 @@ object Downloader {
 
     fun mimeOf(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
         "apk" -> "application/vnd.android.package-archive"
+        "xapk", "apks", "aab" -> "application/vnd.android.package-archive"
+        "ipa" -> "application/octet-stream"
         "zip" -> "application/zip"
+        "7z" -> "application/x-7z-compressed"
+        "rar" -> "application/vnd.rar"
+        "tar" -> "application/x-tar"
+        "gz", "tgz" -> "application/gzip"
         "json" -> "application/json"
+        "xml" -> "application/xml"
+        "csv" -> "text/csv"
+        "yaml", "yml" -> "application/yaml"
         "txt", "log", "md" -> "text/plain"
+        "html", "htm" -> "text/html"
+        "css" -> "text/css"
+        "js" -> "text/javascript"
         "png" -> "image/png"
         "jpg", "jpeg" -> "image/jpeg"
         "webp" -> "image/webp"
         "gif" -> "image/gif"
+        "svg" -> "image/svg+xml"
+        "heic", "heif" -> "image/heic"
+        "avif" -> "image/avif"
         "mp4" -> "video/mp4"
         "mkv" -> "video/x-matroska"
         "webm" -> "video/webm"
+        "mov" -> "video/quicktime"
+        "avi" -> "video/x-msvideo"
         "mp3" -> "audio/mpeg"
         "wav" -> "audio/wav"
         "flac" -> "audio/flac"
+        "ogg", "opus" -> "audio/ogg"
+        "m4a" -> "audio/mp4"
         "pdf" -> "application/pdf"
+        "doc", "docx" -> "application/msword"
+        "xls", "xlsx" -> "application/vnd.ms-excel"
+        "ppt", "pptx" -> "application/vnd.ms-powerpoint"
+        "epub" -> "application/epub+zip"
+        "ttf" -> "font/ttf"
+        "otf" -> "font/otf"
+        "woff" -> "font/woff"
+        "woff2" -> "font/woff2"
+        "stl" -> "model/stl"
+        "obj" -> "model/obj"
+        "glb" -> "model/gltf-binary"
+        "gltf" -> "model/gltf+json"
+        "iso" -> "application/x-iso9660-image"
+        "torrent" -> "application/x-bittorrent"
         else -> "application/octet-stream"
     }
 

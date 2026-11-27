@@ -31,19 +31,7 @@ private val statusPresets = listOf("💬", "🏠", "🏢", "🚀", "🎯", "💤
 fun MyStatusCard() {
     val ver by Bus.statusPoke.collectAsState()
     var show by remember { mutableStateOf(false) }
-    var syncing by remember { mutableStateOf(false) }
     val line = remember(ver) { myStatusLine() }
-
-    // 打开设置页时从 GitHub 拉一次真实状态，换手机/网页改过也能同步回来。
-    LaunchedEffect(Unit) {
-        if (Cfg.token.isNullOrBlank()) return@LaunchedEffect
-        syncing = true
-        runCatching { Api.myStatus() }.onSuccess {
-            Cfg.saveStatus(it)
-            Bus.statusChanged()
-        }
-        syncing = false
-    }
 
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Column(Modifier.fillMaxWidth().padding(14.dp)) {
@@ -57,7 +45,7 @@ fun MyStatusCard() {
                 }
                 TextButton(onClick = { show = true }) { Text(if (line.isNullOrBlank()) "设置" else "修改", fontSize = 12.sp) }
             }
-            Text(if (syncing) "正在读取 GitHub 上的状态…" else "状态是 GitHub 官方 GraphQL 写的，不是只改本机；清除后台/重开 App 仍保留。",
+            Text("状态由 GitHub 官方 GraphQL 保存，不是只改本机；外部改动会在本页静默同步，设置/清除后立即更新。",
                 fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
         }
     }

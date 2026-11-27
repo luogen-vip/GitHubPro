@@ -65,6 +65,11 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
     var showCreate by rememberSaveable { mutableStateOf(false) }
     var uploadTargetId by rememberSaveable { mutableStateOf(-1L) }
     var editTarget by remember { mutableStateOf<Release?>(null) }
+    var assetUploading by remember { mutableStateOf(false) }
+    var assetName by remember { mutableStateOf("") }
+    var assetSent by remember { mutableStateOf(0L) }
+    var assetTotal by remember { mutableStateOf(0L) }
+    var assetPct by remember { mutableStateOf(0) }
     val snackbar = remember { SnackbarHostState() }
 
     suspend fun load(p: Int, replace: Boolean, silent: Boolean = false) {
@@ -116,6 +121,7 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
         val rel = list.firstOrNull { it.id == uploadTargetId } ?: return@rememberLauncherForActivityResult
         scope.launch {
             try {
+                assetUploading = true; assetName = ""; assetSent = 0L; assetTotal = 0L; assetPct = 0
                 val f = File(ctx.cacheDir, "upload.tmp")
                 var n = uri.lastPathSegment?.substringAfterLast('/') ?: "asset.bin"
                 runCatching {
@@ -124,9 +130,14 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                         if (idx >= 0 && c.moveToFirst()) c.getString(idx)?.takeIf { it.isNotBlank() }?.let { n = it }
                     }
                 }
+                assetName = n
                 ctx.contentResolver.openInputStream(uri)?.use { input -> f.outputStream().use { input.copyTo(it) } }
+                assetTotal = f.length()
                 snackbar.showSnackbar("正在上传 $n …")
-                val ret = Api.uploadReleaseAsset(owner, name, rel.id, f, n)
+                val ret = Api.uploadReleaseAsset(owner, name, rel.id, f, n) { sent, total ->
+                    assetSent = sent; assetTotal = total
+                    assetPct = if (total > 0) ((sent * 100) / total).toInt() else 0
+                }
                 val id = ret.get("id")?.asLong ?: 0L
                 val url = ret.get("browser_download_url")?.asString ?: ""
                 val sz = ret.get("size")?.asLong ?: f.length()
@@ -141,6 +152,8 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                 load(1, true, silent = true)
             } catch (e: Exception) {
                 snackbar.showSnackbar("上传失败：${e.message}")
+            } finally {
+                assetUploading = false
             }
         }
     }
@@ -357,6 +370,25 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                 }) { Text(if (ebusy) "保存中…" else "保存") }
             },
             dismissButton = { TextButton({ if (!ebusy) editTarget = null }) { Text("取消") } }
+        )
+    }
+
+    if (assetUploading) {
+        AlertDialog(
+            onDismissRequest = { },
+            title = { Text("上传发行版附件", fontSize = 15.sp) },
+            text = {
+                Column {
+                    Text(assetName, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(10.dp))
+                    LinearProgressIndicator(progress = { assetPct / 100f }, modifier = Modifier.fillMaxWidth())
+                    Text(if (assetTotal > 0)
+                        "真实上传进度 $assetPct% · ${humanSize(assetSent)} / ${humanSize(assetTotal)}"
+                    else "正在准备上传…", fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 5.dp))
+                }
+            },
+            confirmButton = {}
         )
     }
 }

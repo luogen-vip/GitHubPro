@@ -35,7 +35,7 @@ import com.luogen.ghpro.download.DlRecord
 import com.luogen.ghpro.download.Downloader
 import java.io.File
 
-private val CATS = listOf("全部", "应用", "图片", "视频", "音频", "压缩包", "镜像", "文档", "其他")
+private val CATS = listOf("全部", "应用", "图片", "视频", "音频", "压缩包", "镜像", "文档", "代码", "数据", "字体", "3D模型", "种子", "其他")
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable

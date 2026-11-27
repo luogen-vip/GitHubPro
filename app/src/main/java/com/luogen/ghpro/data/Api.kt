@@ -12,10 +12,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Headers
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import okio.BufferedSink
+import okio.Buffer
+import okio.ForwardingSink
+import okio.buffer
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
@@ -24,6 +30,38 @@ class ApiException(val code: Int, override val message: String, val body: String
 data class Page<T>(val items: List<T>, val hasNext: Boolean)
 
 data class DirListing(val isFile: Boolean, val items: List<ContentItem>, val file: ContentItem?)
+
+/** 真实上传进度：在写入网络流时按实际写出的字节回调，不是假动画。 */
+private class ProgressRequestBody(
+    private val delegate: RequestBody,
+    private val onProgress: (Long, Long) -> Unit
+) : RequestBody() {
+    override fun contentType(): MediaType? = delegate.contentType()
+    override fun contentLength(): Long = delegate.contentLength()
+
+    override fun writeTo(sink: BufferedSink) {
+        val total = contentLength()
+        var sent = 0L
+        var lastAt = 0L
+        var lastPct = -1
+        onProgress(0L, total)
+        val counting = object : ForwardingSink(sink) {
+            override fun write(source: Buffer, byteCount: Long) {
+                super.write(source, byteCount)
+                sent += byteCount
+                val pct = if (total > 0) ((sent * 100) / total).toInt() else 0
+                val now = System.currentTimeMillis()
+                if (pct != lastPct || sent == total || now - lastAt >= 80) {
+                    lastPct = pct; lastAt = now
+                    onProgress(sent, total)
+                }
+            }
+        }
+        val buffered = counting.buffer()
+        delegate.writeTo(buffered)
+        buffered.flush()
+    }
+}
 
 object Api {
 
@@ -51,6 +89,15 @@ object Api {
             .writeTimeout(30, TimeUnit.MINUTES)
             .readTimeout(30, TimeUnit.MINUTES)
             .callTimeout(30, TimeUnit.MINUTES)
+            .build()
+    }
+
+    /** 搜索接口单独用短超时：精选页网络差时不能一直转圈。 */
+    private val searchHttp: OkHttpClient by lazy {
+        http.newBuilder()
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(12, TimeUnit.SECONDS)
+            .callTimeout(15, TimeUnit.SECONDS)
             .build()
     }
 
@@ -85,12 +132,14 @@ object Api {
         query: Map<String, String?> = emptyMap(),
         accept: String = "application/vnd.github+json",
         absoluteUrl: String? = null,
-        extraHeaders: Map<String, String> = emptyMap()
+        extraHeaders: Map<String, String> = emptyMap(),
+        onProgress: ((Long, Long) -> Unit)? = null,
+        client: OkHttpClient = http
     ): Resp {
         var last: Exception? = null
         repeat(2) { i ->
             try {
-                return execOnce(path, method, body, query, accept, absoluteUrl, extraHeaders)
+                return execOnce(path, method, body, query, accept, absoluteUrl, extraHeaders, onProgress, client)
             } catch (e: ApiException) {
                 throw e
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -110,7 +159,9 @@ object Api {
         query: Map<String, String?>,
         accept: String,
         absoluteUrl: String?,
-        extraHeaders: Map<String, String>
+        extraHeaders: Map<String, String>,
+        onProgress: ((Long, Long) -> Unit)?,
+        client: OkHttpClient
     ): Resp = withContext(Dispatchers.IO) {
         val b = Request.Builder()
             .url(absoluteUrl ?: buildUrl(path, query))
@@ -119,13 +170,14 @@ object Api {
             .header("X-GitHub-Api-Version", "2022-11-28")
         token?.takeIf { it.isNotBlank() }?.let { b.header("Authorization", "Bearer $it") }
         extraHeaders.forEach { (k, v) -> b.header(k, v) }
-        val rb = when (method) {
+        val rawBody = when (method) {
             "GET" -> null
             "DELETE" -> "".toRequestBody(JSON)
             else -> (body ?: "{}").toRequestBody(JSON)
         }
+        val rb = if (rawBody != null && onProgress != null) ProgressRequestBody(rawBody, onProgress) else rawBody
         b.method(method, rb)
-        val resp = http.newCall(b.build()).execute()
+        val resp = client.newCall(b.build()).execute()
         resp.use {
             val text = it.body?.string() ?: ""
             it.header("X-RateLimit-Remaining")?.toIntOrNull()?.let { r -> lastRateRemaining = r }
@@ -310,14 +362,14 @@ object Api {
     suspend fun fileItem(o: String, r: String, path: String, ref: String?): ContentItem =
         callObj("/repos/$o/$r/contents/${encPath(path)}", ContentItem::class.java, mapOf("ref" to ref))
 
-    suspend fun putFile(o: String, r: String, path: String, message: String, base64: String, sha: String?, branch: String?): JsonObject {
+    suspend fun putFile(o: String, r: String, path: String, message: String, base64: String, sha: String?, branch: String?, onProgress: ((Long, Long) -> Unit)? = null): JsonObject {
         val body = JsonObject().apply {
             addProperty("message", message)
             addProperty("content", base64)
             if (sha != null) addProperty("sha", sha)
             if (branch != null) addProperty("branch", branch)
         }
-        return JsonParser.parseString(exec("/repos/$o/$r/contents/${encPath(path)}", "PUT", body.toString()).body).asJsonObject
+        return JsonParser.parseString(exec("/repos/$o/$r/contents/${encPath(path)}", "PUT", body.toString(), onProgress = onProgress).body).asJsonObject
     }
 
     private suspend fun collectFiles(o: String, r: String, path: String, branch: String?): List<String> {
@@ -833,7 +885,7 @@ object Api {
     }
 
     /** 把文件上传到 GitHub LFS（单文件最大 2GB，受账号 LFS 配额限制），返回 oid。 */
-    suspend fun lfsUpload(o: String, r: String, file: java.io.File): String = withContext(Dispatchers.IO) {
+    suspend fun lfsUpload(o: String, r: String, file: java.io.File, onProgress: ((Long, Long) -> Unit)? = null): String = withContext(Dispatchers.IO) {
         val oid = sha256File(file)
         val body = JsonObject().apply {
             addProperty("operation", "upload")
@@ -866,7 +918,8 @@ object Api {
             upload.getAsJsonObject("header")?.entrySet()?.forEach { (k, v) -> headers[k] = v.asString }
             val pb = Request.Builder().url(href)
             headers.forEach { (k, v) -> pb.header(k, v) }
-            val put = pb.put(file.asRequestBody("application/octet-stream".toMediaType())).build()
+            val raw = file.asRequestBody("application/octet-stream".toMediaType())
+            val put = pb.put(if (onProgress != null) ProgressRequestBody(raw, onProgress) else raw).build()
             uploadHttp.newCall(put).execute().use { up ->
                 if (!up.isSuccessful) throw IOException("LFS 文件上传失败（HTTP ${up.code}）")
             }
@@ -996,10 +1049,11 @@ object Api {
     suspend fun deleteRelease(o: String, r: String, id: Long) { exec("/repos/$o/$r/releases/$id", "DELETE") }
     suspend fun deleteAsset(o: String, r: String, assetId: Long) { exec("/repos/$o/$r/releases/assets/$assetId", "DELETE") }
 
-    suspend fun uploadReleaseAsset(o: String, r: String, releaseId: Long, file: java.io.File, name: String): JsonObject =
+    suspend fun uploadReleaseAsset(o: String, r: String, releaseId: Long, file: java.io.File, name: String, onProgress: ((Long, Long) -> Unit)? = null): JsonObject =
         withContext(Dispatchers.IO) {
             val url = "https://uploads.github.com/repos/$o/$r/releases/$releaseId/assets?name=${enc(name)}"
-            val body = file.asRequestBody("application/octet-stream".toMediaType())
+            val body0 = file.asRequestBody("application/octet-stream".toMediaType())
+            val body = if (onProgress != null) ProgressRequestBody(body0, onProgress) else body0
             val req = Request.Builder().url(url)
                 .header("Authorization", "Bearer ${token ?: ""}")
                 .header("Accept", "application/vnd.github+json")
@@ -1059,7 +1113,7 @@ object Api {
     // ---------------- 搜索 ---------------- ----------------
     suspend fun searchRepos(q: String, page: Int = 1, sort: String? = null, order: String? = null, perPage: Int = 30): SearchRepos {
         val query = mapOf("q" to q, "page" to "$page", "per_page" to "$perPage", "sort" to sort, "order" to order)
-        return parse(raw("/search/repositories", query = query), SearchRepos::class.java)
+        return parse(exec("/search/repositories", query = query, client = searchHttp).body, SearchRepos::class.java)
     }
     suspend fun searchUsers(q: String, page: Int = 1, perPage: Int = 30): SearchUsers =
         parse(raw("/search/users", query = mapOf("q" to q, "page" to "$page", "per_page" to "$perPage")), SearchUsers::class.java)

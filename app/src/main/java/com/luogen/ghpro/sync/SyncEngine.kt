@@ -16,6 +16,7 @@ import com.luogen.ghpro.data.Bus
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.GhEvent
 import com.luogen.ghpro.data.LocalNotice
+import com.luogen.ghpro.data.Repo
 import com.luogen.ghpro.data.Run
 import java.time.Duration
 import java.time.Instant
@@ -140,10 +141,18 @@ object SyncEngine {
 
         // 1.5 已 Star 的仓库被作者删除 / 转私有 / 改名：真实复查，发现就通知，不是靠列表消失猜
         try {
-            val starredNow = Api.starred(1).items.map { it.full_name }.toSet()
+            val starredNow = ArrayList<String>()
+            var sp = 1
+            while (sp <= 3) {
+                val pg = runCatching { Api.starred(sp) }.getOrNull() ?: break
+                starredNow.addAll(pg.items.map { it.full_name })
+                if (!pg.hasNext) break
+                sp++
+            }
+            val starredSet = starredNow.toSet()
             val old = Cfg.starredSnapshot
             if (old.isNotEmpty()) {
-                (old - starredNow).take(3).forEach { gone ->
+                (old - starredSet).filter { !Cfg.isRepoMuted(it) }.take(3).forEach { gone ->
                     val parts = gone.split("/")
                     if (parts.size == 2) {
                         val still = runCatching { Api.repo(parts[0], parts[1]) }
@@ -157,19 +166,26 @@ object SyncEngine {
                             }
                         } else if (e != null && (e.message?.contains("404") == true || e.message?.contains("Not Found", true) == true)) {
                             val body = "$gone 已经不在 GitHub 上了（被作者删除或改成了私有仓库），已从 Star 列表移除"
-                            if (notify) Notifier.generic(ctx, "Star 的仓库已消失", body)
-                            changes.add(Change("Star 的仓库已消失", body, "repo_gone"))
+                            if (notify && !Cfg.isRepoMuted(gone)) Notifier.generic(ctx, "Star 的仓库已消失", body)
+                            if (!Cfg.isRepoMuted(gone)) changes.add(Change("Star 的仓库已消失", body, "repo_gone"))
                         }
                     }
                 }
             }
-            Cfg.starredSnapshot = starredNow
-            Cfg.replaceStarred(starredNow)
+            Cfg.starredSnapshot = starredSet
+            Cfg.replaceStarred(starredSet)
         } catch (e: Exception) { }
 
         // 2. 我的仓库 Star / 更新时间变化
         try {
-            val repos = Api.myRepos(1, 100).items
+            val repos = ArrayList<Repo>()
+            var mp = 1
+            while (mp <= 3) {
+                val pg = Api.myRepos(mp, 100)
+                repos.addAll(pg.items)
+                if (!pg.hasNext) break
+                mp++
+            }
             repos.forEach { r ->
                 val key = r.full_name
                 myReposNow.add(key)
@@ -178,15 +194,19 @@ object SyncEngine {
                     val oldStars = old.get("stars")?.asInt ?: 0
                     if (r.stargazers_count > oldStars) {
                         val body = "${r.full_name} 收到新的 Star，现在共 ${r.stargazers_count} 个"
-                        if (notify) Notifier.generic(ctx, "⭐ 新增 ${r.stargazers_count - oldStars} 个 Star", body, repoRoute(r.full_name))
-                        changes.add(Change("⭐ 新增 Star", body, "star", repoRoute(r.full_name)))
+                        if (!Cfg.isRepoMuted(r.full_name)) {
+                            if (notify) Notifier.generic(ctx, "⭐ 新增 ${r.stargazers_count - oldStars} 个 Star", body, repoRoute(r.full_name))
+                            changes.add(Change("⭐ 新增 Star", body, "star", repoRoute(r.full_name)))
+                        }
                     }
                     val oldPushed = old.get("pushed")?.asString
                     if (oldPushed != null && r.pushed_at != null && oldPushed != r.pushed_at) {
                         val body = "${r.full_name} 有新提交推送到 ${r.default_branch ?: "main"}"
                         val route = commitRoute(r.full_name, r.default_branch)
-                        if (notify) Notifier.generic(ctx, "仓库有更新", body, route)
-                        changes.add(Change("仓库有更新", body, "push", route))
+                        if (!Cfg.isRepoMuted(r.full_name)) {
+                            if (notify) Notifier.generic(ctx, "仓库有更新", body, route)
+                            changes.add(Change("仓库有更新", body, "push", route))
+                        }
                     }
                 }
                 val o = JsonObject().apply {
@@ -215,13 +235,15 @@ object SyncEngine {
                 val route = "run/$full/${run.id}"
                 val muted = Cfg.isRepoMuted(full)
                 if (notify && !muted) Notifier.actionDone(ctx, title, body, full, run.html_url, route)
-                changes.add(Change(title, body, "run", route))
+                if (!muted) changes.add(Change(title, body, "run", route))
             } else if (old == null && (run.status == "in_progress" || run.status == "queued") && recentIso(run.created_at, 2 * 60 * 60_000L)) {
                 val title = "🚀 工作流开始 · $full"
                 val body = "${run.display_title ?: run.name ?: ""} 已开始运行"
                 val route = "run/$full/${run.id}"
-                changes.add(Change(title, body, "run_start", route))
-                if (notify && !Cfg.isRepoMuted(full)) Notifier.generic(ctx, title, body, route)
+                if (!Cfg.isRepoMuted(full)) {
+                    changes.add(Change(title, body, "run_start", route))
+                    if (notify) Notifier.generic(ctx, title, body, route)
+                }
             }
             val o2 = JsonObject().apply {
                 addProperty("status", run.status)
@@ -234,7 +256,9 @@ object SyncEngine {
 
         try {
             // 关注的仓库 + 已 Star 的仓库都要收到新发行版/新提交提醒
-            val watch = (Cfg.watchRepos + Cfg.starredSnapshot).take(20)
+            // GitHub 的 /notifications 已经覆盖所有仓库的通知；这里重点轮询你的仓库/Star 仓库的推送和发行版。
+            // 不做 20 个硬截断，避免星标很多时后面的仓库永远收不到；最多取 60 个，避免一次请求过多。
+            val watch = (Cfg.watchRepos + Cfg.starredSnapshot + myReposNow).distinct().take(60)
             watch.forEach { full ->
                 val parts = full.split("/")
                 if (parts.size != 2) return@forEach
@@ -332,6 +356,8 @@ object SyncEngine {
                 ))
             }
         }
+        // 重装后自动把“我的仓库 + 已 Star 的仓库”播种到监听列表；只做一次，用户删掉不会复活。
+        Cfg.seedWatchRepos(myReposNow.toList() + Cfg.starredSnapshot.toList())
         save(root)
         if (changes.isNotEmpty()) Bus.poke()
         return changes

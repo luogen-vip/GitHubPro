@@ -118,7 +118,8 @@ object Cfg {
         set(v) { sp.edit().putBoolean("notify", v).apply() }
 
     var watchEnabled: Boolean
-        get() = sp.getBoolean("watch_enabled", false)
+        // 新装默认开启；关闭过的用户仍保留自己的选择。
+        get() = sp.getBoolean("watch_enabled", true)
         set(v) { sp.edit().putBoolean("watch_enabled", v).apply() }
 
     var autoRefresh: Boolean
@@ -187,6 +188,17 @@ object Cfg {
     var watchRepos: MutableSet<String>
         get() = sp.getStringSet("watch_repos", emptySet())?.toMutableSet() ?: mutableSetOf()
         set(v) { sp.edit().putStringSet("watch_repos", v.toSet()).apply() }
+
+    /** 重装/首次同步后自动把你的仓库和已 Star 的仓库放进监听列表；只播种一次，之后删掉不会再加回来。 */
+    fun seedWatchRepos(repos: Collection<String>) {
+        if (sp.getBoolean("watch_seeded_v19", false)) return
+        val valid = repos.filter { it.contains("/") && it.substringBefore("/").isNotBlank() && it.substringAfter("/").isNotBlank() }
+        if (valid.isEmpty()) return // 接口失败时不要标记已播种，下次继续补
+        val current = watchRepos
+        valid.take(180).forEach { current.add(it) }
+        sp.edit().putStringSet("watch_repos", current.toSet())
+            .putBoolean("watch_seeded_v19", true).apply()
+    }
 
 
     var crashCount: Int

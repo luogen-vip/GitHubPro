@@ -66,7 +66,7 @@ fun FeaturedScreen(nav: NavController) {
                 else -> r.items.sortedByDescending { it.stargazers_count }
             }
             if (items.isEmpty()) {
-                if (!silent && list.isEmpty()) error = "这次没有取到仓库，点“重新加载”再试一次"
+                if (!silent && list.isEmpty()) error = "精选接口这次没有返回仓库，点“重新加载”再试一次；如果一直这样，可能是 GitHub 搜索限流"
                 return
             }
             list = items
@@ -163,7 +163,13 @@ fun FeaturedScreen(nav: NavController) {
                 }
             }
             when {
-                loading && list.isEmpty() -> LoadingBox("正在挑选高质量仓库…")
+                loading && list.isEmpty() -> Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(Modifier.size(36.dp))
+                    Spacer(Modifier.height(10.dp))
+                    Text("正在挑选高质量仓库…", fontSize = 12.sp)
+                    Text("最多等 15 秒；超时会直接提示重试，不会一直转圈", fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
+                }
                 error != null && list.isEmpty() -> ErrorBox(error) { scope.launch { load() } }
                 list.isEmpty() -> Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     EmptyBox("暂时没有取到精选仓库")

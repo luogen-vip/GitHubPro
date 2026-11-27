@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Bus
+import com.luogen.ghpro.data.UserStatus
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.download.Downloader
 import com.luogen.ghpro.sync.CrashReporter
@@ -74,11 +75,49 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
     }
     var safe by remember { mutableStateOf(Cfg.safeMode) }
     var crash by remember { mutableStateOf(CrashReporter.lastCrash(ctx)) }
+    var crashHistory by remember { mutableStateOf(CrashReporter.history(ctx)) }
     var crashMsg by remember { mutableStateOf<String?>(null) }
     var uploading by remember { mutableStateOf(false) }
     var showCrash by remember { mutableStateOf(false) }
+    var showCrashHistory by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { watching = WatchService.running.value }
+
+    // 只在进入设置页时同步状态，之后每 10 秒静默对齐一次；滚动不会触发，不再反复“正在读取”。
+    LaunchedEffect(Unit) {
+        if (Cfg.token.isNullOrBlank()) return@LaunchedEffect
+        runCatching { Api.myStatus() }.onSuccess { Cfg.saveStatus(it); Bus.statusChanged() }
+        while (isActive) {
+            delay(10_000L)
+            runCatching { Api.myStatus() }.onSuccess { fresh ->
+                val current = UserStatus(Cfg.statusEmoji, Cfg.statusMessage, Cfg.statusBusy, Cfg.statusExpiresAt)
+                if (fresh != current) { Cfg.saveStatus(fresh); Bus.statusChanged() }
+            }
+        }
+    }
+
+    // 重装后监听列表为空时，自动把你的仓库 + 已 Star 的仓库补进来（只补一次，删掉不会复活）。
+    LaunchedEffect(Unit) {
+        if (watch.isNotEmpty() || Cfg.token.isNullOrBlank()) return@LaunchedEffect
+        val names = ArrayList<String>()
+        var p = 1
+        while (p <= 3) {
+            val pg = runCatching { Api.myRepos(p, 100) }.getOrNull() ?: break
+            names.addAll(pg.items.map { it.full_name })
+            if (!pg.hasNext) break
+            p++
+        }
+        p = 1
+        while (p <= 3) {
+            val pg = runCatching { Api.starred(p) }.getOrNull() ?: break
+            names.addAll(pg.items.map { it.full_name })
+            if (!pg.hasNext) break
+            p++
+        }
+        Cfg.seedWatchRepos(names)
+        watch = Cfg.watchRepos.toList()
+        muteTick++
+    }
 
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
         item {
@@ -122,7 +161,9 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("监听仓库（${watch.size}）", fontSize = 13.sp, modifier = Modifier.weight(1f))
             }
-            if (watch.isEmpty()) Text("还没有监听仓库：新建仓库会自动加入，也可以下面手动添加", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (watch.isEmpty()) Text("监听列表为空：正在从你的仓库和已 Star 仓库自动补入，也可下面手动添加…", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("通知不等于只看这个列表：GitHub 通知接口覆盖你的所有仓库；这里只是额外重点轮询推送/发行版，默认全部通知，只有手动静音才停。",
+                fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp, bottom = 3.dp))
             watch.forEach { w ->
                 val muted = remember(w, muteTick) { Cfg.isRepoMuted(w) }
                 Row(Modifier.fillMaxWidth()
@@ -159,7 +200,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
                     }
                 }) { Icon(Icons.Filled.Add, "添加监听仓库", tint = GH.green) }
             }
-            Text("点右边的 + 可以从你的仓库和已 Star 的仓库里直接选；输入框只用于手动填 owner/repo。",
+            Text("点右边的 + 可以从你的仓库和已 Star 的仓库里直接选；输入框只用于手动填 owner/repo。左侧删除只是移出重点轮询，不会拉黑仓库；要彻底停止这个仓库的通知，点右侧的铃铛静音。",
                 fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
             Spacer(Modifier.height(14.dp))
         }
@@ -267,6 +308,17 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
                 }
             }
             crashMsg?.let { Text(it, fontSize = 11.sp, color = GH.green, modifier = Modifier.padding(vertical = 2.dp)) }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                val historyCount = crashHistory?.split("===== 新崩溃 =====")?.count { it.isNotBlank() } ?: 0
+                TextButton(enabled = crashHistory != null, onClick = { showCrashHistory = true }) {
+                    Text(if (crashHistory == null) "暂无历史日志" else "查看历史日志（$historyCount 条）", fontSize = 11.sp)
+                }
+                if (crashHistory != null) TextButton(onClick = {
+                    CrashReporter.clearHistory(ctx); crashHistory = null; crashMsg = "历史日志已清空"
+                }) { Text("清空历史", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+            Text("历史异常次数只在未捕获异常导致 App 退出时 +1；崩溃日志保存在本机，最多保留约 20 万字符，上传/清除上次日志不会影响历史记录。",
+                fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
             Spacer(Modifier.height(14.dp))
         }
 
@@ -301,12 +353,13 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
 
         item {
             Spacer(Modifier.height(40.dp))
-            Text("GitHub Pro 1.0.18 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("GitHub Pro 1.0.19 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("数据全部来自 GitHub 官方 REST / GraphQL API", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(30.dp))
         }
     }
     if (showCrash && crash != null) CrashDialog(crash!!) { showCrash = false }
+    if (showCrashHistory && crashHistory != null) CrashHistoryDialog(crashHistory!!) { showCrashHistory = false }
 
     LaunchedEffect(showRepoPicker) {
         if (!showRepoPicker) return@LaunchedEffect
@@ -365,6 +418,21 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
             confirmButton = { TextButton({ showRepoPicker = false }) { Text("完成") } }
         )
     }
+}
+
+@Composable
+fun CrashHistoryDialog(text: String, onClose: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onClose,
+        confirmButton = { TextButton(onClick = onClose) { Text("关闭") } },
+        title = { Text("历史崩溃日志", fontSize = 15.sp) },
+        text = {
+            Column(Modifier.heightIn(max = 440.dp)) {
+                Text(text, fontSize = 10.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.verticalScroll(rememberScrollState()))
+            }
+        }
+    )
 }
 
 @Composable

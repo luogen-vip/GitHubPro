@@ -19,6 +19,7 @@ import java.util.Locale
 object CrashReporter {
 
     private const val FILE_LAST = "crash_last.txt"
+    private const val FILE_HISTORY = "crash_history.txt"
 
     fun install(app: Application) {
         val previous = Thread.getDefaultUncaughtExceptionHandler()
@@ -36,6 +37,10 @@ object CrashReporter {
                     append(sw.toString().take(20000))
                 }
                 File(app.filesDir, FILE_LAST).writeText(body)
+                val hf = File(app.filesDir, FILE_HISTORY)
+                val old = if (hf.exists()) hf.readText() else ""
+                val merged = (old + "\n\n===== 新崩溃 =====\n" + body).takeLast(200_000)
+                hf.writeText(merged)
                 Cfg.crashCount = Cfg.crashCount + 1
                 Cfg.safeMode = true
             } catch (ignored: Throwable) { }
@@ -51,6 +56,15 @@ object CrashReporter {
 
     fun clear(ctx: Context) {
         try { File(ctx.filesDir, FILE_LAST).delete() } catch (e: Exception) { }
+    }
+
+    fun history(ctx: Context): String? = try {
+        val f = File(ctx.filesDir, FILE_HISTORY)
+        if (f.exists()) f.readText() else null
+    } catch (e: Exception) { null }
+
+    fun clearHistory(ctx: Context) {
+        try { File(ctx.filesDir, FILE_HISTORY).delete() } catch (e: Exception) { }
     }
 
     /** 后台线程上报，失败就算了，下次启动再试。 */

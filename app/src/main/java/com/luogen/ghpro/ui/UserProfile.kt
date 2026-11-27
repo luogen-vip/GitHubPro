@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -18,6 +19,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -43,6 +45,7 @@ fun UserScreen(nav: NavController, login: String) {
     var tab by remember { mutableStateOf(UiCache.userTab[login] ?: 0) }
     var peopleDialog by remember { mutableStateOf(0) }
     var showPeople by remember { mutableStateOf(false) }
+    var selectedEvent by remember { mutableStateOf<com.luogen.ghpro.data.GhEvent?>(null) }
     var people by remember { mutableStateOf<List<User>>(emptyList()) }
     var events by remember { mutableStateOf<List<com.luogen.ghpro.data.GhEvent>>(emptyList()) }
     var eventsLoading by remember { mutableStateOf(false) }
@@ -166,23 +169,10 @@ fun UserScreen(nav: NavController, login: String) {
                             if (eventsLoading) item { LoadingBox() }
                             else if (events.isEmpty()) item { EmptyBox("暂无公开动态") }
                             items(events, key = { it.id }) { e ->
-                                Column(Modifier.fillMaxWidth().padding(14.dp)) {
-                                    Text(
-                                        when (e.type) {
-                                            "PushEvent" -> "推送了代码"
-                                            "CreateEvent" -> "创建了分支/仓库/标签"
-                                            "IssuesEvent" -> "操作了议题"
-                                            "PullRequestEvent" -> "操作了拉取请求"
-                                            "WatchEvent" -> "点了 Star"
-                                            "ForkEvent" -> "复刻了仓库"
-                                            "ReleaseEvent" -> "发布了发行版"
-                                            "IssueCommentEvent" -> "评论了议题"
-                                            else -> e.type ?: "动态"
-                                        }, fontSize = 12.sp, fontWeight = FontWeight.Medium
-                                    )
-                                    Text(e.repo?.full_name ?: "", fontSize = 10.sp, color = GH.blue,
-                                        modifier = Modifier.clickable { e.repo?.let { nav.navigate("repo/${it.full_name}") } })
-                                    Text(timeAgo(e.created_at), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Column(Modifier.fillMaxWidth().clickable { selectedEvent = e }.padding(14.dp)) {
+                                    Text(eventTitle(e.type), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                                    Text(e.repo?.full_name ?: "未知仓库", fontSize = 10.sp, color = GH.blue)
+                                    Text("${timeAgo(e.created_at)} · 点这条查看详情", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 Divider1()
                             }
@@ -227,12 +217,23 @@ fun UserScreen(nav: NavController, login: String) {
             confirmButton = { TextButton({ showPeople = false }) { Text("关闭") } }
         )
     }
+
+    selectedEvent?.let { ev ->
+        EventDetailDialog(ev, onOpenRepo = { full ->
+            selectedEvent = null
+            runCatching { nav.navigate("repo/$full") }.onFailure {
+                Toast.makeText(ctx, "打不开仓库：${it.message}", Toast.LENGTH_SHORT).show()
+            }
+        }, onClose = { selectedEvent = null })
+    }
 }
 
 @Composable
 fun EventsTab(login: String, nav: NavController) {
     var events by remember { mutableStateOf<List<com.luogen.ghpro.data.GhEvent>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
+    var selectedEvent by remember { mutableStateOf<com.luogen.ghpro.data.GhEvent?>(null) }
+    val ctx = LocalContext.current
     LaunchedEffect(login) {
         events = runCatching { Api.userEvents(login) }.getOrDefault(emptyList())
         loading = false
@@ -241,25 +242,194 @@ fun EventsTab(login: String, nav: NavController) {
     if (events.isEmpty()) { EmptyBox("暂无公开动态"); return }
     LazyColumn(Modifier.fillMaxSize()) {
         items(events, key = { it.id }) { e ->
-            Column(Modifier.fillMaxWidth().padding(14.dp)) {
-                Text(
-                    when (e.type) {
-                        "PushEvent" -> "推送了代码"
-                        "CreateEvent" -> "创建了分支/仓库/标签"
-                        "IssuesEvent" -> "操作了议题"
-                        "PullRequestEvent" -> "操作了拉取请求"
-                        "WatchEvent" -> "点了 Star"
-                        "ForkEvent" -> "复刻了仓库"
-                        "ReleaseEvent" -> "发布了发行版"
-                        "IssueCommentEvent" -> "评论了议题"
-                        else -> e.type ?: "动态"
-                    }, fontSize = 12.sp, fontWeight = FontWeight.Medium
-                )
-                Text(e.repo?.full_name ?: "", fontSize = 10.sp, color = GH.blue,
-                    modifier = Modifier.clickable { e.repo?.let { nav.navigate("repo/${it.full_name}") } })
-                Text(timeAgo(e.created_at), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Column(Modifier.fillMaxWidth().clickable { selectedEvent = e }.padding(14.dp)) {
+                Text(eventTitle(e.type), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                Text(e.repo?.full_name ?: "未知仓库", fontSize = 10.sp, color = GH.blue)
+                Text("${timeAgo(e.created_at)} · 点这条查看详情", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Divider1()
         }
     }
+    selectedEvent?.let { ev ->
+        EventDetailDialog(ev, onOpenRepo = { full ->
+            selectedEvent = null
+            runCatching { nav.navigate("repo/$full") }.onFailure {
+                Toast.makeText(ctx, "打不开仓库：${it.message}", Toast.LENGTH_SHORT).show()
+            }
+        }, onClose = { selectedEvent = null })
+    }
+}
+
+
+@Composable
+private fun EventDetailDialog(
+    e: com.luogen.ghpro.data.GhEvent,
+    onOpenRepo: (String) -> Unit,
+    onClose: () -> Unit
+) {
+    val ctx = LocalContext.current
+    val full = e.repo?.full_name ?: ""
+    val details = eventDetails(e)
+    val external = eventExternalUrl(e)
+    val json = runCatching {
+        com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(e.payload ?: emptyMap<String, Any>())
+    }.getOrDefault("")
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("动态详情", fontSize = 15.sp) },
+        text = {
+            Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+                Text(eventTitle(e.type), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text("${if (full.isNotBlank()) full else "未知仓库"} · ${timeAgo(e.created_at)}",
+                    fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(8.dp))
+                if (details.isEmpty()) {
+                    Text("这条动态没有更多可展开的字段，下面保留原始数据，也可以打开仓库查看。",
+                        fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    details.forEach { (k, v) ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.Top) {
+                            Text(k, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(72.dp))
+                            Text(v, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text("原始数据", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                SelectionContainer {
+                    Text(json.take(8000), fontSize = 9.sp, fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (json.length > 8000) Text("（只显示前 8000 字符）", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = full.isNotBlank(), onClick = { onOpenRepo(full) }) { Text("打开仓库") }
+        },
+        dismissButton = {
+            Row {
+                if (external != null) TextButton(onClick = { openUrl(ctx, external); onClose() }) { Text("GitHub 打开", fontSize = 12.sp) }
+                TextButton(onClick = onClose) { Text("关闭") }
+            }
+        }
+    )
+}
+
+private fun eventTitle(type: String?): String = when (type) {
+    "PushEvent" -> "推送了代码"
+    "CreateEvent" -> "创建了分支 / 仓库 / 标签"
+    "IssuesEvent" -> "操作了议题"
+    "PullRequestEvent" -> "操作了拉取请求"
+    "PullRequestReviewEvent" -> "审查了拉取请求"
+    "PullRequestReviewCommentEvent" -> "评论了拉取请求审查"
+    "WatchEvent" -> "点了 Star"
+    "ForkEvent" -> "复刻了仓库"
+    "ReleaseEvent" -> "发布了发行版"
+    "IssueCommentEvent" -> "评论了议题"
+    "DeleteEvent" -> "删除了分支 / 标签"
+    "MemberEvent" -> "变更了协作者"
+    "PublicEvent" -> "仓库转为公开"
+    "CommitCommentEvent" -> "评论了提交"
+    else -> type ?: "动态"
+}
+
+private fun payloadMap(p: Any?): Map<String, Any?>? =
+    (p as? Map<*, *>)?.entries?.associate { (it.key?.toString() ?: "") to it.value }
+
+private fun nestedMap(m: Map<String, Any?>?, key: String): Map<String, Any?>? =
+    payloadMap(m?.get(key))
+
+private fun valueText(v: Any?): String? = when (v) {
+    null -> null
+    is String -> v.takeIf { it.isNotBlank() }
+    is Double -> if (v % 1.0 == 0.0) v.toLong().toString() else v.toString()
+    is Number, is Boolean -> v.toString()
+    else -> null
+}
+
+private fun payloadString(m: Map<String, Any?>?, key: String): String? = valueText(m?.get(key))
+
+private fun actionCn(action: String?): String = when (action) {
+    "opened" -> "打开"
+    "closed" -> "关闭"
+    "reopened" -> "重新打开"
+    "labeled" -> "添加标签"
+    "unlabeled" -> "移除标签"
+    "assigned" -> "指派"
+    "unassigned" -> "取消指派"
+    "edited" -> "编辑"
+    "created" -> "创建"
+    "deleted" -> "删除"
+    "merged" -> "合并"
+    "synchronize" -> "更新代码"
+    "review_requested" -> "请求审查"
+    "submitted" -> "提交审查"
+    "published" -> "发布"
+    else -> action ?: "更新"
+}
+
+private fun eventDetails(e: com.luogen.ghpro.data.GhEvent): List<Pair<String, String>> {
+    val root = payloadMap(e.payload) ?: return emptyList()
+    val out = ArrayList<Pair<String, String>>()
+    val action = payloadString(root, "action")
+    if (action != null) out.add("操作" to actionCn(action))
+    val issue = nestedMap(root, "issue")
+    if (issue != null) {
+        val title = payloadString(issue, "title")
+        val num = payloadString(issue, "number")
+        if (title != null) out.add("议题" to (if (num != null) "$title (#$num)" else title))
+        payloadString(issue, "state")?.let { out.add("状态" to it) }
+        payloadString(issue, "html_url")?.let { out.add("议题链接" to it) }
+    }
+    val pr = nestedMap(root, "pull_request")
+    if (pr != null) {
+        val title = payloadString(pr, "title")
+        val num = payloadString(pr, "number")
+        if (title != null) out.add("拉取请求" to (if (num != null) "$title (#$num)" else title))
+        payloadString(pr, "state")?.let { out.add("状态" to it) }
+        valueText(pr["merged"])?.let { out.add("已合并" to if (it == "true") "是" else "否") }
+        payloadString(pr, "html_url")?.let { out.add("PR 链接" to it) }
+    }
+    val comment = nestedMap(root, "comment")
+    if (comment != null) {
+        payloadString(comment, "body")?.let { out.add("评论内容" to it.take(300)) }
+        payloadString(comment, "html_url")?.let { out.add("评论链接" to it) }
+    }
+    val release = nestedMap(root, "release")
+    if (release != null) {
+        payloadString(release, "name")?.let { out.add("发行版" to it) }
+        payloadString(release, "tag_name")?.let { out.add("标签" to it) }
+        payloadString(release, "html_url")?.let { out.add("发行版链接" to it) }
+    }
+    val forkee = nestedMap(root, "forkee")
+    if (forkee != null) payloadString(forkee, "full_name")?.let { out.add("复刻到" to it) }
+    val label = nestedMap(root, "label")
+    if (label != null) payloadString(label, "name")?.let { out.add("标签" to it) }
+    val assignee = nestedMap(root, "assignee")
+    if (assignee != null) payloadString(assignee, "login")?.let { out.add("指派给" to it) }
+    val review = nestedMap(root, "review")
+    if (review != null) payloadString(review, "state")?.let { out.add("审查状态" to it) }
+    payloadString(root, "ref")?.let { out.add("分支 / 标签" to it) }
+    payloadString(root, "ref_type")?.let { out.add("引用类型" to it) }
+    val commits = root["commits"]
+    if (commits is List<*>) {
+        out.add("提交数" to commits.size.toString())
+        val first = payloadMap(commits.firstOrNull())
+        payloadString(first, "message")?.let { msg ->
+            out.add("提交说明" to (msg.lineSequence().firstOrNull()?.take(200) ?: msg.take(200)))
+        }
+        payloadString(first, "sha")?.let { out.add("提交 SHA" to it) }
+    }
+    payloadString(root, "size_distinct")?.let { out.add("不同提交" to it) }
+    if (out.isEmpty()) out.add("类型" to (e.type ?: "动态"))
+    return out
+}
+
+private fun eventExternalUrl(e: com.luogen.ghpro.data.GhEvent): String? {
+    val root = payloadMap(e.payload)
+    for (key in listOf("issue", "pull_request", "release", "comment", "review")) {
+        nestedMap(root, key)?.let { payloadString(it, "html_url") }?.let { return it }
+    }
+    nestedMap(root, "forkee")?.let { payloadString(it, "html_url") }?.let { return it }
+    return e.repo?.html_url
 }

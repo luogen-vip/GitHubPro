@@ -86,6 +86,10 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
     var pendingUpload by remember { mutableStateOf<Uri?>(null) }
     var uploadTarget by remember { mutableStateOf("") }
     var uploading by remember { mutableStateOf(false) }
+    var uploadPercent by remember { mutableStateOf(0) }
+    var uploadSent by remember { mutableStateOf(0L) }
+    var uploadTotalBytes by remember { mutableStateOf(0L) }
+    var uploadFileBytes by remember { mutableStateOf(0L) }
     var selecting by remember { mutableStateOf(false) }
     val selected = remember { mutableStateListOf<String>() }
     var confirmBulk by remember { mutableStateOf(false) }
@@ -249,6 +253,15 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(uploadTarget, { uploadTarget = it }, label = { Text("完整路径（含文件名）") },
                         singleLine = true, modifier = Modifier.fillMaxWidth())
+                    if (uploading) {
+                        Spacer(Modifier.height(10.dp))
+                        LinearProgressIndicator(progress = { uploadPercent / 100f }, modifier = Modifier.fillMaxWidth())
+                        Text(if (uploadTotalBytes > 0)
+                            "真实上传进度 $uploadPercent% · 已发送 ${humanSize(uploadSent)} / ${humanSize(uploadTotalBytes)}"
+                        else "正在准备上传 ${humanSize(uploadFileBytes)}…",
+                            fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp))
+                    }
                 }
             },
             confirmButton = {
@@ -257,6 +270,7 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
                     if (target.isBlank()) return@TextButton
                     Bus.actions.launch {
                         uploading = true
+                        uploadPercent = 0; uploadSent = 0L; uploadTotalBytes = 0L; uploadFileBytes = 0L
                         try {
                             Toast.makeText(ctx, "开始上传…", Toast.LENGTH_SHORT).show()
                             val tmp = java.io.File(ctx.cacheDir, "ghpro_upload_source.bin")
@@ -265,21 +279,29 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
                                     ?: throw java.io.IOException("读不到这个文件")
                             }
                             val size = tmp.length()
+                            uploadFileBytes = size
                             if (size > 2L * 1024 * 1024 * 1024) throw java.io.IOException("单个文件最大 2GB")
                             if (size > 30L * 1024 * 1024) {
                                 Toast.makeText(ctx, "大文件走 Git LFS（${size / 1024 / 1024} MB），请稍等…", Toast.LENGTH_LONG).show()
-                                val oid = Api.lfsUpload(owner, name, tmp)
+                                val oid = Api.lfsUpload(owner, name, tmp) { sent, total ->
+                                    uploadSent = sent; uploadTotalBytes = total
+                                    uploadPercent = if (total > 0) ((sent * 100) / total).toInt() else 0
+                                }
                                 Api.lfsCommit(owner, name, target, branch, oid, size, "upload ${target.substringAfterLast('/')} via LFS")
                             } else {
                                 val bytes = withContext(Dispatchers.IO) { tmp.readBytes() }
                                 val sha = runCatching { Api.fileItem(owner, name, target, branch).sha }.getOrNull()
                                 Api.putFile(owner, name, target, "upload ${target.substringAfterLast('/')}",
-                                    android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP), sha, branch)
+                                    android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP), sha, branch) { sent, total ->
+                                    uploadSent = sent; uploadTotalBytes = total
+                                    uploadPercent = if (total > 0) ((sent * 100) / total).toInt() else 0
+                                }
                             }
                             tmp.delete()
                             UiCache.codeListing.keys.filter { it.startsWith("$owner/$name|") }.forEach { UiCache.codeListing.remove(it) }
                             UiCache.fileContent.remove("$owner/$name|$branch|$target")
                             Cfg.touchRepo("$owner/$name")
+                            uploadPercent = 100
                             Toast.makeText(ctx, "已上传 $target", Toast.LENGTH_LONG).show()
                             pendingUpload = null
                             uploadTarget = ""
@@ -289,8 +311,9 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
                             Toast.makeText(ctx, "上传失败：${e.message}", Toast.LENGTH_LONG).show()
                         }
                         uploading = false
+                        uploadSent = 0L; uploadTotalBytes = 0L; uploadPercent = 0
                     }
-                }) { Text(if (uploading) "上传中…" else "上传", fontSize = 13.sp) }
+                }) { Text(if (uploading) "上传中 $uploadPercent%" else "上传", fontSize = 13.sp) }
             },
             dismissButton = { TextButton({ if (!uploading) pendingUpload = null }) { Text("取消") } }
         )
