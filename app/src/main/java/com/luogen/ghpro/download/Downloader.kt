@@ -544,6 +544,8 @@ object Downloader {
             }
             idx++
         }
+        // 用户取消时不要再落“失败”或发失败通知；交给外层统一处理“已取消”。
+        if (isCancelled(safe)) throw kotlinx.coroutines.CancellationException("已取消")
         val offline = !NetworkTools.info(ctx, true).online
         val rawMsg = lastError?.message ?: "下载失败"
         val msg = if (offline) {

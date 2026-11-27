@@ -24,7 +24,6 @@ import com.luogen.ghpro.ui.DeepLinkBus
 import com.luogen.ghpro.ui.NetworkPromptHost
 import com.luogen.ghpro.data.NetworkTools
 import com.luogen.ghpro.data.NetPrompts
-import com.luogen.ghpro.data.NetPromptKind
 import com.luogen.ghpro.download.Downloader
 
 class MainActivity : ComponentActivity() {
