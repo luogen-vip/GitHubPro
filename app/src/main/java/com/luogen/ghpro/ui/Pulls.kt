@@ -176,7 +176,13 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             TopAppBar(
-                title = { Text("拉取请求 #$number", fontSize = 15.sp) },
+                title = {
+                    Column(Modifier.clickable { nav.navigate("repo/$owner/$name") }) {
+                        Text("拉取请求 #$number", fontSize = 15.sp, maxLines = 1, softWrap = false)
+                        Text("$owner/$name", fontSize = 10.sp, color = GH.blue, maxLines = 1,
+                            softWrap = false, overflow = TextOverflow.Ellipsis)
+                    }
+                },
                 navigationIcon = { IconButton({ nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )

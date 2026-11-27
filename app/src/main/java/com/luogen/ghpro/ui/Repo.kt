@@ -524,6 +524,8 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
     var readmeTr by remember(owner, name) { mutableStateOf<String?>(null) }
     var readmeShowOriginal by remember(owner, name) { mutableStateOf(false) }
     var readmeTrLoading by remember(owner, name) { mutableStateOf(false) }
+    var readmeTarget by remember(owner, name) { mutableStateOf(Cfg.translateTarget) }
+    var readmePicker by remember { mutableStateOf(false) }
 
     LaunchedEffect(owner, name) {
         readmeLoading = true
@@ -548,8 +550,10 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
         KeyValue("主页", r.homepage, onClick = { openUrl(ctx, r.homepage) })
         r.topics?.takeIf { it.isNotEmpty() }?.let { ts ->
             Spacer(Modifier.height(6.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                ts.take(6).forEach { t -> TinyTag(t, GH.blue) }
+            // 标签横向排列，仓库标签多时必须能左右滑，不能只显示前 6 个
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                ts.forEach { t -> TinyTag(t, GH.blue) }
             }
         }
         Spacer(Modifier.height(10.dp))
@@ -571,36 +575,62 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
         Spacer(Modifier.height(12.dp))
         Divider1()
         Spacer(Modifier.height(10.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("README", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.weight(1f))
-            if (!readme.isNullOrBlank()) TextButton(enabled = !readmeTrLoading, onClick = {
-                when {
-                    readmeTr != null -> readmeShowOriginal = !readmeShowOriginal
-                    else -> scope.launch {
-                        readmeTrLoading = true
-                        try {
-                            readmeTr = TranslateApi.translate(readme!!.take(40_000), Cfg.translateTarget).text
-                            readmeShowOriginal = false
-                        } catch (e: Exception) {
-                            Toast.makeText(ctx, "README 翻译失败：${e.message}", Toast.LENGTH_LONG).show()
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("README", fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                maxLines = 1, softWrap = false, modifier = Modifier.weight(1f))
+            if (!readme.isNullOrBlank()) {
+                val sameLang = TranslateApi.sameLanguage(readme!!, readmeTarget)
+                val action = when {
+                    sameLang -> "已是${TranslateApi.label(readmeTarget)}"
+                    readmeTrLoading -> "翻译中"
+                    readmeTr != null && readmeShowOriginal -> "显示译文"
+                    readmeTr != null -> "显示原文"
+                    else -> "翻译"
+                }
+                Text(action, fontSize = 10.sp, color = if (sameLang) MaterialTheme.colorScheme.onSurfaceVariant else GH.blue,
+                    maxLines = 1, softWrap = false,
+                    modifier = Modifier.clickable(enabled = !readmeTrLoading && !sameLang) {
+                        when {
+                            readmeTr != null -> readmeShowOriginal = !readmeShowOriginal
+                            else -> scope.launch {
+                                if (TranslateApi.sameLanguage(readme!!, readmeTarget)) {
+                                    Toast.makeText(ctx, "原文已经是${TranslateApi.label(readmeTarget)}，不需要翻译", Toast.LENGTH_SHORT).show()
+                                    return@launch
+                                }
+                                readmeTrLoading = true
+                                try {
+                                    readmeTr = TranslateApi.translate(readme!!.take(40_000), readmeTarget).text
+                                    readmeShowOriginal = false
+                                } catch (e: Exception) {
+                                    Toast.makeText(ctx, "README 翻译失败：${e.message}", Toast.LENGTH_LONG).show()
+                                }
+                                readmeTrLoading = false
+                            }
                         }
-                        readmeTrLoading = false
-                    }
-                }
-            }) { Text(if (readmeTrLoading) "翻译中…" else if (readmeTr == null) "翻译" else if (readmeShowOriginal) "显示译文" else "显示原文", fontSize = 10.sp) }
-            TextButton(onClick = {
-                editText = readme ?: ""
-                showEdit = true
-                if (readmeSha == null) {
-                    // 拿 sha 供更新使用
-                }
-            }) { Text("编辑 README", fontSize = 12.sp) }
+                    }.padding(horizontal = 6.dp, vertical = 2.dp))
+                Text("目标：${TranslateApi.label(readmeTarget)} ▾", fontSize = 9.sp, color = GH.blue,
+                    maxLines = 1, softWrap = false,
+                    modifier = Modifier.clickable { readmePicker = true }.padding(horizontal = 6.dp, vertical = 2.dp))
+            }
+            Text("编辑", fontSize = 11.sp, color = GH.blue, maxLines = 1, softWrap = false,
+                modifier = Modifier.clickable {
+                    editText = readme ?: ""
+                    showEdit = true
+                }.padding(horizontal = 6.dp, vertical = 2.dp))
+        }
+        if (readmePicker) {
+            LanguagePickerDialog(selected = readmeTarget, onPick = { code ->
+                readmePicker = false
+                readmeTarget = code
+                Cfg.translateTarget = code
+                readmeTr = null
+                readmeShowOriginal = false
+            }, onDismiss = { readmePicker = false })
         }
         Spacer(Modifier.height(6.dp))
         when {
             readmeLoading -> LoadingBox()
-            readme.isNullOrBlank() -> EmptyBox("这个仓库还没有 README，点右上角「编辑 README」可以直接创建")
+            readme.isNullOrBlank() -> EmptyBox("这个仓库还没有 README，点右上角「编辑」可以直接创建")
             else -> MdText((if (!readmeShowOriginal) readmeTr else null) ?: readme!!.take(40000), baseSize = 13)
         }
         Spacer(Modifier.height(30.dp))

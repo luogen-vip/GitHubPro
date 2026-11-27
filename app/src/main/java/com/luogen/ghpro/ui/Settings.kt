@@ -171,7 +171,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
             }
             Text("自动识别原文语言；原文已经是目标语言时会直接提示，不强行翻译。译文旁可随时切回原文。",
                 fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text("免费接口顺序：微软 Edge → Google → 有道 → MyMemory，前一个失败自动换下一个；不填 key、不经过本软件服务器。",
+            Text("免费接口顺序：彩云小译 → 有道 → MyMemory，前一个失败自动换下一个；彩云公开接口无需自己申请 key，也不经过本软件服务器。",
                 fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(enabled = !testingTrans, onClick = {
@@ -399,7 +399,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
 
         item {
             Spacer(Modifier.height(40.dp))
-            Text("GitHub Pro 1.0.23 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("GitHub Pro 1.0.24 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("数据全部来自 GitHub 官方 REST / GraphQL API", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(30.dp))
         }
