@@ -1113,7 +1113,10 @@ object Api {
     // ---------------- 搜索 ---------------- ----------------
     suspend fun searchRepos(q: String, page: Int = 1, sort: String? = null, order: String? = null, perPage: Int = 30): SearchRepos {
         val query = mapOf("q" to q, "page" to "$page", "per_page" to "$perPage", "sort" to sort, "order" to order)
-        return parse(exec("/search/repositories", query = query, client = searchHttp).body, SearchRepos::class.java)
+        // 搜索只发一次：失败就立刻报错，避免 15 秒超时后再重试 2 次变成 45 秒转圈。
+        val r = execOnce("/search/repositories", "GET", null, query, "application/vnd.github+json",
+            null, emptyMap(), null, searchHttp)
+        return parse(r.body, SearchRepos::class.java)
     }
     suspend fun searchUsers(q: String, page: Int = 1, perPage: Int = 30): SearchUsers =
         parse(raw("/search/users", query = mapOf("q" to q, "page" to "$page", "per_page" to "$perPage")), SearchUsers::class.java)
