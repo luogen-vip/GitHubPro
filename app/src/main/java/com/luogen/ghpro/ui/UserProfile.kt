@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -106,7 +107,8 @@ fun UserScreen(nav: NavController, login: String) {
                     Box(Modifier.fillMaxSize()) {
                     LazyColumn(Modifier.fillMaxSize(), state = listState) {
                         item {
-                            Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal = 14.dp, vertical = 10.dp)) {
+                            Column(Modifier.fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.surface).padding(horizontal = 14.dp, vertical = 10.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Avatar(u!!.avatar_url, 46)
                                     Spacer(Modifier.width(10.dp))
@@ -135,15 +137,17 @@ fun UserScreen(nav: NavController, login: String) {
                                     }
                                 }
                                 Spacer(Modifier.height(6.dp))
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically) {
                                     Text("${u!!.public_repos} 仓库", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.clickable { tab = 0 })
+                                        maxLines = 1, softWrap = false, modifier = Modifier.clickable { tab = 0 })
                                     Text("${u!!.followers} 关注者", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.clickable { peopleDialog = 0; showPeople = true })
+                                        maxLines = 1, softWrap = false, modifier = Modifier.clickable { peopleDialog = 0; showPeople = true })
                                     Text("${u!!.following} 正在关注", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.clickable { peopleDialog = 1; showPeople = true })
-                                    Spacer(Modifier.weight(1f))
+                                        maxLines = 1, softWrap = false, modifier = Modifier.clickable { peopleDialog = 1; showPeople = true })
                                     Text("GitHub 主页", fontSize = 11.sp, color = GH.blue,
+                                        maxLines = 1, softWrap = false,
                                         modifier = Modifier.clickable { openUrl(ctx, u!!.html_url) })
                                 }
                                 val extras = listOfNotNull(

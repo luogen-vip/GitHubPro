@@ -248,7 +248,9 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
                         }
                     }
                     Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
-                        Text(pr!!.body ?: "（无描述）", fontSize = 13.sp, lineHeight = 19.sp)
+                        TranslateBlock(pr!!.body ?: "（无描述）",
+                            style = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, lineHeight = 19.sp),
+                            auto = Cfg.translateAuto)
                         Spacer(Modifier.height(12.dp))
                         Text("改动文件（${files.size}）· +${pr!!.additions} −${pr!!.deletions}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(6.dp))

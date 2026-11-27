@@ -3,6 +3,7 @@ package com.luogen.ghpro.ui
 import android.widget.Toast
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
@@ -29,6 +30,7 @@ import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Bus
 import com.luogen.ghpro.data.UserStatus
 import com.luogen.ghpro.data.Cfg
+import com.luogen.ghpro.data.TranslateApi
 import com.luogen.ghpro.download.Downloader
 import com.luogen.ghpro.sync.CrashReporter
 import com.luogen.ghpro.sync.WatchService
@@ -50,6 +52,9 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
     var mobileDlWarn by remember { mutableStateOf(Cfg.mobileDownloadWarn) }
     var mobileBrowseWarn by remember { mutableStateOf(Cfg.mobileBrowseWarn) }
     var theme by remember { mutableStateOf(Cfg.themeMode) }
+    var transAuto by remember { mutableStateOf(Cfg.translateAuto) }
+    var transTarget by remember { mutableStateOf(Cfg.translateTarget) }
+    var testingTrans by remember { mutableStateOf(false) }
     var mirrors by remember { mutableStateOf(Cfg.mirrors.toList()) }
     var watch by remember { mutableStateOf(Cfg.watchRepos.toList()) }
     var newMirror by remember { mutableStateOf("") }
@@ -147,6 +152,43 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
 
         item { MyStatusCard(); Spacer(Modifier.height(10.dp)) }
         item { AvatarCard(); Spacer(Modifier.height(14.dp)) }
+
+        item {
+            SectionTitle("翻译")
+            SwitchRow("自动翻译仓库描述/议题/PR 正文", transAuto) {
+                transAuto = it
+                Cfg.translateAuto = it
+            }
+            Text("翻译成", fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp, bottom = 3.dp))
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TranslateApi.langs.forEach { lang ->
+                    FilterChip(selected = transTarget == lang.code, onClick = {
+                        transTarget = lang.code
+                        Cfg.translateTarget = lang.code
+                    }, label = { Text(lang.label, fontSize = 11.sp) })
+                }
+            }
+            Text("自动识别原文语言；原文已经是目标语言时会直接提示，不强行翻译。译文旁可随时切回原文。",
+                fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("免费接口顺序：微软 Edge → Google → 有道 → MyMemory，前一个失败自动换下一个；不填 key、不经过本软件服务器。",
+                fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(enabled = !testingTrans, onClick = {
+                    testingTrans = true
+                    scope.launch {
+                        try {
+                            val r = TranslateApi.translate("Hello, this is a translation test.", transTarget)
+                            Toast.makeText(ctx, "成功（${r.provider}）：${r.text.take(60)}", Toast.LENGTH_LONG).show()
+                        } catch (e: Exception) {
+                            Toast.makeText(ctx, "翻译失败：${e.message}", Toast.LENGTH_LONG).show()
+                        }
+                        testingTrans = false
+                    }
+                }) { Text(if (testingTrans) "测试中…" else "测试翻译接口", fontSize = 12.sp) }
+            }
+            Spacer(Modifier.height(12.dp))
+        }
 
         item {
             SectionTitle("同步与通知")
@@ -357,7 +399,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
 
         item {
             Spacer(Modifier.height(40.dp))
-            Text("GitHub Pro 1.0.22 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("GitHub Pro 1.0.23 · 由 罗根 打造", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("数据全部来自 GitHub 官方 REST / GraphQL API", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(30.dp))
         }

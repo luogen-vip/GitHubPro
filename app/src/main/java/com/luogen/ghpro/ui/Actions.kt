@@ -138,9 +138,16 @@ fun RunRow(run: Run, onClick: () -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             StateChip(null, run.status, run.conclusion)
             Spacer(Modifier.width(8.dp))
-            Text("${run.event ?: ""} · ${run.head_branch ?: ""}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            // 分支名可能很长（refs/pull/1710/head）：让它占剩余宽度并省略，
+            // 否则右侧“耗时”会被挤成一行一个字，把整张卡片撑出几行空白。
+            Text("${run.event ?: ""} · ${run.head_branch ?: ""}", fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, softWrap = false,
+                modifier = Modifier.weight(1f))
             Spacer(Modifier.width(8.dp))
-            Text("耗时 ${durationText(run.run_started_at ?: run.created_at, run.updated_at)}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("耗时 ${durationText(run.run_started_at ?: run.created_at, run.updated_at)}",
+                fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1, softWrap = false)
         }
         Spacer(Modifier.height(3.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -149,7 +156,8 @@ fun RunRow(run: Run, onClick: () -> Unit) {
                 Text(it.login, fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Spacer(Modifier.weight(1f))
-            Text("${timeAgo(run.created_at)} · 第 ${run.run_attempt ?: 1} 次", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("${timeAgo(run.created_at)} · 第 ${run.run_attempt ?: 1} 次", fontSize = 9.sp,
+                maxLines = 1, softWrap = false, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

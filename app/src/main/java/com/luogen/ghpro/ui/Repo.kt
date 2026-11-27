@@ -46,6 +46,7 @@ import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Bus
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Repo
+import com.luogen.ghpro.data.TranslateApi
 import com.luogen.ghpro.data.Page
 import com.luogen.ghpro.data.User
 import com.luogen.ghpro.download.Downloader
@@ -346,13 +347,19 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                 }
                 r.description?.takeIf { it.isNotBlank() }?.let { desc ->
                     Spacer(Modifier.height(2.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.clickable { showDesc = true }) {
-                        Text(desc, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    Row(verticalAlignment = Alignment.Top) {
+                        TranslateBlock(
+                            text = desc,
+                            style = androidx.compose.ui.text.TextStyle(fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant),
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                         if (desc.length > 40) {
                             Spacer(Modifier.width(4.dp))
-                            Text("全文", fontSize = 10.sp, color = GH.blue)
+                            Text("全文", fontSize = 10.sp, color = GH.blue,
+                                modifier = Modifier.clickable { showDesc = true }.padding(2.dp))
                         }
                     }
                 }
@@ -456,7 +463,8 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
             text = {
                 SelectionContainer {
                     Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
-                        Text(repo?.description ?: "", fontSize = 13.sp, lineHeight = 20.sp)
+                        TranslateBlock(repo?.description ?: "",
+                            style = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, lineHeight = 20.sp))
                     }
                 }
             },
@@ -506,12 +514,16 @@ fun LanguageBar(languages: Map<String, Long>, legend: Boolean = true) {
 @Composable
 fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, languages: Map<String, Long>, latestReleaseAt: String? = null) {
     val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
     var readme by remember { mutableStateOf<String?>(null) }
     var readmeLoading by remember { mutableStateOf(false) }
     var readmeSha by remember { mutableStateOf<String?>(null) }
     var showEdit by rememberSaveable { mutableStateOf(false) }
     var editText by rememberSaveable { mutableStateOf("") }
     var saving by remember { mutableStateOf(false) }
+    var readmeTr by remember(owner, name) { mutableStateOf<String?>(null) }
+    var readmeShowOriginal by remember(owner, name) { mutableStateOf(false) }
+    var readmeTrLoading by remember(owner, name) { mutableStateOf(false) }
 
     LaunchedEffect(owner, name) {
         readmeLoading = true
@@ -562,6 +574,21 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("README", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
+            if (!readme.isNullOrBlank()) TextButton(enabled = !readmeTrLoading, onClick = {
+                when {
+                    readmeTr != null -> readmeShowOriginal = !readmeShowOriginal
+                    else -> scope.launch {
+                        readmeTrLoading = true
+                        try {
+                            readmeTr = TranslateApi.translate(readme!!.take(40_000), Cfg.translateTarget).text
+                            readmeShowOriginal = false
+                        } catch (e: Exception) {
+                            Toast.makeText(ctx, "README 翻译失败：${e.message}", Toast.LENGTH_LONG).show()
+                        }
+                        readmeTrLoading = false
+                    }
+                }
+            }) { Text(if (readmeTrLoading) "翻译中…" else if (readmeTr == null) "翻译" else if (readmeShowOriginal) "显示译文" else "显示原文", fontSize = 10.sp) }
             TextButton(onClick = {
                 editText = readme ?: ""
                 showEdit = true
@@ -574,7 +601,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
         when {
             readmeLoading -> LoadingBox()
             readme.isNullOrBlank() -> EmptyBox("这个仓库还没有 README，点右上角「编辑 README」可以直接创建")
-            else -> MdText(readme!!.take(40000), baseSize = 13)
+            else -> MdText((if (!readmeShowOriginal) readmeTr else null) ?: readme!!.take(40000), baseSize = 13)
         }
         Spacer(Modifier.height(30.dp))
     }

@@ -136,6 +136,15 @@ object Cfg {
         get() = sp.getBoolean("auto_refresh", true)
         set(v) { sp.edit().putBoolean("auto_refresh", v).apply() }
 
+    /** 自动翻译仓库描述/议题正文；目标语言默认简体中文。 */
+    var translateAuto: Boolean
+        get() = sp.getBoolean("translate_auto", false)
+        set(v) { sp.edit().putBoolean("translate_auto", v).apply() }
+
+    var translateTarget: String
+        get() = sp.getString("translate_target", "zh-CN") ?: "zh-CN"
+        set(v) { sp.edit().putString("translate_target", v).apply() }
+
     var themeMode: Int   // 0 跟随系统 1 深色 2 浅色
         get() = sp.getInt("theme", 0)
         set(v) { sp.edit().putInt("theme", v).apply() }

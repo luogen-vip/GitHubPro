@@ -445,7 +445,9 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
                         }
                     }
                     Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
-                        Text(issue!!.body ?: "（没有正文）", fontSize = 13.sp, lineHeight = 19.sp)
+                        TranslateBlock(issue!!.body ?: "（没有正文）",
+                            style = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, lineHeight = 19.sp),
+                            auto = Cfg.translateAuto)
                         Spacer(Modifier.height(14.dp))
                         Divider1()
                         Spacer(Modifier.height(10.dp))
