@@ -8,7 +8,9 @@ object Cfg {
     private const val NAME = "ghpro_cfg"
     private lateinit var sp: SharedPreferences
 
-    const val DEFAULT_MIRRORS = "https://gh-proxy.com/|https://ghfast.top/|https://ghproxy.net/"
+    // 实测 ghfast 支持 Range 分片；gh-proxy 在 2026-11 多次 503。快的放第一位，避免每次先撞死线路。
+    const val DEFAULT_MIRRORS = "https://ghfast.top/|https://gh-proxy.com/|https://ghproxy.net/"
+    private const val OLD_DEFAULT_MIRRORS = "https://gh-proxy.com/|https://ghfast.top/|https://ghproxy.net/"
 
     fun init(ctx: Context) {
         if (::sp.isInitialized) return
@@ -37,6 +39,16 @@ object Cfg {
         if (!sp.getBoolean("download_cfg_v12", false)) {
             sp.edit().putInt("threads", 64).putBoolean("mt", true).putBoolean("use_mirror", true)
                 .putBoolean("download_cfg_v12", true).apply()
+        }
+        // v1.0.36：默认镜像顺序改成实测能分片、且当前可用的 ghfast 优先；只动“纯默认三条”的用户，自定义镜像不碰。
+        if (!sp.getBoolean("mirrors_order_v13", false)) {
+            val raw = sp.getString("mirrors", OLD_DEFAULT_MIRRORS) ?: OLD_DEFAULT_MIRRORS
+            val cur = raw.split("|").filter { it.isNotBlank() }.map { it.trimEnd('/') + "/" }
+            val known = setOf("https://ghfast.top/", "https://gh-proxy.com/", "https://ghproxy.net/")
+            if (cur.size == 3 && cur.all { it in known }) {
+                sp.edit().putString("mirrors", DEFAULT_MIRRORS).apply()
+            }
+            sp.edit().putBoolean("mirrors_order_v13", true).apply()
         }
     }
 

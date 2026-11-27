@@ -24,6 +24,7 @@ import okio.ForwardingSink
 import okio.buffer
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.withTimeout
 
 class ApiException(val code: Int, override val message: String, val body: String? = null) : Exception(message)
 
@@ -1209,10 +1210,16 @@ object Api {
      * 不改动全局 searchRepos，避免搜索结果页依赖的 topics/open_issues 等字段被裁掉。
      */
     suspend fun searchReposFeatured(q: String, sort: String? = null, perPage: Int = 30): SearchRepos {
-        if (!token.isNullOrBlank() && System.currentTimeMillis() >= leanSearchDisabledUntil) {
-            val lean = runCatching { searchReposLean(q, sort, perPage) }.getOrNull()
-            if (lean != null && lean.items.isNotEmpty()) return lean
-            if (lean == null) leanSearchDisabledUntil = System.currentTimeMillis() + 120_000L
+        // 登录后只用 GraphQL 轻量搜索：16KB、1–3 秒。绝不再回退到 25 秒的 REST 大响应，
+        // 否则精选页会从“几秒”变成“转圈 40 秒”，用户会以为根本加载不出来。
+        if (!token.isNullOrBlank()) {
+            return try {
+                withTimeout(10_000L) { searchReposLean(q, sort, perPage) }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                throw IOException("搜索请求失败：${e.message ?: "网络中断"}，点重试")
+            }
         }
         val query = mapOf("q" to q, "page" to "1", "per_page" to "$perPage", "sort" to sort, "order" to "desc")
         val r = execOnce("/search/repositories", "GET", null, query, "application/vnd.github+json",
@@ -1264,8 +1271,55 @@ object Api {
         }
         return SearchRepos(total_count = count, incomplete_results = false, items = items)
     }
-    suspend fun searchUsers(q: String, page: Int = 1, perPage: Int = 30): SearchUsers =
-        parse(raw("/search/users", query = mapOf("q" to q, "page" to "$page", "per_page" to "$perPage")), SearchUsers::class.java)
+    suspend fun searchUsers(q: String, page: Int = 1, perPage: Int = 30): SearchUsers {
+        // 用户搜索第一页同样走 GraphQL：一次就带回仓库数/粉丝数，
+        // 不再先拿 Search API 再额外请求 8 个用户主页，既快也不容易撞搜索限流。
+        if (page == 1 && !token.isNullOrBlank()) {
+            val lean = try {
+                withTimeout(10_000L) { searchUsersLean(q, perPage) }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+            if (lean != null && lean.items.isNotEmpty()) return lean
+        }
+        return parse(raw("/search/users", query = mapOf("q" to q, "page" to "$page", "per_page" to "$perPage")), SearchUsers::class.java)
+    }
+
+    /** GraphQL 用户搜索：只取用户卡片实际用到的字段，并直接带真实仓库数/粉丝数。 */
+    private suspend fun searchUsersLean(q: String, perPage: Int): SearchUsers {
+        val gql = """query(${'$'}q:String!,${'$'}n:Int!){ search(query:${'$'}q, type:USER, first:${'$'}n){ userCount nodes{ ... on User { databaseId login name avatarUrl bio url followers{totalCount} repositories{totalCount} } } } }"""
+        val vars = JsonObject().apply {
+            addProperty("q", q)
+            addProperty("n", perPage.coerceIn(1, 100))
+        }
+        val data = graphql(gql, vars, leanSearchHttp, singleAttempt = true)
+        val search = data.getAsJsonObject("search") ?: return SearchUsers()
+        val count = search.get("userCount")?.asLong ?: 0L
+        val nodes = search.getAsJsonArray("nodes") ?: return SearchUsers(total_count = count)
+        val items = ArrayList<User>()
+        for (el in nodes) {
+            val n = el.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+            val login = n.get("login")?.asString.orEmpty()
+            if (login.isBlank()) continue
+            items.add(
+                User(
+                    login = login,
+                    id = n.get("databaseId")?.asLong ?: 0L,
+                    avatar_url = n.get("avatarUrl")?.asString,
+                    html_url = n.get("url")?.asString ?: "https://github.com/$login",
+                    name = n.get("name")?.takeIf { !it.isJsonNull }?.asString,
+                    bio = n.get("bio")?.takeIf { !it.isJsonNull }?.asString,
+                    public_repos = n.getAsJsonObject("repositories")?.get("totalCount")?.asInt ?: 0,
+                    followers = n.getAsJsonObject("followers")?.get("totalCount")?.asInt ?: 0,
+                    type = "User"
+                )
+            )
+        }
+        return SearchUsers(total_count = count, incomplete_results = false, items = items)
+    }
+
     suspend fun searchCode(q: String, page: Int = 1, perPage: Int = 30): SearchCode =
         parse(raw("/search/code", query = mapOf("q" to q, "page" to "$page", "per_page" to "$perPage"), accept = "application/vnd.github.text-match+json"), SearchCode::class.java)
     suspend fun searchIssues(q: String, page: Int = 1, perPage: Int = 30): SearchIssues =

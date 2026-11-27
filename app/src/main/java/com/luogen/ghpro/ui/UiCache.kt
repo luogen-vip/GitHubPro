@@ -158,6 +158,16 @@ object UiCache {
     var pendingReleaseTag: String? = null
     val repoCommits = HashMap<String, List<GitCommit>>()
     val repoIndex = HashMap<String, Int>()   // "tab|repo" -> 滚动位置
+    /** owner/name -> 概览页滚动位置；切到代码/议题再切回来不会被强行拉回顶部。 */
+    val repoOverviewScroll = HashMap<String, Int>()
+    /** owner/name -> 已加载过的真实 README；切页签不重复请求，也避免内容先空后长导致位置错乱。 */
+    val repoReadme = HashMap<String, String>()
+    val repoReadmeLoaded = HashSet<String>()
+
+    // ---------------- 下载管理 ----------------
+    /** 下载列表滚动位置；点“定位仓库”再返回时保持用户刚才看到的那一条。 */
+    var downloadsIndex = 0
+    var downloadsOffset = 0
 
     // ---------------- 搜索 ----------------
     var searchRan = false

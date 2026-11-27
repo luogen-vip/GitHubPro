@@ -155,7 +155,6 @@ fun TranslateBlock(
             picker = false
             job?.cancel()
             target = code
-            Cfg.translateTarget = code
             result = null
             resultTarget = null
             showOriginal = false

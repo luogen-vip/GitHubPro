@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -464,7 +465,9 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
             Box(Modifier.weight(1f)) {
                 key(refreshSeq) {
                 when (tab) {
-                    0 -> OverviewTab(nav, owner, name, r, languages, latestReleaseAt)
+                    0 -> OverviewTab(nav, owner, name, r, languages, latestReleaseAt,
+                        initialScroll = UiCache.repoOverviewScroll[key] ?: 0,
+                        onScroll = { UiCache.repoOverviewScroll[key] = it })
                     1 -> CodeTab(nav, owner, name, r)
                     2 -> IssueListTab(nav, owner, name)
                     3 -> PullListTab(nav, owner, name)
@@ -585,12 +588,28 @@ fun LanguageBar(languages: Map<String, Long>, legend: Boolean = true) {
 }
 
 @Composable
-fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, languages: Map<String, Long>, latestReleaseAt: String? = null) {
+fun OverviewTab(
+    nav: NavController,
+    owner: String,
+    name: String,
+    r: Repo,
+    languages: Map<String, Long>,
+    latestReleaseAt: String? = null,
+    initialScroll: Int = 0,
+    onScroll: (Int) -> Unit = {}
+) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    var readme by remember { mutableStateOf<String?>(null) }
-    var readmeLoading by remember { mutableStateOf(false) }
-    var readmeSha by remember { mutableStateOf<String?>(null) }
+    val key = "$owner/$name"
+    val scrollState = rememberScrollState(initialScroll)
+    LaunchedEffect(scrollState) {
+        snapshotFlow { scrollState.value }.collect { onScroll(it) }
+    }
+    var readme by remember(owner, name) { mutableStateOf(UiCache.repoReadme[key]) }
+    var readmeLoading by remember(owner, name) {
+        mutableStateOf(readme == null && key !in UiCache.repoReadmeLoaded)
+    }
+    var readmeSha by remember(owner, name) { mutableStateOf<String?>(null) }
     var showEdit by rememberSaveable { mutableStateOf(false) }
     var editText by rememberSaveable { mutableStateOf("") }
     var saving by remember { mutableStateOf(false) }
@@ -692,11 +711,22 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
     }
 
     LaunchedEffect(owner, name) {
-        readmeLoading = true
-        readme = runCatching { Api.fileContent(owner, name, "README.md", r.default_branch) }
+        // 同一个仓库切到代码/议题再切回概览：README 不重新请求、不先空后长，滚动位置才不会被拉回顶部。
+        if (key in UiCache.repoReadmeLoaded) {
+            readme = UiCache.repoReadme[key]
+            readmeLoading = false
+            return@LaunchedEffect
+        }
+        readmeLoading = readme == null
+        val loaded = runCatching { Api.fileContent(owner, name, "README.md", r.default_branch) }
             .recoverCatching { Api.fileContent(owner, name, "readme.md", r.default_branch) }
             .getOrNull()
-        readmeSha = runCatching { Api.fileItem(owner, name, "README.md", r.default_branch).sha }.getOrNull()
+        if (loaded != null) {
+            readme = loaded
+            UiCache.repoReadme[key] = loaded
+            UiCache.repoReadmeLoaded.add(key)
+        }
+        // 编辑时再按需取 sha，不在每次切页签时多打一个文件接口。
         readmeLoading = false
     }
 
@@ -708,7 +738,7 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
         }
     }
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
+    Column(Modifier.fillMaxSize().verticalScroll(scrollState).padding(14.dp)) {
         // 语言条已经固定在仓库头部，所有页签都能看到，这里不再重复一条
         KeyValue("分支", r.default_branch ?: "main", onClick = { })
         KeyValue("语言", r.language ?: "—")
@@ -789,7 +819,6 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
                 readmeSeq++
                 readmeTrLoading = false
                 readmeTarget = code
-                Cfg.translateTarget = code
                 readmeTr = null
                 readmeTrTarget = null
                 readmeTrSource = null
@@ -844,6 +873,8 @@ fun OverviewTab(nav: NavController, owner: String, name: String, r: Repo, langua
                                 android.util.Base64.encodeToString(editText.toByteArray(), android.util.Base64.NO_WRAP), sha, branch)
                             readme = editText
                             readmeSha = null
+                            UiCache.repoReadme[key] = editText
+                            UiCache.repoReadmeLoaded.add(key)
                             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                                 Toast.makeText(ctx, "README 已保存", Toast.LENGTH_SHORT).show()
                                 showEdit = false

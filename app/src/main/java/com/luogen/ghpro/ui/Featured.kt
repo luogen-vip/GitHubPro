@@ -27,6 +27,8 @@ import com.google.gson.Gson
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 
 private data class FSort(val key: String, val label: String)
 
@@ -73,7 +75,7 @@ fun FeaturedScreen(nav: NavController) {
         if (!silent) loading = true
         try {
             val q = if (s == "updated") "stars:>500 pushed:>2020-01-01" else "stars:>1000"
-            val r = Api.searchReposFeatured(q, s, perPage = 30)
+            val r = withTimeout(12_000L) { Api.searchReposFeatured(q, s, perPage = 30) }
             if (gen != loadGen || s != sort) return
             val items = when (s) {
                 "updated" -> r.items.sortedByDescending { it.pushed_at ?: it.updated_at ?: "" }
@@ -100,6 +102,15 @@ fun FeaturedScreen(nav: NavController) {
             runCatching {
                 Cfg.saveFeaturedCache(s, Gson().toJson(FeaturedDisk(lastSync, total, items)))
             }
+        } catch (e: TimeoutCancellationException) {
+            if (gen == loadGen && s == sort) {
+                if (!silent || list.isEmpty()) {
+                    list = emptyList(); total = 0; lastSync = 0
+                }
+                loading = false
+                error = "精选加载超过 12 秒还没返回，网络或 GitHub 响应太慢；点重试，不会一直转圈"
+            }
+            return
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {

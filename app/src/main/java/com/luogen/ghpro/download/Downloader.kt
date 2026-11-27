@@ -691,6 +691,26 @@ object Downloader {
             }
         } catch (e: Exception) { }
 
+        // 有些镜像/对象存储 HEAD 不返回 Accept-Ranges，但真发 Range 是 206。
+        // 只探 1KB，确认真能分片才开多线程，避免“设置里写着 64 线程、实际一直单线程”。
+        if (!acceptRanges) {
+            try {
+                val probe = Request.Builder().url(url)
+                    .header("User-Agent", "GitHubPro/1.0")
+                    .header("Range", "bytes=0-1023")
+                    .apply { if (sendAuth) header("Authorization", "Bearer $token") }
+                    .get().build()
+                client.newCall(probe).execute().use { r ->
+                    if (r.code == 206) {
+                        acceptRanges = true
+                        val cr = r.header("Content-Range") ?: ""
+                        val realTotal = cr.substringAfterLast('/').toLongOrNull() ?: -1L
+                        if (realTotal > 0) total = realTotal
+                    }
+                }
+            } catch (e: Exception) { }
+        }
+
         // 小文件不硬拆线程：2MB 一个分片，12MB 约 6 线程，1GB 才会拉满设置值
         val effective = min(threadsWanted.coerceIn(1, 128), max(1, (total / (2L * 1024 * 1024)).toInt()))
         val existingBytes = if (outFile.exists()) outFile.length() else 0L

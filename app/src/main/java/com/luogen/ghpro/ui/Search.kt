@@ -150,31 +150,24 @@ fun SearchScreen(nav: NavController) {
                     append(text)
                     if (!lang.isNullOrBlank()) append(" language:\"").append(lang).append("\"")
                 }
-                val r = Api.searchRepos(fullQ, 1, sort, if (sort != null) "desc" else null, perPage = 100)
+                val r = Api.searchReposFeatured(fullQ, sort, perPage = 30)
                 val looksLikeUser = text.trim().length > 2 && !text.contains(" ") && text.trim().matches(Regex("[A-Za-z0-9._-]+"))
                 val own = if (looksLikeUser) runCatching {
-                    Api.userRepos(text.trim(), 1, 100, if (sort == "updated") "pushed" else "updated").items
+                    Api.userRepos(text.trim(), 1, 30, if (sort == "updated") "pushed" else "updated").items
                 }.getOrDefault(emptyList()) else emptyList()
                 val names = r.items.map { it.full_name }.toSet()
                 repos = orderRepos(own + r.items.filter { it.full_name !in own.map { o -> o.full_name } })
                 total = r.total_count + own.count { it.full_name !in names }
-                hasNext = r.items.size >= 100
+                hasNext = r.items.size >= 30
             } else if (type == 1) {
-                val r = Api.searchUsers(text, 1, 100)
-                users = r.items; total = r.total_count; hasNext = r.items.size >= 100
-                // 搜索接口返回的用户对象没有仓库数量，补全前几个真实数量
-                users = users.mapIndexed { i, u ->
-                    if (i < 8 && u.public_repos == 0) {
-                        runCatching { Api.user(u.login) }.getOrNull()
-                            ?.let { full -> u.copy(public_repos = full.public_repos, followers = full.followers) } ?: u
-                    } else u
-                }
+                val r = Api.searchUsers(text, 1, 30)
+                users = r.items; total = r.total_count; hasNext = r.items.size >= 30
             } else if (type == 2) {
-                val r = Api.searchCode(text, 1, 100)
-                codes = r.items; total = r.total_count; hasNext = r.items.size >= 100
+                val r = Api.searchCode(text, 1, 30)
+                codes = r.items; total = r.total_count; hasNext = r.items.size >= 30
             } else {
-                val r = Api.searchIssues(text, 1, 100)
-                issues = r.items; total = r.total_count; hasNext = r.items.size >= 100
+                val r = Api.searchIssues(text, 1, 30)
+                issues = r.items; total = r.total_count; hasNext = r.items.size >= 30
             }
             page = 1
             if (resetScroll) {
@@ -185,7 +178,13 @@ fun SearchScreen(nav: NavController) {
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            error = e.message
+            val raw = e.message ?: "网络请求失败"
+            error = when {
+                raw.contains("rate limit", true) || raw.contains("限流") || raw.contains("次数") || raw.contains("403") ->
+                    "GitHub 搜索被限流了（代码/议题走 REST 搜索，每分钟有次数上限）。等 30–60 秒再点重试；仓库和用户搜索已改走 GraphQL，不受这个限制。"
+                raw.contains("timeout", true) || raw.contains("超时") -> "搜索超时了，网络或 GitHub 响应太慢，点重试"
+                else -> raw
+            }
         } finally {
             loading = false
         }
@@ -202,17 +201,17 @@ fun SearchScreen(nav: NavController) {
                     append(text)
                     if (!lang.isNullOrBlank()) append(" language:\"").append(lang).append("\"")
                 }
-                val r = Api.searchRepos(fullQ, next, sort, if (sort != null) "desc" else null, perPage = 100)
-                repos = orderRepos(repos + r.items); hasNext = r.items.size >= 100
+                val r = Api.searchRepos(fullQ, next, sort, if (sort != null) "desc" else null, perPage = 30)
+                repos = orderRepos(repos + r.items); hasNext = r.items.size >= 30
             } else if (type == 1) {
-                val r = Api.searchUsers(text, next, 100)
-                users = users + r.items; hasNext = r.items.size >= 100
+                val r = Api.searchUsers(text, next, 30)
+                users = users + r.items; hasNext = r.items.size >= 30
             } else if (type == 2) {
-                val r = Api.searchCode(text, next, 100)
-                codes = codes + r.items; hasNext = r.items.size >= 100
+                val r = Api.searchCode(text, next, 30)
+                codes = codes + r.items; hasNext = r.items.size >= 30
             } else {
-                val r = Api.searchIssues(text, next, 100)
-                issues = issues + r.items; hasNext = r.items.size >= 100
+                val r = Api.searchIssues(text, next, 30)
+                issues = issues + r.items; hasNext = r.items.size >= 30
             }
             page = next
             cacheWrite()
@@ -233,14 +232,20 @@ fun SearchScreen(nav: NavController) {
         if (firstPass) {
             firstPass = false
             // 从详情页返回：缓存里的搜索词、分类、语言、排序、结果、位置全都对得上，就直接还原，不再重搜也不回顶
-            if (UiCache.searchRan && UiCache.searchKey == "$key|$q") {
+            if (UiCache.searchRan && UiCache.searchKey == "$key|$q" &&
+                countForType(type, repos, users, codes, issues) > 0) {
                 lastFilterKey = key
                 return@LaunchedEffect
             }
         }
         val filtersChanged = key != lastFilterKey
         lastFilterKey = key
-        if (q.isBlank()) { clearAll(); cacheWrite(); return@LaunchedEffect }
+        if (q.isBlank()) { loading = false; clearAll(); cacheWrite(); return@LaunchedEffect }
+        if (filtersChanged) clearAll()
+        // 输入后到真正发请求之间有 220ms 防抖，这段时间也显示“搜索中”，
+        // 不能只把旧结果清空后显示“没有结果”，让人误以为真的搜不到。
+        loading = true
+        error = null
         delay(if (filtersChanged) 0 else 220)
         runFresh(q, resetScroll = true)
     }
@@ -249,7 +254,7 @@ fun SearchScreen(nav: NavController) {
     LaunchedEffect(Unit) {
         if (!UiCache.searchRan && q.isBlank() && repos.isEmpty()) {
             browsing = true
-            runCatching { Api.searchRepos("stars:>5000", 1, "stars", "desc", 50) }
+            runCatching { Api.searchReposFeatured("stars:>5000", "stars", perPage = 30) }
                 .onSuccess { repos = it.items; total = it.total_count }
             browsing = false
         }
@@ -266,7 +271,7 @@ fun SearchScreen(nav: NavController) {
     LaunchedEffect(listState, hasNext) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
             .distinctUntilChanged()
-            .collect { last -> if (hasNext && last >= currentCount(repos, users, codes, issues) - 4) loadMore() }
+            .collect { last -> if (hasNext && last >= countForType(type, repos, users, codes, issues) - 4) loadMore() }
     }
 
     val showTop by remember { derivedStateOf { listState.firstVisibleItemIndex > 3 || listState.firstVisibleItemScrollOffset > 600 } }
@@ -320,7 +325,7 @@ fun SearchScreen(nav: NavController) {
                         loading -> "搜索中…"
                         error != null -> "搜索失败"
                         browsing -> "热门仓库推荐"
-                        total > 0 -> "共 ${compactNumLong(total)} 条结果，已加载 ${currentCount(repos, users, codes, issues)}"
+                        total > 0 -> "共 ${compactNumLong(total)} 条结果，已加载 ${countForType(type, repos, users, codes, issues)}"
                         q.isBlank() -> "输入关键词即可实时搜索"
                         else -> "没有结果"
                     },
@@ -335,7 +340,7 @@ fun SearchScreen(nav: NavController) {
                             TextButton({ retryTick++ }) { Text("重试") }
                         }
                     }
-                    loading && currentCount(repos, users, codes, issues) == 0 -> item { LoadingBox("正在搜索…") }
+                    loading && countForType(type, repos, users, codes, issues) == 0 -> item { LoadingBox("正在搜索…") }
                 }
                 when (type) {
                         0 -> items(repos, key = { "${it.id}-${it.full_name}" }) { r ->
@@ -392,7 +397,7 @@ fun SearchScreen(nav: NavController) {
                         }
                     }
                     if (loadingMore) item { LoadingBox("加载更多…") }
-                    if (!loading && !hasNext && currentCount(repos, users, codes, issues) > 0) item {
+                    if (!loading && !hasNext && countForType(type, repos, users, codes, issues) > 0) item {
                         Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
                             Text("已全部加载（GitHub 搜索最多返回前 1000 条）", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
@@ -403,10 +408,10 @@ fun SearchScreen(nav: NavController) {
         }
     }
 
-private fun currentCount(r: List<Repo>, u: List<User>, c: List<CodeItem>, i: List<Issue>): Int = when {
-    r.isNotEmpty() -> r.size
-    u.isNotEmpty() -> u.size
-    c.isNotEmpty() -> c.size
+private fun countForType(type: Int, r: List<Repo>, u: List<User>, c: List<CodeItem>, i: List<Issue>): Int = when (type) {
+    0 -> r.size
+    1 -> u.size
+    2 -> c.size
     else -> i.size
 }
 
