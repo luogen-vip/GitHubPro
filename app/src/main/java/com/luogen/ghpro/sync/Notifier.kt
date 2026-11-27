@@ -135,24 +135,50 @@ object Notifier {
 
     fun downloadDone(ctx: Context, name: String, path: String, publicPath: String? = null) {
         canceledIds.remove(name.hashCode())
-        // 点通知直接打开刚下好的文件：APK 弹安装器，图片/视频进 App 内预览
+        val isApk = name.lowercase().endsWith(".apk") || name.lowercase().contains(".apk.")
+        val isMedia = name.substringAfterLast('.', "").lowercase() in
+            setOf("png", "jpg", "jpeg", "webp", "gif", "bmp", "mp4", "mkv", "mov", "webm", "avi", "3gp")
+        // 点通知先回到 App 校验文件是否还在：已删除/已取消就提示，不会弹安装器或播放器。
+        // 校验通过后 APK 走系统安装器，图片/视频走 App 内预览，其他文件交给系统打开。
         val open = Intent(ctx, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("open_file", path)
         }
         val openPi = PendingIntent.getActivity(ctx, name.hashCode(), open,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val action = when {
+            isApk -> "立即安装"
+            isMedia -> "打开"
+            else -> "打开/分享"
+        }
+        val tip = when {
+            isApk -> "点按通知立即安装 · $name"
+            isMedia -> "点按通知用 GitHub Pro 打开 · $name"
+            else -> "点按通知打开或分享 · $name"
+        }
         val n = NotificationCompat.Builder(ctx, CH_DOWNLOAD_DONE)
             .setSmallIcon(R.drawable.ic_small)
-            .setContentTitle("下载完成 · 100%")
-            .setContentText("点这里打开 · " + (publicPath?.takeIf { it.isNotBlank() } ?: name))
-            .setStyle(NotificationCompat.BigTextStyle().bigText("$name\n已保存到 ${publicPath ?: path}\n点按通知可直接打开"))
+            .setContentTitle(if (isApk) "下载完成 · APK 安装包" else "下载完成 · 100%")
+            .setContentText(tip)
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$name\n已保存到 ${publicPath ?: path}\n$tip"))
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_VIBRATE)
             .setContentIntent(openPi)
+            .addAction(R.drawable.ic_small, action, openPi)
             .build()
         safeNotify(ctx, n, name.hashCode())
+    }
+
+    /** 删除记录/删除文件后撤掉对应通知；通知栏里的一条已经不存在，就不能再被点开。 */
+    fun clearDownload(ctx: Context, name: String) {
+        val id = name.hashCode()
+        canceledIds.remove(id)
+        runCatching { NotificationManagerCompat.from(ctx).cancel(id) }
+    }
+
+    fun clearDownloads(ctx: Context, names: Collection<String>) {
+        names.forEach { clearDownload(ctx, it) }
     }
 
     fun downloadFailed(ctx: Context, name: String, reason: String) {

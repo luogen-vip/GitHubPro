@@ -373,6 +373,7 @@ object Downloader {
         val list = history(ctx).toMutableList()
         val target = list.firstOrNull { it.id == id }
         val removed = if (deleteFile && target != null) deleteRecordFiles(ctx, target) else false
+        target?.let { Notifier.clearDownload(ctx, it.name) }
         list.removeAll { it.id == id }
         save(ctx, list)
         return removed
@@ -380,7 +381,9 @@ object Downloader {
 
     fun clearRecords(ctx: Context, deleteFiles: Boolean): Boolean {
         var removed = false
-        if (deleteFiles) history(ctx).forEach { r -> if (deleteRecordFiles(ctx, r)) removed = true }
+        val old = history(ctx)
+        if (deleteFiles) old.forEach { r -> if (deleteRecordFiles(ctx, r)) removed = true }
+        Notifier.clearDownloads(ctx, old.map { it.name })
         save(ctx, emptyList())
         return removed
     }
@@ -401,6 +404,7 @@ object Downloader {
             if (deleteRecordFiles(ctx, r)) removed = true
         }
         list.removeAll { it.name == name || it.name == safe }
+        Notifier.clearDownload(ctx, safe)
         save(ctx, list)
         state.value = state.value - safe
         return removed

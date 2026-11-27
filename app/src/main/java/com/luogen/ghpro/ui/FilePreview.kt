@@ -42,15 +42,21 @@ import java.io.File
 object PreviewBus {
     val target = MutableStateFlow<File?>(null)
 
-    fun open(ctx: android.content.Context, file: File) {
-        if (!file.exists()) return
+    /** 返回 false 表示文件已经不存在（删除/取消），调用方要提示且不能打开。 */
+    fun open(ctx: android.content.Context, file: File): Boolean {
+        if (!file.exists() || !file.isFile) return false
+        val lower = file.name.lowercase()
+        if (lower.endsWith(".apk") || lower.contains(".apk.")) {
+            Downloader.installApk(ctx, file)
+            return true
+        }
         when (file.extension.lowercase()) {
-            "apk" -> Downloader.installApk(ctx, file)
             "png", "jpg", "jpeg", "webp", "gif", "bmp",
             "mp4", "mkv", "mov", "webm", "avi", "3gp",
             "txt", "log", "md", "json", "xml", "csv" -> target.value = file
             else -> Downloader.openExternal(ctx, file)
         }
+        return true
     }
 }
 

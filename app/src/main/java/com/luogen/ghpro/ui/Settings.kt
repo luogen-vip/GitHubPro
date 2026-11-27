@@ -48,6 +48,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
     var threads by remember { mutableStateOf(Cfg.downThreads) }
     var poll by remember { mutableStateOf(Cfg.pollSeconds) }
     var notify by remember { mutableStateOf(Cfg.notifyEnabled) }
+    var notifAutoClear by remember { mutableStateOf(Cfg.notifAutoClearHours) }
     var auto by remember { mutableStateOf(Cfg.autoRefresh) }
     var mobileDlWarn by remember { mutableStateOf(Cfg.mobileDownloadWarn) }
     var mobileBrowseWarn by remember { mutableStateOf(Cfg.mobileBrowseWarn) }
@@ -194,6 +195,24 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
             SectionTitle("同步与通知")
             SwitchRow("自动刷新（每 20 秒）", auto) { auto = it; Cfg.autoRefresh = it }
             SwitchRow("状态变化通知", notify) { notify = it; Cfg.notifyEnabled = it }
+            Text("自动清理旧通知", fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp, bottom = 2.dp))
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                listOf(0 to "关闭", 24 to "1 天", 72 to "3 天", 168 to "7 天", 720 to "30 天").forEach { (h, label) ->
+                    FilterChip(
+                        selected = notifAutoClear == h,
+                        onClick = {
+                            notifAutoClear = h
+                            Cfg.notifAutoClearHours = h
+                            // 打开通知页时立即按新规则 prune；通知页若正在后台保留也会被 tick 刷新。
+                            Bus.poke()
+                        },
+                        label = { Text(label, fontSize = 11.sp) }
+                    )
+                }
+            }
+            Text("默认关闭。选 1 天/3 天/7 天/30 天后，超过这个时间的通知会在通知页打开时立即隐藏，并写入本机删除记录；刷新、重进 App 都不会再回来。只影响本机显示，不会删除 GitHub 服务端记录。",
+                fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
             SwitchRow("移动数据下载前确认", mobileDlWarn) { mobileDlWarn = it; Cfg.mobileDownloadWarn = it }
             SwitchRow("使用移动数据浏览时提醒", mobileBrowseWarn) { mobileBrowseWarn = it; Cfg.mobileBrowseWarn = it }
             SliderRow("监听间隔", poll, 8f..120f, "${poll} 秒") {

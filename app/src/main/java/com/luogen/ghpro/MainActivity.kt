@@ -25,6 +25,7 @@ import com.luogen.ghpro.ui.NetworkPromptHost
 import com.luogen.ghpro.data.NetworkTools
 import com.luogen.ghpro.data.NetPrompts
 import com.luogen.ghpro.download.Downloader
+import com.luogen.ghpro.sync.Notifier
 
 class MainActivity : ComponentActivity() {
     private val notifPerm = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -64,7 +65,11 @@ class MainActivity : ComponentActivity() {
         val file = intent.getStringExtra("open_file")
         if (!file.isNullOrBlank()) {
             val f = File(file)
-            if (f.exists()) PreviewBus.open(this, f)
+            val opened = PreviewBus.open(this, f)
+            if (!opened) {
+                Notifier.clearDownload(this, f.name)
+                android.widget.Toast.makeText(this, "文件已被删除或下载已取消，无法打开", android.widget.Toast.LENGTH_LONG).show()
+            }
             intent.removeExtra("open_file")
             return
         }

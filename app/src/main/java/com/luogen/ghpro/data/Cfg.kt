@@ -210,6 +210,21 @@ object Cfg {
         get() = sp.getStringSet("notif_read_ids", emptySet())?.toSet() ?: emptySet()
         set(v) { sp.edit().putStringSet("notif_read_ids", v.toList().takeLast(800).toSet()).apply() }
 
+    /** 用户在本机清掉的通知 id：GitHub 没有删除通知的 API，只能持久化隐藏，刷新也绝不回来。 */
+    var notifHiddenIds: Set<String>
+        get() = sp.getStringSet("notif_hidden_ids", emptySet())?.toSet() ?: emptySet()
+        set(v) { sp.edit().putStringSet("notif_hidden_ids", v.toList().takeLast(2000).toSet()).apply() }
+
+    /** “清除全部通知”的时间戳：比它旧的远端/本地通知永久不在本机显示，之后的新通知仍然正常出现。 */
+    var notifClearAt: Long
+        get() = sp.getLong("notif_clear_at", 0L)
+        set(v) { sp.edit().putLong("notif_clear_at", v).apply() }
+
+    /** 自动清理超过多少小时的通知；0 表示关闭。和隐藏 id 一样持久化，不是只清屏。 */
+    var notifAutoClearHours: Int
+        get() = sp.getInt("notif_auto_clear_hours", 0)
+        set(v) { sp.edit().putInt("notif_auto_clear_hours", v.coerceAtLeast(0)).apply() }
+
     var lastSeenNotificationIds: Set<String>
         get() = sp.getStringSet("seen_notif", emptySet())?.toSet() ?: emptySet()
         set(v) { sp.edit().putStringSet("seen_notif", v.toSet()).apply() }
