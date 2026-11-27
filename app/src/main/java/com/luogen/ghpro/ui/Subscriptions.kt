@@ -111,8 +111,18 @@ fun SubscriptionsScreen(nav: NavController) {
     var tab by remember { mutableStateOf(UiCache.subsTab.coerceIn(0, 1)) }
     var sort by remember { mutableStateOf(UiCache.subsSort) }
     var sortMenu by remember { mutableStateOf(false) }
-    var repos by remember { mutableStateOf(UiCache.subsRepos) }
-    var users by remember { mutableStateOf(UiCache.subsUsers) }
+    // 从仓库/用户详情返回时，先用缓存秒开；但本地刚订阅/取消的状态必须立即覆盖旧缓存，
+    // 否则会先闪一下旧列表，等网络回来才消失。
+    var repos by remember {
+        mutableStateOf((UiCache.subsRepos + UiCache.repoWatchSnap.values.filter { UiCache.repoWatchOverride(it.full_name) == true })
+            .filter { UiCache.repoWatchOverride(it.full_name) != false }
+            .distinctBy { it.id })
+    }
+    var users by remember {
+        mutableStateOf((UiCache.subsUsers + UiCache.userFollowSnap.values.filter { UiCache.followOverride(it.login) == true })
+            .filter { UiCache.followOverride(it.login) != false }
+            .distinctBy { it.id })
+    }
     var loading by remember { mutableStateOf(if (tab == 0) UiCache.subsRepos.isEmpty() else UiCache.subsUsers.isEmpty()) }
     var error by remember { mutableStateOf<String?>(null) }
     var refresh by remember { mutableStateOf(0) }
