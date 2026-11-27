@@ -68,11 +68,13 @@ fun FeaturedScreen(nav: NavController) {
                 else -> r.items.sortedByDescending { it.stargazers_count }
             }
             if (items.isEmpty()) {
-                list = emptyList()
-                total = 0
-                lastSync = 0
+                if (!silent || list.isEmpty()) {
+                    list = emptyList()
+                    total = 0
+                    lastSync = 0
+                    offlineNote = null
+                }
                 error = "GitHub 搜索这次没有返回仓库，可能被限流；点重试或稍后刷新"
-                offlineNote = null
                 loading = false
                 return
             }
