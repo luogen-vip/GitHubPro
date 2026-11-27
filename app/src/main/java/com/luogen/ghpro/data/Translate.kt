@@ -27,7 +27,7 @@ import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 /**
- * 真实可用的免 key 翻译：B 站公开 Index-Translate（全语言）→ 彩云小译公开接口
+ * 真实可用的免 key 翻译：彩云公开测试接口（整段快）→ B 站公开 Index-Translate（不限量）
  * → MyMemory 匿名接口。只保留公开、无需申请 key 的入口；没有本地假翻译/占位结果。
  * 单一接口都有网络/额度限制，所以做多接口回退；仍然失败会把真实错误抛给界面。
  */
@@ -319,18 +319,36 @@ object TranslateApi {
         }
         val key = "$target\u0000$source"
         synchronized(cache) { cache[key] }?.let { return@withContext it }
-        val chunks = chunk(source)
-        // 第一屏只翻 200 字：实测 200 字约 1~2 秒就能先显示；900 字约 5~7 秒，
+
+        // 彩云 10,000 字实测约 1.5 秒，5 个并发 50,000 字约 3 秒；
+        // 先整段走彩云，常见议题/PR/README 可以一次请求就出完整译文，不再逐段等待。
+        // 超过 50,000 字只把前 50,000 字交给彩云，剩余交给不限量的 B 站分段补齐。
+        val fastLimit = minOf(source.length, 50_000)
+        val fastText = if (fastLimit > 0) tryCaiyunFast(source.substring(0, fastLimit), t) else null
+        if (fastText != null && source.length <= fastLimit) {
+            val result = Result(fastText, guessed, "彩云")
+            synchronized(cache) { cache[key] = result }
+            onPartial?.invoke(fastText)
+            return@withContext result
+        }
+
+        val out = StringBuilder(fastText.orEmpty())
+        val providers = ArrayList<String>()
+        if (fastText != null) {
+            providers.add("彩云")
+            onPartial?.invoke(fastText)
+        }
+        val remaining = if (fastText != null) source.substring(fastLimit) else source
+        val chunks = chunk(remaining)
+        // B 站兜底：第一屏只翻 200 字（约 1~2 秒），900 字约 5~7 秒，
         // 1400 字经常 20 秒甚至 503，所以剩余统一按 900 字并发补齐。
         val firstChunk = chunks.first()
         val firstText = firstChunk.take(200)
-        val out = StringBuilder()
         var detected: String? = guessed
-        var provider = ""
         val first = translateChunk(firstText, t, guessed)
         out.append(first.first)
         detected = first.second ?: detected
-        provider = first.third
+        if (first.third !in providers) providers.add(first.third)
         onPartial?.invoke(out.toString().trim())
         val restParts = (
             if (firstChunk.length > 200) chunk(firstChunk.substring(200), 900) else emptyList()
@@ -343,7 +361,7 @@ object TranslateApi {
                     val r = job.await()
                     out.append(r.first)
                     detected = r.second ?: detected
-                    provider = r.third
+                    if (r.third !in providers) providers.add(r.third)
                     onPartial?.invoke(out.toString().trim())
                 }
             }
@@ -355,9 +373,26 @@ object TranslateApi {
         if (translated == source.trim() && source.length >= 12 && !sameLanguage(source, target)) {
             throw IOException("接口没有真正翻译，请重试或切换目标语言")
         }
-        val result = Result(translated, detected, provider)
+        val result = Result(translated, detected, providers.joinToString(" + ").ifBlank { "翻译" })
         synchronized(cache) { cache[key] = result }
         result
+    }
+
+    /**
+     * 彩云快速整段：每次最多 10,000 字，最多同时 5 段（公开测试 token 每分钟约 5 次）。
+     * 任何一段失败/原样返回就整段放弃，交给 B 站兜底，避免把半截结果当完整译文。
+     */
+    private suspend fun tryCaiyunFast(text: String, t: Lang): String? {
+        val parts = if (text.length <= 10_000) listOf(text) else chunk(text, 10_000)
+        if (parts.size > 5) return null
+        return try {
+            val results = coroutineScope {
+                parts.map { part -> async(Dispatchers.IO) { caiyunTranslate(part, t) } }.awaitAll()
+            }
+            if (results.indices.any { isSameOrUntranslated(results[it].first, parts[it]) }) return null
+            results.joinToString("") { it.first }.trim().ifBlank { null }
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { null }
     }
 
     private fun chunk(text: String, max: Int = 10_000): List<String> {

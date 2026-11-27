@@ -14,6 +14,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -223,6 +224,16 @@ fun TranslateBlock(
             maxLines = maxLines,
             overflow = overflow
         )
+        // 分段翻译时正文会继续变长；明确告诉用户下面还会补，避免滑到底以为已经没内容。
+        if (loading && hasResult && !same) {
+            LinearProgressIndicator(
+                Modifier.fillMaxWidth().padding(top = 4.dp).height(2.dp),
+                color = GH.blue
+            )
+            Text("还在翻译后面的段落，下面会自动补全…", fontSize = if (compact) 8.sp else 9.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 3.dp))
+        }
         if (showControls && text.isNotBlank() && !compact) {
             Spacer(Modifier.height(3.dp))
             controls()

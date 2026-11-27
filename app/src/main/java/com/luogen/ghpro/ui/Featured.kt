@@ -73,7 +73,7 @@ fun FeaturedScreen(nav: NavController) {
         if (!silent) loading = true
         try {
             val q = if (s == "updated") "stars:>500 pushed:>2020-01-01" else "stars:>1000"
-            val r = Api.searchRepos(q, 1, s, "desc", perPage = 60)
+            val r = Api.searchReposFeatured(q, s, perPage = 30)
             if (gen != loadGen || s != sort) return
             val items = when (s) {
                 "updated" -> r.items.sortedByDescending { it.pushed_at ?: it.updated_at ?: "" }
@@ -133,6 +133,7 @@ fun FeaturedScreen(nav: NavController) {
     LaunchedEffect(sort) {
         UiCache.featuredSort = sort
         val snap = UiCache.featuredSnaps[sort]?.takeIf { it.list.isNotEmpty() }
+            ?: loadFeaturedDisk(sort)?.also { UiCache.featuredSnaps[sort] = it }
         val fromSwitch = switchedSort
         switchedSort = false
         if (snap != null) {
@@ -212,7 +213,7 @@ fun FeaturedScreen(nav: NavController) {
                     CircularProgressIndicator(Modifier.size(36.dp))
                     Spacer(Modifier.height(10.dp))
                     Text("正在挑选高质量仓库…", fontSize = 12.sp)
-                    Text("最多等 15 秒；超时会直接提示重试，不会一直转圈", fontSize = 10.sp,
+                    Text("轻量接口通常几秒出结果；网络慢会自动换成备用搜索", fontSize = 10.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
                 }
                 error != null && list.isEmpty() -> ErrorBox(error) { scope.launch { load() } }

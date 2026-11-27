@@ -101,6 +101,18 @@ object Api {
             .build()
     }
 
+    /** 精选页只取展示需要的字段：GraphQL 返回约 15KB，REST 完整仓库对象要 200~400KB。 */
+    private val leanSearchHttp: OkHttpClient by lazy {
+        http.newBuilder()
+            .connectTimeout(7, TimeUnit.SECONDS)
+            .readTimeout(13, TimeUnit.SECONDS)
+            .callTimeout(15, TimeUnit.SECONDS)
+            .build()
+    }
+
+    /** 轻量搜索失败后短暂停用，避免每次都先等 15 秒再退回 REST。 */
+    @Volatile private var leanSearchDisabledUntil = 0L
+
     fun enc(s: String): String = try {
         URLEncoder.encode(s, "UTF-8").replace("+", "%20")
     } catch (e: Exception) { s }
@@ -256,12 +268,16 @@ object Api {
         } catch (e: Exception) { emptyList() }
     }
 
-    suspend fun graphql(query: String, variables: JsonObject = JsonObject()): JsonObject {
+    suspend fun graphql(query: String, variables: JsonObject = JsonObject(), client: OkHttpClient = http, singleAttempt: Boolean = false): JsonObject {
         val payload = JsonObject().apply {
             addProperty("query", query)
             add("variables", variables)
         }
-        val text = exec("/graphql", "POST", payload.toString(), accept = "application/json").body
+        val text = if (singleAttempt) {
+            execOnce("/graphql", "POST", payload.toString(), emptyMap(), "application/json", null, emptyMap(), null, client).body
+        } else {
+            exec("/graphql", "POST", payload.toString(), accept = "application/json", client = client).body
+        }
         val o = JsonParser.parseString(text).asJsonObject
         if (o.has("errors") && !o.has("data")) {
             throw ApiException(400, o.getAsJsonArray("errors").firstOrNull()?.asJsonObject?.get("message")?.asString ?: "GraphQL 错误")
@@ -1186,6 +1202,67 @@ object Api {
         val r = execOnce("/search/repositories", "GET", null, query, "application/vnd.github+json",
             null, emptyMap(), null, searchHttp)
         return parse(r.body, SearchRepos::class.java)
+    }
+
+    /**
+     * 精选页专用搜索：先走轻量 GraphQL（约 15KB），失败再退回 REST。
+     * 不改动全局 searchRepos，避免搜索结果页依赖的 topics/open_issues 等字段被裁掉。
+     */
+    suspend fun searchReposFeatured(q: String, sort: String? = null, perPage: Int = 30): SearchRepos {
+        if (!token.isNullOrBlank() && System.currentTimeMillis() >= leanSearchDisabledUntil) {
+            val lean = runCatching { searchReposLean(q, sort, perPage) }.getOrNull()
+            if (lean != null && lean.items.isNotEmpty()) return lean
+            if (lean == null) leanSearchDisabledUntil = System.currentTimeMillis() + 120_000L
+        }
+        val query = mapOf("q" to q, "page" to "1", "per_page" to "$perPage", "sort" to sort, "order" to "desc")
+        val r = execOnce("/search/repositories", "GET", null, query, "application/vnd.github+json",
+            null, emptyMap(), null, searchHttp)
+        return parse(r.body, SearchRepos::class.java)
+    }
+
+    /** GraphQL 精选搜索：字段按 RepoRow 实际展示所需裁剪，避免大响应拖慢首屏。 */
+    private suspend fun searchReposLean(q: String, sort: String?, perPage: Int): SearchRepos {
+        val gql = """query(${'$'}q:String!,${'$'}n:Int!){ search(query:${'$'}q, type:REPOSITORY, first:${'$'}n){ repositoryCount nodes{ ... on Repository { databaseId id name nameWithOwner url owner{login avatarUrl} description stargazerCount forkCount updatedAt pushedAt primaryLanguage{name} isPrivate } } } }"""
+        // GraphQL 没有 sort 参数，但搜索语法支持 sort:stars / sort:updated / sort:forks。
+        val sortQuery = if (sort.isNullOrBlank()) q else "$q sort:$sort"
+        val vars = JsonObject().apply {
+            addProperty("q", sortQuery)
+            addProperty("n", perPage.coerceIn(1, 100))
+        }
+        val data = graphql(gql, vars, leanSearchHttp, singleAttempt = true)
+        val search = data.getAsJsonObject("search") ?: return SearchRepos()
+        val count = search.get("repositoryCount")?.asLong ?: 0L
+        val nodes = search.getAsJsonArray("nodes") ?: return SearchRepos(total_count = count)
+        val items = ArrayList<Repo>()
+        for (el in nodes) {
+            val n = el.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+            val full = n.get("nameWithOwner")?.asString.orEmpty()
+            if (full.isBlank()) continue
+            val ownerObj = n.getAsJsonObject("owner")
+            val private = n.get("isPrivate")?.asBoolean ?: false
+            items.add(
+                Repo(
+                    id = n.get("databaseId")?.asLong ?: 0L,
+                    node_id = n.get("id")?.asString,
+                    name = n.get("name")?.asString ?: full.substringAfter('/'),
+                    full_name = full,
+                    owner = RepoOwner(
+                        login = ownerObj?.get("login")?.asString.orEmpty(),
+                        avatar_url = ownerObj?.get("avatarUrl")?.asString
+                    ),
+                    description = n.get("description")?.takeIf { !it.isJsonNull }?.asString,
+                    isPrivate = private,
+                    html_url = n.get("url")?.asString ?: "https://github.com/$full",
+                    language = n.getAsJsonObject("primaryLanguage")?.get("name")?.asString,
+                    forks_count = n.get("forkCount")?.asInt ?: 0,
+                    stargazers_count = n.get("stargazerCount")?.asInt ?: 0,
+                    updated_at = n.get("updatedAt")?.asString,
+                    pushed_at = n.get("pushedAt")?.asString,
+                    visibility = if (private) "private" else "public"
+                )
+            )
+        }
+        return SearchRepos(total_count = count, incomplete_results = false, items = items)
     }
     suspend fun searchUsers(q: String, page: Int = 1, perPage: Int = 30): SearchUsers =
         parse(raw("/search/users", query = mapOf("q" to q, "page" to "$page", "per_page" to "$perPage")), SearchUsers::class.java)
