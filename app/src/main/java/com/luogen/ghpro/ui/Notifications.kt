@@ -143,6 +143,13 @@ fun NotificationsScreen(nav: NavController) {
         scope.launch { snackbar.showSnackbar("已从本机清除 ${ids.size} 条通知") }
     }
 
+    /** 选择模式顶部“全选/取消全选”；只对当前页签的可见通知生效。 */
+    fun selectVisible() {
+        val visible = list.map { it.id }.toSet()
+        if (visible.isEmpty()) { selected = emptySet(); return }
+        selected = if (visible.all { it in selected }) emptySet() else visible
+    }
+
     fun clearAll() {
         // 用“清除时刻”作为分水岭：比这一刻旧的远端/本地通知永久隐藏，之后的新通知照常出现。
         // 不依赖服务端分页，不会只清掉当前页；也不会因为离开页面导致清不干净。
@@ -226,23 +233,39 @@ fun NotificationsScreen(nav: NavController) {
                 },
                 navigationIcon = { IconButton({ savePos(); nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
                 actions = {
-                    IconButton({ scope.launch { load(true) } }) { Icon(Icons.Filled.Refresh, "刷新通知") }
-                    IconButton({
-                        if (selecting) { selecting = false; selected = emptySet() } else selecting = true
-                    }) { Icon(if (selecting) Icons.Filled.Close else Icons.Filled.Check, "选择通知") }
-                    IconButton({ confirmClearAll = true }) { Icon(Icons.Filled.Delete, "清除通知") }
-                    IconButton({
-                        scope.launch {
-                            try {
-                                Api.markAllRead()
-                                Cfg.notifReadIds = Cfg.notifReadIds + list.map { it.id }
-                                // 未读页签里“全部已读”后必须立刻清空，不能留在列表里装未读
-                                list = if (all) list.map { it.copy(unread = false) } else emptyList()
-                                savePos()
-                                snackbar.showSnackbar("已全部标记为已读")
-                            } catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
+                    if (selecting) {
+                        TextButton(
+                            enabled = list.isNotEmpty(),
+                            onClick = { selectVisible() }
+                        ) {
+                            Text(if (selected.size == list.size && list.isNotEmpty()) "取消全选" else "全选", fontSize = 12.sp)
                         }
-                    }) { Icon(Icons.Filled.DoneAll, "全部已读") }
+                        TextButton(
+                            enabled = selected.isNotEmpty(),
+                            onClick = { clearSelected() }
+                        ) { Text("清除所选", fontSize = 12.sp, color = GH.red) }
+                        IconButton({ selecting = false; selected = emptySet() }) {
+                            Icon(Icons.Filled.Close, "退出选择")
+                        }
+                    } else {
+                        IconButton({ scope.launch { load(true) } }) { Icon(Icons.Filled.Refresh, "刷新通知") }
+                        IconButton({ selecting = true }, enabled = list.isNotEmpty()) {
+                            Icon(Icons.Filled.Check, "选择通知")
+                        }
+                        IconButton({ confirmClearAll = true }) { Icon(Icons.Filled.Delete, "清除全部通知") }
+                        IconButton({
+                            scope.launch {
+                                try {
+                                    Api.markAllRead()
+                                    Cfg.notifReadIds = Cfg.notifReadIds + list.map { it.id }
+                                    // 未读页签里“全部已读”后必须立刻清空，不能留在列表里装未读
+                                    list = if (all) list.map { it.copy(unread = false) } else emptyList()
+                                    savePos()
+                                    snackbar.showSnackbar("已全部标记为已读")
+                                } catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
+                            }
+                        }) { Icon(Icons.Filled.DoneAll, "全部已读") }
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )
@@ -348,21 +371,6 @@ fun NotificationsScreen(nav: NavController) {
                             }
                         }
                         Divider1()
-                    }
-                }
-            }
-            if (selecting) {
-                Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically) {
-                        Text("已选 ${selected.size} 条", fontSize = 12.sp, modifier = Modifier.weight(1f))
-                        TextButton({
-                            val visible = list.map { it.id }.toSet()
-                            selected = if (selected.containsAll(visible) && visible.isNotEmpty()) emptySet() else visible
-                        }) { Text(if (selected.size == list.size && list.isNotEmpty()) "取消全选" else "全选", fontSize = 12.sp) }
-                        TextButton(enabled = selected.isNotEmpty(), onClick = { clearSelected() }) {
-                            Text("清除所选", fontSize = 12.sp, color = GH.red)
-                        }
                     }
                 }
             }

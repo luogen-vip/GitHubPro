@@ -66,11 +66,14 @@ fun FeaturedScreen(nav: NavController) {
     var lastSync by remember { mutableStateOf(initialSnap?.lastSync ?: 0L) }
     var switchedSort by remember { mutableStateOf(false) }
     var loadGen by remember { mutableStateOf(0) }
+    var attempt by remember { mutableStateOf(0) }
+    var autoRetried by remember { mutableStateOf(false) }
     UiCache.featuredSort = sort
 
     suspend fun load(silent: Boolean = false) {
         if (silent && loading) return
         val gen = ++loadGen
+        attempt += 1
         val s = sort
         if (!silent) loading = true
         try {
@@ -98,6 +101,7 @@ fun FeaturedScreen(nav: NavController) {
             error = null
             offlineNote = null
             lastSync = System.currentTimeMillis()
+            autoRetried = false
             // 落盘真实结果：下次冷启动先显示，不再让用户干等 1–3 分钟。
             runCatching {
                 Cfg.saveFeaturedCache(s, Gson().toJson(FeaturedDisk(lastSync, total, items)))
@@ -147,6 +151,7 @@ fun FeaturedScreen(nav: NavController) {
             ?: loadFeaturedDisk(sort)?.also { UiCache.featuredSnaps[sort] = it }
         val fromSwitch = switchedSort
         switchedSort = false
+        autoRetried = false
         if (snap != null) {
             // 从详情页/其他 App 回来：原样恢复列表和位置；切换排序时则强制回顶部。
             list = snap.list; total = snap.total; lastSync = snap.lastSync
@@ -167,6 +172,25 @@ fun FeaturedScreen(nav: NavController) {
         }
     }
     LaunchedEffect(list) { if (list.isNotEmpty()) IssueCounts.loadBatch(list) }
+
+    // 有些网络/代理会让 OkHttp 的阻塞请求迟迟不返回，协程超时也不一定立刻打断。
+    // 这里再加一个界面级看门狗：超过 15 秒仍在转圈且没有列表，就明确报超时并自动重试一次，
+    // 绝不让用户对着“正在挑选高质量仓库”等一两分钟。
+    LaunchedEffect(attempt) {
+        if (attempt <= 0) return@LaunchedEffect
+        delay(15_000L)
+        if (loading && list.isEmpty()) {
+            loading = false
+            error = "精选加载超过 15 秒还没返回，网络或 GitHub 响应太慢；正在自动重试一次"
+            if (!autoRetried) {
+                autoRetried = true
+                scope.launch {
+                    delay(1_500L)
+                    load()
+                }
+            }
+        }
+    }
     LaunchedEffect(listState, sort) {
         snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
             .collect { (index, offset) ->
@@ -179,7 +203,13 @@ fun FeaturedScreen(nav: NavController) {
     LaunchedEffect(sort) {
         while (isActive) {
             delay(40_000L)
-            if (list.isNotEmpty() && System.currentTimeMillis() - lastSync >= 40_000L) runCatching { load(true) }
+            if (loading) continue
+            if (list.isEmpty()) {
+                // 首屏失败/超时后不要停在那里；40 秒后再自动试一次。
+                runCatching { load() }
+            } else if (System.currentTimeMillis() - lastSync >= 40_000L) {
+                runCatching { load(true) }
+            }
         }
     }
 
@@ -194,12 +224,23 @@ fun FeaturedScreen(nav: NavController) {
                 title = {
                     Column {
                         Text("精选仓库", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                        Text(if (lastSync == 0L) "正在同步" else "共 ${compactNum(total.toInt())} 个 · 每 40 秒自动更新",
+                        Text(if (loading && list.isEmpty()) "正在同步" else if (lastSync == 0L) "未同步" else "共 ${compactNum(total.toInt())} 个 · 每 40 秒自动更新",
                             fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 },
                 navigationIcon = { IconButton({ nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
-                actions = { IconButton({ scope.launch { load(); android.widget.Toast.makeText(ctx, "已刷新", android.widget.Toast.LENGTH_SHORT).show() } }) { Icon(Icons.Filled.Refresh, "刷新") } },
+                actions = {
+                    IconButton({
+                        scope.launch {
+                            load()
+                            val msg = if (error == null && list.isNotEmpty()) "已刷新" else (error ?: "刷新失败")
+                            android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }) {
+                        if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        else Icon(Icons.Filled.Refresh, "刷新")
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )
         }
@@ -224,7 +265,7 @@ fun FeaturedScreen(nav: NavController) {
                     CircularProgressIndicator(Modifier.size(36.dp))
                     Spacer(Modifier.height(10.dp))
                     Text("正在挑选高质量仓库…", fontSize = 12.sp)
-                    Text("轻量接口通常几秒出结果；网络慢会自动换成备用搜索", fontSize = 10.sp,
+                    Text("正在使用轻量接口；超过 15 秒会提示超时并自动重试一次", fontSize = 10.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
                 }
                 error != null && list.isEmpty() -> ErrorBox(error) { scope.launch { load() } }
