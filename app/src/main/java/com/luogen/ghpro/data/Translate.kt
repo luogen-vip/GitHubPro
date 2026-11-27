@@ -3,18 +3,25 @@ package com.luogen.ghpro.data
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import java.io.IOException
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
@@ -371,21 +378,24 @@ object TranslateApi {
                 try {
                     out = bilibiliTranslate(chunk, t)
                     break
-                } catch (e: Exception) {
+                } catch (e: CancellationException) { throw e }
+                catch (e: Exception) {
                     if (attempt == 1) throw e
                     delay(500L)
                 }
             }
             if (isSameOrUntranslated(out, chunk)) throw IOException("B站接口原样返回")
             return Triple(out, null, "B站翻译")
-        } catch (e: Exception) { errors.add("B站：${e.message}") }
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { errors.add("B站：${e.message}") }
         // 2. 彩云小译公开接口：国内可直连，自动识别源语言。公开 token 每分钟约 5 次，
         //    所以放在第二；短文本/单段通常直接成功，长文则由 B 站先分担。
         try {
             val out = caiyunTranslate(chunk, t)
             if (isSameOrUntranslated(out.first, chunk)) throw IOException("彩云接口原样返回")
             return out
-        } catch (e: Exception) {
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) {
             errors.add("彩云：${e.message}")
             if (e is RateLimited) rateLimited = e
         }
@@ -394,7 +404,8 @@ object TranslateApi {
             val out = memoryTranslate(chunk, t, guessed)
             if (isSameOrUntranslated(out.first, chunk)) throw IOException("MyMemory 原样返回")
             return out
-        } catch (e: Exception) { errors.add("MyMemory：${e.message}") }
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { errors.add("MyMemory：${e.message}") }
         if (rateLimited != null) throw rateLimited
         throw IOException(errors.joinToString("；"))
     }
@@ -436,7 +447,7 @@ object TranslateApi {
             .header("Content-Type", "application/json")
             .header("User-Agent", UA)
             .post(body).build()
-        biliHttp.newCall(req).execute().use { resp ->
+        biliHttp.newCall(req).await().use { resp ->
             val text = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
             val obj = JsonParser.parseString(text).asJsonObject
@@ -524,6 +535,19 @@ object TranslateApi {
             }
             return Triple(out, guessed, "MyMemory")
         }
+    }
+
+    /** OkHttp 异步等待：协程取消时真正 cancel 请求，切换语言不会让旧 README 继续占着 4 个并发槽。 */
+    private suspend fun Call.await(): Response = suspendCancellableCoroutine { cont ->
+        cont.invokeOnCancellation { cancel() }
+        enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (!cont.isCancelled) cont.resumeWithException(e)
+            }
+            override fun onResponse(call: Call, response: Response) {
+                if (cont.isActive) cont.resume(response) else response.close()
+            }
+        })
     }
 
     private fun enc(s: String): String = try {
