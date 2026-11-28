@@ -249,14 +249,19 @@ fun EditRepoScreen(nav: NavController, owner: String, name: String) {
         loading = false
     }
 
-    fun saveRepo() {
+    val typedName = newName.trim()
+    // GitHub 仓库名只接受 ASCII：英文、数字、-、_、.；中文/空格/emoji 会直接 422。
+    val nameInvalid = typedName.isNotEmpty() && (
+        !typedName.matches(Regex("^[A-Za-z0-9._-]{1,100}$")) ||
+            typedName == "." || typedName == ".." || typedName.endsWith(".git")
+        )
+
+    fun saveRepo(keepName: Boolean = false) {
         val r = repo ?: return
         // 名称留空时保持当前名称，绝不把空字符串发给 GitHub；这是之前 422 Validation Failed 的根因。
-        val targetName = newName.trim().ifBlank { r.name.ifBlank { name } }
-        val badName = targetName.length > 100 || targetName.contains(' ') || targetName.contains('/') ||
-            targetName == "." || targetName == ".." || targetName.endsWith(".git")
-        if (badName) {
-            scope.launch { snackbar.showSnackbar("仓库名称不合法：不能包含空格或斜杠，不能以 .git 结尾") }
+        val targetName = if (keepName) r.name.ifBlank { name } else typedName.ifBlank { r.name.ifBlank { name } }
+        if (nameInvalid && !keepName) {
+            scope.launch { snackbar.showSnackbar("GitHub 仓库名只能用英文、数字、-、_、.；不能使用中文") }
             return
         }
         if (desc.length > 350) {
@@ -292,7 +297,7 @@ fun EditRepoScreen(nav: NavController, owner: String, name: String) {
                     "has_projects" to hasProjects,
                     "has_discussions" to hasDiscussions
                 )
-                if (targetName != name) fields["name"] = targetName
+                if (!keepName && targetName != name) fields["name"] = targetName
                 // 改名和所有开关一次 PATCH 完成，避免先改名成功、后一步失败留下半套状态。
                 val saved = Api.patchRepo(owner, name, fields)
                 val savedKey = (saved.owner?.login ?: owner) + "/" + saved.name
@@ -308,7 +313,11 @@ fun EditRepoScreen(nav: NavController, owner: String, name: String) {
                 }
                 Bus.poke()
                 newName = saved.name
-                android.widget.Toast.makeText(ctx, "已保存并生效", android.widget.Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(
+                    ctx,
+                    if (keepName) "描述和开关已保存，名称仍为 ${saved.name}" else "已保存并生效",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
                 if (!screenActive) return@launch
                 if (saved.name != name) {
                     // 改名后旧 URL 已经不存在，直接替换掉旧仓库页，避免返回后 404
@@ -335,7 +344,7 @@ fun EditRepoScreen(nav: NavController, owner: String, name: String) {
                 title = { Text("编辑 $owner/$name", fontSize = 14.sp) },
                 navigationIcon = { IconButton({ nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
                 actions = {
-                    TextButton(enabled = !busy && repo != null, onClick = { saveRepo() }) {
+                    TextButton(enabled = !busy && repo != null && !nameInvalid, onClick = { saveRepo() }) {
                         Text(if (busy) "保存中…" else "保存")
                     }
                 },
@@ -350,9 +359,28 @@ fun EditRepoScreen(nav: NavController, owner: String, name: String) {
             OutlinedTextField(
                 newName, { newName = it }, Modifier.fillMaxWidth(),
                 label = { Text("仓库名称（改名会改变 URL）") },
-                supportingText = { Text("留空保存时保持当前名称") },
+                isError = nameInvalid,
+                supportingText = {
+                    Text(
+                        if (nameInvalid) "GitHub 仓库名不能用中文/空格；只能用英文、数字、-、_、."
+                        else "留空保存时保持当前名称"
+                    )
+                },
                 singleLine = true
             )
+            if (nameInvalid) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        onClick = { newName = repo?.name ?: name },
+                        contentPadding = PaddingValues(0.dp)
+                    ) { Text("恢复当前名称", color = GH.blue) }
+                    Spacer(Modifier.width(10.dp))
+                    TextButton(
+                        onClick = { saveRepo(keepName = true) },
+                        contentPadding = PaddingValues(0.dp)
+                    ) { Text("只保存其他设置（不改名）", color = GH.blue) }
+                }
+            }
             Spacer(Modifier.height(10.dp))
             OutlinedTextField(desc, { desc = it }, Modifier.fillMaxWidth(), label = { Text("描述") }, minLines = 2)
             Spacer(Modifier.height(10.dp))
