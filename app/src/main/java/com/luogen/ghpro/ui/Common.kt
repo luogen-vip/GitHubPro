@@ -237,9 +237,9 @@ fun fullTimeCn(iso: String?): String {
 
 fun clockCn(): String = DateTimeFormatter.ofPattern("HH:mm:ss").withZone(CN_ZONE).format(Instant.now())
 
-fun durationText(startIso: String?, endIso: String?): String {
+fun durationText(startIso: String?, endIso: String?, nowMs: Long = System.currentTimeMillis()): String {
     val s = parseTime(startIso) ?: return ""
-    val e = parseTime(endIso) ?: Instant.now()
+    val e = parseTime(endIso) ?: Instant.ofEpochMilli(nowMs)
     val d = Duration.between(s, e)
     if (d.isNegative) return ""
     val days = d.toDays()
@@ -258,6 +258,56 @@ fun durationText(startIso: String?, endIso: String?): String {
             append(secText)
         }
     }.ifEmpty { secText }
+}
+
+/** 每秒对齐刷新一次当前时间；只在 active 时启动计时器。 */
+@Composable
+fun rememberNowMs(active: Boolean): Long {
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(active) {
+        if (!active) {
+            now = System.currentTimeMillis()
+            return@LaunchedEffect
+        }
+        while (true) {
+            val n = System.currentTimeMillis()
+            now = n
+            delay((1000L - n % 1000L).coerceAtLeast(50L))
+        }
+    }
+    return now
+}
+
+/** 正在运行的耗时每秒跳动；已完成的使用固定的结束时间，不跳。 */
+@Composable
+fun LiveDurationText(
+    startIso: String?,
+    endIso: String?,
+    active: Boolean,
+    fontSize: TextUnit,
+    color: Color,
+    prefix: String = ""
+) {
+    val now = rememberNowMs(active)
+    Text(prefix + durationText(startIso, if (active) null else endIso, now),
+        fontSize = fontSize, color = color, maxLines = 1, softWrap = false)
+}
+
+/** 详情里的“耗时”行；进行中每秒更新，完成后固定。 */
+@Composable
+fun KeyValueLiveDuration(
+    label: String,
+    startIso: String?,
+    endIso: String?,
+    active: Boolean,
+    prefix: String = ""
+) {
+    val now = rememberNowMs(active)
+    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+        Text(label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(72.dp))
+        Text(prefix + durationText(startIso, if (active) null else endIso, now),
+            fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
+    }
 }
 
 fun copyText(ctx: android.content.Context, text: String, tip: String = "已复制") {

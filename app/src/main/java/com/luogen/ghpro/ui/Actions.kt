@@ -45,6 +45,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+/** GitHub Actions 里仍会变化的状态；这些状态需要每秒计时、快速轮询。 */
+private fun isLiveStatus(status: String?): Boolean =
+    status == "in_progress" || status == "queued" || status == "pending" || status == "waiting"
+
 @Composable
 fun ActionsTab(nav: NavController, owner: String, name: String, repo: Repo) {
     val scope = rememberCoroutineScope()
@@ -72,7 +76,9 @@ fun ActionsTab(nav: NavController, owner: String, name: String, repo: Repo) {
     LaunchedEffect(owner, name) { if (runs.isEmpty()) load() }
     LaunchedEffect(autoOn) {
         while (isActive && autoOn) {
-            delay((Cfg.pollSeconds.coerceIn(8, 300)) * 1000L)
+            val live = runs.any { isLiveStatus(it.status) }
+            // 有运行中的任务时 3 秒刷一次；全部结束后恢复用户设置的监听间隔。
+            delay(if (live) 3_000L else (Cfg.pollSeconds.coerceIn(8, 300)) * 1000L)
             load(true)
         }
     }
@@ -145,9 +151,15 @@ fun RunRow(run: Run, onClick: () -> Unit) {
                 maxLines = 1, overflow = TextOverflow.Ellipsis, softWrap = false,
                 modifier = Modifier.weight(1f))
             Spacer(Modifier.width(8.dp))
-            Text("耗时 ${durationText(run.run_started_at ?: run.created_at, run.updated_at)}",
-                fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1, softWrap = false)
+            val runLive = isLiveStatus(run.status)
+            LiveDurationText(
+                startIso = run.run_started_at ?: run.created_at,
+                endIso = run.updated_at,
+                active = runLive,
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                prefix = if (runLive) "已运行 " else "耗时 "
+            )
         }
         Spacer(Modifier.height(3.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -182,15 +194,15 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
     var stepLogError by remember { mutableStateOf<String?>(null) }
     val snackbar = remember { SnackbarHostState() }
 
-    suspend fun load(showToast: Boolean = false) {
+    suspend fun load(showToast: Boolean = false, includeArtifacts: Boolean = true) {
         if (showToast) refreshing = true
         try {
             run = Api.run(owner, name, runId)
             jobs = Api.runJobs(owner, name, runId)
-            artifacts = Api.runArtifacts(owner, name, runId)
+            if (includeArtifacts) artifacts = Api.runArtifacts(owner, name, runId)
             UiCache.runData[runId] = run!!
             UiCache.runJobs[runId] = jobs
-            UiCache.runArtifacts[runId] = artifacts
+            if (includeArtifacts) UiCache.runArtifacts[runId] = artifacts
             error = null
             if (showToast) Toast.makeText(ctx, "已刷新运行状态", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
@@ -206,8 +218,16 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
         while (isActive && auto) {
             val st = run?.status
             if (st != "in_progress" && st != "queued" && st != "pending") break
-            delay((Cfg.pollSeconds.coerceIn(8, 300)) * 1000L)
-            load()
+            // 运行详情必须实时：进行中每 3 秒拉一次；不重复拉产物，避免浪费 API 额度。
+            delay(3_000L)
+            load(includeArtifacts = false)
+        }
+        // 刚结束时补一次产物列表；产物只在运行结束后才稳定。
+        if (auto && run?.status == "completed") {
+            runCatching { Api.runArtifacts(owner, name, runId) }.onSuccess {
+                artifacts = it
+                UiCache.runArtifacts[runId] = it
+            }
         }
     }
 
@@ -300,8 +320,14 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                             Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
                                 KeyValue("发起人", r.actor?.login ?: r.triggering_actor?.login)
                                 KeyValue("开始时间", fullTime(r.run_started_at ?: r.created_at))
-                                KeyValue("耗时", if (r.status == "in_progress") "已运行 ${durationText(r.run_started_at ?: r.created_at, null)}"
-                                    else "总耗时 ${durationText(r.run_started_at ?: r.created_at, r.updated_at)}")
+                                val runLive = isLiveStatus(r.status)
+                                KeyValueLiveDuration(
+                                    label = "耗时",
+                                    startIso = r.run_started_at ?: r.created_at,
+                                    endIso = r.updated_at,
+                                    active = runLive,
+                                    prefix = if (runLive) "已运行 " else "总耗时 "
+                                )
                                 KeyValue("提交", r.head_sha?.take(7))
                                 KeyValue("提交说明", r.head_commit?.message?.lineSequence()?.firstOrNull())
                             }
@@ -356,8 +382,15 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                                     Spacer(Modifier.width(7.dp))
                                     Text(job.name, fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f),
                                         maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                    Text(if (job.status == "in_progress") "已运行 ${durationText(job.started_at, null)}" else durationText(job.started_at, job.completed_at),
-                                        fontSize = 10.sp, color = if (job.status == "in_progress") GH.yellow else MaterialTheme.colorScheme.onSurfaceVariant)
+                                    val jobLive = isLiveStatus(job.status)
+                                    LiveDurationText(
+                                        startIso = job.started_at,
+                                        endIso = job.completed_at,
+                                        active = jobLive,
+                                        fontSize = 10.sp,
+                                        color = if (jobLive) GH.yellow else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        prefix = if (jobLive) "已运行 " else ""
+                                    )
                                 }
                                 Spacer(Modifier.height(3.dp))
                                 Text("${job.status}${job.conclusion?.let { " · $it" } ?: ""} · ${job.runner_name ?: ""}",
@@ -379,7 +412,14 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
                                             Spacer(Modifier.width(6.dp))
                                             Text("${s.number}. ${s.name}", fontSize = 11.sp, modifier = Modifier.weight(1f),
                                                 maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                            Text(durationText(s.started_at, s.completed_at), fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            val stepLive = s.status != "completed" && s.completed_at.isNullOrBlank()
+                                            LiveDurationText(
+                                                startIso = s.started_at,
+                                                endIso = s.completed_at,
+                                                active = stepLive,
+                                                fontSize = 9.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
                                         }
                                     }
                                     if (job.steps.isNullOrEmpty()) Text("这个任务没有步骤信息", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
