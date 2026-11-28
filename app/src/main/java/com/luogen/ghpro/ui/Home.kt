@@ -311,6 +311,7 @@ fun HomeScreen(nav: NavController) {
                                 status = myStatus,
                                 prefix = "@" + (me?.login ?: Cfg.login ?: ""),
                                 showCountdown = false,
+                                maxLines = 2,
                                 modifier = Modifier.fillMaxWidth()
                             )
                         }

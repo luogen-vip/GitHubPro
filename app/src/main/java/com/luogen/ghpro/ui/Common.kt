@@ -140,6 +140,7 @@ fun StatusLine(
     fontSize: TextUnit = 11.sp,
     color: Color = GH.blue,
     showCountdown: Boolean = true,
+    maxLines: Int = 1,
     modifier: Modifier = Modifier
 ) {
     val expiresAt = status?.expiresAt
@@ -168,7 +169,7 @@ fun StatusLine(
             }
         } else {
             if (!prefix.isNullOrBlank()) Text("  ·  ", fontSize = fontSize, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(line, fontSize = fontSize, color = color, maxLines = 1,
+            Text(line, fontSize = fontSize, color = color, maxLines = maxLines,
                 overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             val remaining = if (showCountdown) statusRemainingText(expiresAt, nowMs) else null
             if (remaining != null) {
