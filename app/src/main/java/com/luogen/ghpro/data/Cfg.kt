@@ -229,6 +229,16 @@ object Cfg {
         get() = sp.getStringSet("seen_notif", emptySet())?.toSet() ?: emptySet()
         set(v) { sp.edit().putStringSet("seen_notif", v.toSet()).apply() }
 
+    /** 已经发过“发行版更新”系统通知的路由；升级后不会因为旧通知已读而漏掉新版本，也不会重复提醒。 */
+    var releaseNotifiedRoutes: Set<String>
+        get() = sp.getStringSet("release_notified_routes", emptySet())?.toSet() ?: emptySet()
+        set(v) { sp.edit().putStringSet("release_notified_routes", v.toList().takeLast(500).toSet()).apply() }
+
+    fun markReleaseNotified(route: String) {
+        if (route.isBlank()) return
+        releaseNotifiedRoutes = releaseNotifiedRoutes + route
+    }
+
     /** 本地动态持久化：GitHub 的 notifications 接口不包含所有 Actions/合并事件，App 自己记录一份。 */
     private val localGson = Gson()
     var localNotices: List<LocalNotice>

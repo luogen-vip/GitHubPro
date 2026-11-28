@@ -1,5 +1,6 @@
 package com.luogen.ghpro.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -9,6 +10,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DoneAll
@@ -139,6 +141,13 @@ fun NotificationsScreen(nav: NavController) {
         if (local.isNotEmpty()) Cfg.localNotices = Cfg.localNotices.filterNot { it.id in local }
     }
 
+    /** 退出选择模式：不管是长按进来的，还是点“选择”进来的，都回到没出现复选框的状态。 */
+    fun exitSelecting() {
+        selecting = false
+        selected = emptySet()
+        snackbar.currentSnackbarData?.dismiss()
+    }
+
     fun clearOne(n: Notification) {
         visiblyHide(listOf(n.id))
         list = list.filterNot { it.id == n.id }
@@ -152,8 +161,7 @@ fun NotificationsScreen(nav: NavController) {
         if (ids.isEmpty()) return
         visiblyHide(ids)
         list = list.filterNot { it.id in ids }
-        selected = emptySet()
-        selecting = false
+        exitSelecting()
         savePos()
         scope.launch { snackbar.showSnackbar("已从本机清除 ${ids.size} 条通知") }
     }
@@ -173,7 +181,13 @@ fun NotificationsScreen(nav: NavController) {
     }
 
     fun toggleSelected(n: Notification) {
-        selected = if (n.id in selected) selected - n.id else selected + n.id
+        if (n.id in selected) {
+            // 取消勾选最后一条，直接退出选择模式，不留下一个只剩复选框的空状态。
+            if (selected.size <= 1) exitSelecting()
+            else selected = selected - n.id
+        } else {
+            selected = selected + n.id
+        }
     }
 
     /** 长按任意通知进入选择；已经在选择模式时，长按等同于再勾上这一条。 */
@@ -262,8 +276,9 @@ fun NotificationsScreen(nav: NavController) {
     /** 选择模式顶部“全选/取消全选”；只对当前页签的可见通知生效。 */
     fun selectVisible() {
         val visible = list.map { it.id }.toSet()
-        if (visible.isEmpty()) { selected = emptySet(); return }
-        selected = if (visible.all { it in selected }) emptySet() else visible
+        if (visible.isEmpty()) { exitSelecting(); return }
+        // 点“取消全选”把最后一条也取消后，同样直接退出选择模式。
+        if (visible.all { it in selected }) exitSelecting() else selected = visible
     }
 
     fun clearAll() {
@@ -342,6 +357,8 @@ fun NotificationsScreen(nav: NavController) {
         list = prune(if (all) merged else merged.filter { it.unread })
     }
 
+    BackHandler(enabled = selecting) { exitSelecting() }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbar) },
@@ -350,7 +367,12 @@ fun NotificationsScreen(nav: NavController) {
                 title = {
                     Text(if (selecting) "已选 ${selected.size} 条" else if (all) "全部通知" else "未读通知", fontSize = 15.sp)
                 },
-                navigationIcon = { IconButton({ savePos(); nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
+                navigationIcon = {
+                    IconButton({
+                        if (selecting) exitSelecting()
+                        else { savePos(); nav.popBackStack() }
+                    }) { Icon(Icons.Filled.ArrowBack, "返回") }
+                },
                 actions = {
                     if (selecting) {
                         TextButton(
@@ -363,13 +385,13 @@ fun NotificationsScreen(nav: NavController) {
                             enabled = selected.isNotEmpty(),
                             onClick = { clearSelected() }
                         ) { Text("清除所选", fontSize = 12.sp, color = GH.red) }
-                        IconButton({ selecting = false; selected = emptySet() }) {
+                        IconButton({ exitSelecting() }) {
                             Icon(Icons.Filled.Close, "退出选择")
                         }
                     } else {
                         IconButton({ scope.launch { load(true) } }) { Icon(Icons.Filled.Refresh, "刷新通知") }
-                        TextButton({ enterSelecting() }, enabled = list.isNotEmpty()) {
-                            Text("选择", fontSize = 12.sp)
+                        IconButton({ enterSelecting() }, enabled = list.isNotEmpty()) {
+                            Icon(Icons.Filled.Check, "选择通知")
                         }
                         IconButton({ confirmClearAll = true }) { Icon(Icons.Filled.Delete, "清除全部通知") }
                         IconButton({ markAllReadNow() }) { Icon(Icons.Filled.DoneAll, "全部标记为已读") }
@@ -414,9 +436,7 @@ fun NotificationsScreen(nav: NavController) {
                             if (selecting) {
                                 Checkbox(
                                     checked = n.id in selected,
-                                    onCheckedChange = { on ->
-                                        selected = if (on) selected + n.id else selected - n.id
-                                    }
+                                    onCheckedChange = { toggleSelected(n) }
                                 )
                                 Spacer(Modifier.width(6.dp))
                             }

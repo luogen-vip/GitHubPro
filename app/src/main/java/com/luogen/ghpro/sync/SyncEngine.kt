@@ -85,6 +85,7 @@ object SyncEngine {
         Api.token = token
         val changes = ArrayList<Change>()
         val apiReleaseRoutes = HashSet<String>()
+        val notificationsFirstRun = Cfg.lastSeenNotificationIds.isEmpty()
         val root = snapRoot()
         val repoSnap = root.getAsJsonObject("repos") ?: JsonObject().also { root.add("repos", it) }
         val runSnap = root.getAsJsonObject("runs") ?: JsonObject().also { root.add("runs", it) }
@@ -97,10 +98,6 @@ object SyncEngine {
         // 1. 通知
         try {
             val list = Api.notifications(all = false)
-            // 记录 GitHub 通知接口已经覆盖的发行版路由，避免下面轮询再生成一条重复的本地通知。
-            list.filter { it.subject?.type == "Release" }.forEach { n ->
-                notificationRoute(n)?.let { apiReleaseRoutes.add(it) }
-            }
             val seen = Cfg.lastSeenNotificationIds
             val firstRun = seen.isEmpty()
             val fresh = list.filter { n ->
@@ -146,19 +143,8 @@ object SyncEngine {
                     }
                     val body = "${n.subject?.title ?: ""}\n$repo  ·  ${com.luogen.ghpro.ui.reasonCn(n.reason)}"
                     val route = notificationRoute(n)
-                    if (subjectType == "Release" && repo.isNotBlank()) {
-                        val parts = repo.split("/")
-                        val relId = Regex("/releases/(\\d+)").find(n.subject?.url ?: "")
-                            ?.groupValues?.getOrNull(1)?.toLongOrNull()
-                        val rel = if (parts.size == 2 && relId != null) {
-                            runCatching { Api.release(parts[0], parts[1], relId) }.getOrNull()
-                        } else null
-                        if (rel != null) {
-                            Notifier.release(ctx, repo, rel.tag_name, rel.name, rel.assets ?: emptyList(), route)
-                        } else {
-                            Notifier.generic(ctx, title, body, route)
-                        }
-                    } else {
+                    // 发行版统一走下面的专用通知循环：既显示版本号/附件，也避免和“已读旧通知”互相覆盖。
+                    if (subjectType != "Release") {
                         Notifier.generic(ctx, title, body, route)
                     }
                     changes.add(Change(title, body, when {
@@ -167,6 +153,28 @@ object SyncEngine {
                         else -> "notification"
                     }, route))
                 }
+            }
+            // 独立补发发行版通知：即使这条 GitHub 通知之前已经被旧版本标记为已读，
+            // 只要本机还没发过对应发行版通知，也补一次；已发过的路由持久化，后续不会重复。
+            if (notify && !firstRun) {
+                list.filter { it.subject?.type == "Release" }
+                    .filter { recentIso(it.updated_at, 24 * 60 * 60_000L) }
+                    .forEach { n ->
+                        val repo = n.repository?.full_name ?: return@forEach
+                        val route = notificationRoute(n) ?: return@forEach
+                        if (route in apiReleaseRoutes || route in Cfg.releaseNotifiedRoutes) return@forEach
+                        val parts = repo.split("/")
+                        val relId = Regex("/releases/(\\d+)").find(n.subject?.url ?: "")
+                            ?.groupValues?.getOrNull(1)?.toLongOrNull()
+                        val rel = if (parts.size == 2 && relId != null) {
+                            runCatching { Api.release(parts[0], parts[1], relId) }.getOrNull()
+                        } else null
+                        if (rel != null) {
+                            Notifier.release(ctx, repo, rel.tag_name, rel.name, rel.assets ?: emptyList(), route)
+                            apiReleaseRoutes.add(route)
+                            Cfg.markReleaseNotified(route)
+                        }
+                    }
             }
         } catch (e: Exception) { }
 
@@ -286,9 +294,11 @@ object SyncEngine {
         }
 
         try {
-            // 只轮询服务端真实订阅的仓库：Star、自己建的仓库、历史播种都不再自动当成“已关注”。
-            // GitHub 的 /notifications 已覆盖所有仓库通知；这里只补订阅仓库的发行版/提交轮询。
-            val watch = serverWatchNames.orEmpty().distinct().take(60)
+            // 服务端真实订阅的仓库 + 自己的仓库 + 本机关注的仓库都要看发行版；
+            // 自己的仓库即使没手动 Watch，也能收到新发行版，不会出现“仓库里有发行版但 App 不提醒”。
+            val ownRepos = runCatching { Api.myRepos(1, 30).items.map { it.full_name } }.getOrDefault(emptyList())
+            val watch = (ownRepos + Cfg.watchRepos + serverWatchNames.orEmpty())
+                .distinct().take(60)
             watch.forEach { full ->
                 val parts = full.split("/")
                 if (parts.size != 2) return@forEach
@@ -301,6 +311,30 @@ object SyncEngine {
                     val repo = runCatching { Api.repo(o, r) }.getOrNull()
                     val rel = runCatching { Api.releases(o, r).items.firstOrNull { !it.draft } }.getOrNull()
                     val oldRepo = repoSnap.getAsJsonObject(full)
+                    // 升级到带发行版通知的版本后，即使快照里已经记了同一个版本（例如手动同步时静默更新了快照），
+                    // 只要 24 小时内发布过且本机没真正发过通知，就补一次，解决“仓库里有新发行版但没收到通知”。
+                    if (notify && rel != null) {
+                        val latestRoute = rel.id.takeIf { it > 0 }?.let { "release/$full/$it" }
+                        val published = rel.published_at ?: rel.created_at
+                        if (latestRoute != null && recentIso(published, 24 * 60 * 60_000L) &&
+                            latestRoute !in apiReleaseRoutes && latestRoute !in Cfg.releaseNotifiedRoutes) {
+                            Notifier.release(ctx, full, rel.tag_name, rel.name, rel.assets ?: emptyList(), latestRoute)
+                            apiReleaseRoutes.add(latestRoute)
+                            Cfg.markReleaseNotified(latestRoute)
+                            val fileNames = rel.assets?.mapNotNull { it.name?.takeIf { n -> n.isNotBlank() } } ?: emptyList()
+                            val body = "$full 发布了新发行版 ${rel.tag_name}" +
+                                if (fileNames.isEmpty()) "" else "\n文件：" + fileNames.take(5).joinToString("、")
+                            Cfg.addLocalNotice(LocalNotice(
+                                id = "local:release-backfill:${rel.id}",
+                                title = "新发行版 ${rel.tag_name} · $full",
+                                body = body,
+                                route = latestRoute,
+                                kind = "release",
+                                time = System.currentTimeMillis()
+                            ))
+                            Bus.poke()
+                        }
+                    }
                     if (repo != null && oldRepo != null) {
                         val oldPushed = oldRepo.get("pushed")?.asString
                         if (oldPushed != null && repo.pushed_at != null && oldPushed != repo.pushed_at) {
@@ -321,8 +355,9 @@ object SyncEngine {
                             }
                             val body = "$full 发布了新发行版 $newTag$fileLine"
                             val route = rel?.id?.takeIf { it > 0 }?.let { "release/$full/$it" } ?: repoRoute(full)
-                            if (route !in apiReleaseRoutes) {
+                            if (notify && route !in apiReleaseRoutes) {
                                 Notifier.release(ctx, full, newTag, rel?.name, rel?.assets ?: emptyList(), route)
+                                Cfg.markReleaseNotified(route)
                             }
                             changes.add(Change("新发行版 $newTag · $full", body, "release", route))
                         } else {
@@ -339,10 +374,11 @@ object SyncEngine {
                                     "$full 的发行版 $newTag 新增文件：" + added.take(5).joinToString("、")
                                 }
                                 val route = rel?.id?.takeIf { it > 0 }?.let { "release/$full/$it" } ?: repoRoute(full)
-                                if (route !in apiReleaseRoutes) {
+                                if (notify && route !in apiReleaseRoutes) {
                                     val addedAssets = rel?.assets?.filter { it.name in added } ?: emptyList()
                                     Notifier.release(ctx, full, newTag, rel?.name, rel?.assets ?: emptyList(), route,
                                         isAssetUpdate = true, addedAssets = addedAssets)
+                                    Cfg.markReleaseNotified(route)
                                 }
                                 val title = if (added.isEmpty()) "发行版 $newTag 文件有变化 · $full"
                                 else "发行版 $newTag 新增文件 · $full"

@@ -1,13 +1,15 @@
 package com.luogen.ghpro.ui
 
+import android.net.Uri
+import android.view.ViewGroup
 import android.widget.Toast
-import android.widget.VideoView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -30,6 +32,13 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.luogen.ghpro.download.Downloader
 import kotlinx.coroutines.Dispatchers
@@ -128,86 +137,162 @@ private fun VideoPreview(file: File) {
     var position by remember(file.absolutePath) { mutableStateOf(0) }
     var dragging by remember(file.absolutePath) { mutableStateOf<Float?>(null) }
     var seekTarget by remember(file.absolutePath) { mutableStateOf<Int?>(null) }
-    var resumeAfterSeek by remember(file.absolutePath) { mutableStateOf(false) }
-    val video = remember(file.absolutePath) {
-        VideoView(ctx).apply {
-            setVideoPath(file.absolutePath)
-            setMediaController(null)
-            setOnPreparedListener { mp ->
-                mp.isLooping = false
-                duration = mp.duration.coerceAtLeast(0)
-                prepared = true
-                // 不在 OnSeekComplete 里读 currentPosition：部分机型这时还返回旧位置，
-                // 会把刚拖到的滑块瞬间拉回去。统一交给下面的 300ms 轮询确认到位。
-                start()
-                playing = true
-            }
-            setOnCompletionListener { playing = false; position = duration; seekTarget = null }
-            setOnErrorListener { _, what, extra ->
-                Toast.makeText(ctx, "视频播放失败（$what/$extra）", Toast.LENGTH_SHORT).show()
-                prepared = false; playing = false
-                true
-            }
+    var showCenter by remember(file.absolutePath) { mutableStateOf(true) }
+
+    // Media3 ExoPlayer 的精确 seek：不再像 VideoView 那样落到前一个关键帧，
+    // 用户拖到哪就从哪开始，不会先播旧位置再向左跳。
+    val exo = remember(file.absolutePath) {
+        ExoPlayer.Builder(ctx).build().apply {
+            setSeekParameters(SeekParameters.EXACT)
+            setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
+            prepare()
+            playWhenReady = true
         }
     }
-    DisposableEffect(video) { onDispose { runCatching { video.stopPlayback() } } }
-    LaunchedEffect(video) {
+
+    DisposableEffect(exo) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) {
+                    prepared = true
+                    duration = exo.duration.coerceAtLeast(0L).toInt()
+                    playing = exo.playWhenReady
+                } else if (playbackState == Player.STATE_ENDED) {
+                    playing = false
+                    position = duration
+                    seekTarget = null
+                }
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                // 缓冲时 isPlaying 会短暂变 false；按钮表达的是“播放意图”，用 playWhenReady 才不会闪成暂停。
+                if (exo.playbackState != Player.STATE_ENDED) playing = exo.playWhenReady
+            }
+
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int
+            ) {
+                if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                    val target = seekTarget
+                    val newPos = newPosition.positionMs.coerceAtLeast(0L).toInt()
+                    if (target == null || kotlin.math.abs(newPos - target) <= 800) {
+                        position = newPos
+                        if (target != null) seekTarget = null
+                    }
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                Toast.makeText(ctx, "视频播放失败：${error.errorCodeName}", Toast.LENGTH_SHORT).show()
+                prepared = false
+                playing = false
+            }
+        }
+        exo.addListener(listener)
+        onDispose {
+            exo.removeListener(listener)
+            exo.release()
+        }
+    }
+
+    LaunchedEffect(exo) {
         while (true) {
             if (prepared) {
-                duration = runCatching { video.duration }.getOrDefault(duration).coerceAtLeast(0)
+                duration = exo.duration.coerceAtLeast(0L).toInt()
                 if (dragging == null) {
                     val target = seekTarget
                     if (target == null) {
-                        position = runCatching { video.currentPosition }.getOrDefault(position)
-                        playing = runCatching { video.isPlaying }.getOrDefault(playing)
+                        position = exo.currentPosition.coerceAtLeast(0L).toInt()
                     } else {
-                        val current = runCatching { video.currentPosition }.getOrDefault(position)
-                        if (kotlin.math.abs(current - target) <= 800) {
-                            position = current; seekTarget = null
-                            if (resumeAfterSeek) {
-                                runCatching { video.start() }
-                                playing = true
-                                resumeAfterSeek = false
-                            }
+                        val current = exo.currentPosition.toInt()
+                        if (kotlin.math.abs(current - target) <= 250) {
+                            position = current
+                            seekTarget = null
                         } else {
-                            // 播放器还没走到目标位置时，滑块必须停在用户拖到的位置，不能回跳。
+                            // seek 还没完成时滑块停在用户拖到的位置，绝不回跳。
                             position = target
                         }
                     }
                 }
             }
-            delay(300L)
+            delay(200L)
         }
     }
+
+    LaunchedEffect(playing) {
+        if (playing) {
+            showCenter = true
+            delay(700L)
+            showCenter = false
+        } else {
+            showCenter = true
+        }
+    }
+
     fun seekToPosition(ms: Int) {
         if (duration <= 0) return
         val target = ms.coerceIn(0, duration)
         position = target
         seekTarget = target
-        val wasPlaying = playing || runCatching { video.isPlaying }.getOrDefault(false)
-        runCatching { video.seekTo(target) }
-        // 有些播放器 seek 时会短暂停；拖动前在播就继续保持播放，不让用户以为一拖就暂停。
-        if (wasPlaying) {
-            resumeAfterSeek = true
-            runCatching { video.start() }
-            playing = true
-        }
+        exo.seekTo(target.toLong())
+        if (exo.playWhenReady) exo.play()
     }
+
     fun togglePlayPause() {
         if (!prepared) return
-        if (video.isPlaying) {
-            video.pause(); playing = false
-            position = runCatching { video.currentPosition }.getOrDefault(position)
+        val ended = exo.playbackState == Player.STATE_ENDED || (duration > 0 && position >= duration)
+        if (exo.playWhenReady && !ended) {
+            exo.pause()
+            playing = false
+            position = exo.currentPosition.coerceAtLeast(0L).toInt()
         } else {
-            if (position >= duration && duration > 0) video.seekTo(0)
-            video.start(); playing = true
+            if (ended) {
+                position = 0
+                seekTarget = null
+                exo.seekTo(0L)
+            }
+            exo.play()
+            playing = true
+            showCenter = true
         }
     }
+
     Box(Modifier.fillMaxSize()) {
-        // 点视频画面本身也能播放/暂停，和底部按钮行为一致；底部进度条仍可拖动。
-        AndroidView(factory = { video }, modifier = Modifier.fillMaxSize())
-        // 透明点击层放在视频上面，确保 VideoView 不会把点击吃掉；留出底部控制条区域。
+        AndroidView(
+            factory = {
+                PlayerView(it).apply {
+                    useController = false
+                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    setShutterBackgroundColor(android.graphics.Color.BLACK)
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                    player = exo
+                }
+            },
+            update = { it.player = exo },
+            modifier = Modifier.fillMaxSize()
+        )
+        // 点视频画面本身播放/暂停，和底部按钮完全同步；底部进度条仍可拖动。
         Box(Modifier.fillMaxSize().padding(bottom = 52.dp).clickable { togglePlayPause() })
+        // 暂停后一直显示大播放键；播放/暂停切换时短暂显示两秒状态，避免用户以为画面卡住。
+        if (showCenter) {
+            Box(
+                Modifier.align(Alignment.Center).size(66.dp)
+                    .background(Color.Black.copy(alpha = 0.48f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    if (playing) "正在播放" else "已暂停",
+                    tint = Color.White,
+                    modifier = Modifier.size(40.dp)
+                )
+            }
+        }
         Column(
             Modifier.fillMaxWidth().align(Alignment.BottomCenter)
                 .navigationBarsPadding()
