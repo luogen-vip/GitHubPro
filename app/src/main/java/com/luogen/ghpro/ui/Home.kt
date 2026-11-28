@@ -297,15 +297,20 @@ fun HomeScreen(nav: NavController) {
                         Avatar(me?.avatar_url ?: Cfg.avatar, 34)
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(me?.name ?: me?.login ?: Cfg.userName ?: "GitHub", fontSize = 15.sp,
-                                fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             val myStatus = remember(statusVer) {
                                 UserStatus(Cfg.statusEmoji, Cfg.statusMessage, Cfg.statusBusy, Cfg.statusExpiresAt,
                                     Cfg.statusOrgId, Cfg.statusOrgLogin, Cfg.statusOrgName)
                             }
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text(me?.name ?: me?.login ?: Cfg.userName ?: "GitHub", fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f))
+                                StatusCountdown(myStatus, Modifier.padding(start = 5.dp))
+                            }
                             StatusLine(
                                 status = myStatus,
                                 prefix = "@" + (me?.login ?: Cfg.login ?: ""),
+                                showCountdown = false,
                                 modifier = Modifier.fillMaxWidth()
                             )
                         }

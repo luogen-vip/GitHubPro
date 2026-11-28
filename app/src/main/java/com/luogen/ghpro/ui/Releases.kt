@@ -49,6 +49,34 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 
+/** 取文件类型后缀；tar.gz 这类复合后缀保留完整，避免只显示 GZ。 */
+private fun assetExt(name: String): String? {
+    val clean = name.trim()
+    val lower = clean.lowercase()
+    listOf("tar.gz", "tar.xz", "tar.bz2", "tar.zst").firstOrNull { lower.endsWith(".$it") }?.let { return it.uppercase() }
+    val dot = clean.lastIndexOf('.')
+    if (dot <= 0 || dot >= clean.lastIndex) return null
+    val ext = clean.substring(dot + 1).trim()
+    if (ext.isBlank() || ext.length > 12 || ext.any { !it.isLetterOrDigit() }) return null
+    return ext.uppercase()
+}
+
+@Composable
+private fun AssetTypeTag(name: String) {
+    val ext = assetExt(name)
+    if (ext != null) {
+        val color = when (ext) {
+            "APK", "AAB" -> GH.green
+            "ZIP", "7Z", "RAR", "TAR", "GZ", "XZ", "ZST", "TAR.GZ", "TAR.XZ", "TAR.BZ2", "TAR.ZST" -> GH.yellow
+            "IMG", "ISO", "DMG", "BIN" -> GH.purple
+            "PDF" -> GH.red
+            "TXT", "MD", "JSON", "XML", "YAML", "YML", "CSV", "LOG" -> GH.blue
+            else -> MaterialTheme.colorScheme.onSurfaceVariant
+        }
+        TinyTag(ext, color)
+    }
+}
+
 @Composable
 fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
     val ctx = LocalContext.current
@@ -238,43 +266,51 @@ fun ReleasesTab(nav: NavController, owner: String, name: String, repo: Repo) {
                                 // 下载进度统一只显示在仓库头部 ActiveDownloadStrip。
                                 // 这里不再复制一份进度/打开/取消，避免下方列表被撑高、页面来回跳动。
                                 rel.assets?.forEach { a ->
-                                    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Column(Modifier.weight(1f)) {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Text(a.name, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                                    modifier = Modifier.weight(1f, fill = false))
-                                                if (a.name in downloadedNames) {
-                                                    Spacer(Modifier.width(5.dp))
-                                                    TinyTag("已下载", GH.green)
-                                                }
+                                    val ext = assetExt(a.name)
+                                    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                                        // 文件名完整换行显示，不再为了给右侧按钮留位置而省略。
+                                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                                            if (ext != null) {
+                                                AssetTypeTag(a.name)
+                                                Spacer(Modifier.width(6.dp))
                                             }
-                                            Text("${humanSize(a.size)} · GitHub 累计下载 ${a.download_count} 次", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text(a.name.ifBlank { "未命名文件" }, fontSize = 12.sp, lineHeight = 16.sp,
+                                                modifier = Modifier.weight(1f))
                                         }
-                                        IconButton({ copy(a.browser_download_url ?: "", "已复制下载链接") }) {
-                                            Icon(Icons.Filled.ContentCopy, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                                        }
-                                        IconButton(onClick = {
-                                            val url = a.browser_download_url ?: return@IconButton
-                                            Toast.makeText(ctx, "开始下载 ${a.name}…", Toast.LENGTH_SHORT).show()
-                                            Downloader.startDownload(ctx, url, a.name, source = "发行版附件",
-                                                repo = "$owner/$name", release = rel.tag_name,
-                                                expectedSize = a.size,
-                                                onDone = { /* 完成提示统一由白色系统通知 + 行内 100% 展示，不再弹黑色 Toast */ }, 
-                                                onError = { m ->
-                                                    Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show()
-                                                })
-                                        }) { Icon(Icons.Filled.Download, null, Modifier.size(18.dp), tint = GH.blue) }
-                                        if (repo.permissions?.push == true) {
+                                        Row(Modifier.fillMaxWidth().padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Text("${humanSize(a.size)} · GitHub 累计下载 ${a.download_count} 次",
+                                                fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                            if (a.name in downloadedNames) {
+                                                TinyTag("已下载", GH.green)
+                                                Spacer(Modifier.width(2.dp))
+                                            }
+                                            IconButton({ copy(a.browser_download_url ?: "", "已复制下载链接") }) {
+                                                Icon(Icons.Filled.ContentCopy, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            }
                                             IconButton(onClick = {
-                                                scope.launch {
-                                                    try {
-                                                        Api.deleteAsset(owner, name, a.id)
-                                                        list = list.map { r -> if (r.id == rel.id) r.copy(assets = r.assets?.filter { it.id != a.id }) else r }
-                                                        snackbar.showSnackbar("已删除附件")
-                                                        load(1, true, silent = true)
-                                                    } catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
-                                                }
-                                            }) { Icon(Icons.Filled.Delete, null, Modifier.size(16.dp), tint = GH.red) }
+                                                val url = a.browser_download_url ?: return@IconButton
+                                                Toast.makeText(ctx, "开始下载 ${a.name}…", Toast.LENGTH_SHORT).show()
+                                                Downloader.startDownload(ctx, url, a.name, source = "发行版附件",
+                                                    repo = "$owner/$name", release = rel.tag_name,
+                                                    expectedSize = a.size,
+                                                    onDone = { /* 完成提示统一由白色系统通知 + 行内 100% 展示，不再弹黑色 Toast */ }, 
+                                                    onError = { m ->
+                                                        Toast.makeText(ctx, "下载失败：$m", Toast.LENGTH_LONG).show()
+                                                    })
+                                            }) { Icon(Icons.Filled.Download, null, Modifier.size(18.dp), tint = GH.blue) }
+                                            if (repo.permissions?.push == true) {
+                                                IconButton(onClick = {
+                                                    scope.launch {
+                                                        try {
+                                                            Api.deleteAsset(owner, name, a.id)
+                                                            list = list.map { r -> if (r.id == rel.id) r.copy(assets = r.assets?.filter { it.id != a.id }) else r }
+                                                            snackbar.showSnackbar("已删除附件")
+                                                            load(1, true, silent = true)
+                                                        } catch (e: Exception) { snackbar.showSnackbar("失败：${e.message}") }
+                                                    }
+                                                }) { Icon(Icons.Filled.Delete, null, Modifier.size(16.dp), tint = GH.red) }
+                                            }
                                         }
                                     }
                                     Divider1()

@@ -139,6 +139,7 @@ fun StatusLine(
     emptyText: String? = null,
     fontSize: TextUnit = 11.sp,
     color: Color = GH.blue,
+    showCountdown: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val expiresAt = status?.expiresAt
@@ -169,7 +170,7 @@ fun StatusLine(
             if (!prefix.isNullOrBlank()) Text("  ·  ", fontSize = fontSize, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(line, fontSize = fontSize, color = color, maxLines = 1,
                 overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            val remaining = statusRemainingText(expiresAt, nowMs)
+            val remaining = if (showCountdown) statusRemainingText(expiresAt, nowMs) else null
             if (remaining != null) {
                 Spacer(Modifier.width(5.dp))
                 Text(remaining, fontSize = 9.sp, color = color, maxLines = 1, softWrap = false,
@@ -177,6 +178,28 @@ fun StatusLine(
                         .padding(horizontal = 4.dp, vertical = 1.dp))
             }
         }
+    }
+}
+
+/** 首页标题行用的独立倒计时徽标；没有状态/已到期时完全不占位。 */
+@Composable
+fun StatusCountdown(status: UserStatus?, modifier: Modifier = Modifier) {
+    val expiresAt = status?.expiresAt
+    var nowMs by remember(expiresAt) { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(expiresAt) {
+        if (expiresAt.isNullOrBlank()) return@LaunchedEffect
+        while (true) {
+            val now = System.currentTimeMillis()
+            nowMs = now
+            delay((1000L - now % 1000L).coerceAtLeast(50L))
+        }
+    }
+    val active = status?.let { statusLine(it, Instant.ofEpochMilli(nowMs)) } != null
+    val remaining = if (active) statusRemainingText(expiresAt, nowMs) else null
+    if (remaining != null) {
+        Text(remaining, fontSize = 9.sp, color = GH.blue, maxLines = 1, softWrap = false,
+            modifier = modifier.background(GH.blue.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
+                .padding(horizontal = 4.dp, vertical = 1.dp))
     }
 }
 
