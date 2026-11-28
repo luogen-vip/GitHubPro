@@ -13,6 +13,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -53,6 +54,7 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
     var peopleDialog by remember { mutableStateOf(if (initialPeople >= 0) initialPeople else 0) }
     var showPeople by remember { mutableStateOf(initialPeople >= 0) }
     var selectedEvent by remember { mutableStateOf<com.luogen.ghpro.data.GhEvent?>(null) }
+    var showProfileDetail by remember(login) { mutableStateOf(false) }
     var people by remember { mutableStateOf<List<User>>(emptyList()) }
     var events by remember { mutableStateOf<List<com.luogen.ghpro.data.GhEvent>>(emptyList()) }
     var eventsLoading by remember { mutableStateOf(false) }
@@ -127,7 +129,12 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
             TopAppBar(
                 title = { Text(login, fontSize = 15.sp) },
                 navigationIcon = { IconButton({ nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
-                actions = { IconButton({ openUrl(ctx, u?.html_url) }) { Icon(Icons.Filled.OpenInNew, "浏览器") } },
+                actions = {
+                    IconButton({ showProfileDetail = true }, enabled = u != null) {
+                        Icon(Icons.Filled.Info, "完整资料")
+                    }
+                    IconButton({ openUrl(ctx, u?.html_url) }) { Icon(Icons.Filled.OpenInNew, "浏览器") }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )
         }
@@ -153,16 +160,20 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
                                     Avatar(u!!.avatar_url, 46)
                                     Spacer(Modifier.width(10.dp))
                                     Column(Modifier.weight(1f)) {
-                                        Text(u!!.name ?: u!!.login, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                                        Text(u!!.name ?: u!!.login, fontSize = 16.sp, fontWeight = FontWeight.Bold,
+                                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.clickable { showProfileDetail = true })
                                         Text("@" + u!!.login, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         u!!.bio?.takeIf { it.isNotBlank() }?.let {
-                                            Text(it, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                            Text(it, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.clickable { showProfileDetail = true })
                                         }
                                         val shownStatus = if (isMe) myStatusLine() else statusLine(otherStatus)
                                         if (!shownStatus.isNullOrBlank()) {
                                             Text(shownStatus, fontSize = 11.sp, color = GH.blue,
                                                 maxLines = 2, overflow = TextOverflow.Ellipsis,
-                                                modifier = Modifier.padding(top = 2.dp))
+                                                modifier = Modifier.padding(top = 2.dp)
+                                                    .clickable { showProfileDetail = true })
                                         }
                                     }
                                     if (!isMe) OutlinedButton(onClick = {
@@ -235,6 +246,9 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
                                     Text("GitHub 主页", fontSize = 11.sp, color = GH.blue,
                                         maxLines = 1, softWrap = false,
                                         modifier = Modifier.clickable { openUrl(ctx, u!!.html_url) })
+                                    Text("完整资料", fontSize = 11.sp, color = GH.blue,
+                                        maxLines = 1, softWrap = false,
+                                        modifier = Modifier.clickable { showProfileDetail = true })
                                 }
                                 val extras = listOfNotNull(
                                     u!!.company?.takeIf { it.isNotBlank() }?.let { "公司：$it" },
@@ -245,7 +259,8 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
                                 if (extras.isNotEmpty()) {
                                     Spacer(Modifier.height(4.dp))
                                     Text(extras.joinToString("  ·  "), fontSize = 10.sp, maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.clickable { showProfileDetail = true })
                                 }
                             }
                             TabRow(selectedTabIndex = tab, containerColor = MaterialTheme.colorScheme.surface) {
@@ -374,6 +389,39 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
         )
     }
 
+    if (showProfileDetail && u != null) {
+        val me = u!!
+        val detailStatus = if (isMe) myStatusLine() else statusLine(otherStatus)
+        AlertDialog(
+            onDismissRequest = { showProfileDetail = false },
+            title = { Text("完整资料", fontSize = 15.sp) },
+            text = {
+                Column(Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+                    SelectionContainer {
+                        Column(Modifier.fillMaxWidth()) {
+                            ProfileDetailRow("用户名", me.login)
+                            ProfileDetailRow("昵称", me.name?.takeIf { it.isNotBlank() } ?: "未填写")
+                            me.bio?.takeIf { it.isNotBlank() }?.let { ProfileDetailRow("简介", it) }
+                            detailStatus?.takeIf { it.isNotBlank() }?.let { ProfileDetailRow("状态", it) }
+                            me.company?.takeIf { it.isNotBlank() }?.let { ProfileDetailRow("公司", it) }
+                            me.location?.takeIf { it.isNotBlank() }?.let { ProfileDetailRow("位置", it) }
+                            me.blog?.takeIf { it.isNotBlank() }?.let { ProfileDetailRow("博客", it) }
+                            me.email?.takeIf { it.isNotBlank() }?.let { ProfileDetailRow("邮箱", it) }
+                            me.twitter_username?.takeIf { it.isNotBlank() }?.let { ProfileDetailRow("X / Twitter", "@$it") }
+                            ProfileDetailRow("加入时间", fullTime(me.created_at))
+                            ProfileDetailRow("仓库", "${me.public_repos} 个公开仓库")
+                            ProfileDetailRow("Gist", "${me.public_gists} 个公开 Gist")
+                            ProfileDetailRow("关注者", "${me.followers}")
+                            ProfileDetailRow("正在关注", "${me.following}")
+                            me.html_url?.takeIf { it.isNotBlank() }?.let { ProfileDetailRow("主页", it) }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton({ showProfileDetail = false }) { Text("关闭") } }
+        )
+    }
+
     selectedEvent?.let { ev ->
         EventDetailDialog(ev, onOpenRepo = { full ->
             selectedEvent = null
@@ -381,6 +429,16 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
                 Toast.makeText(ctx, "打不开仓库：${it.message}", Toast.LENGTH_SHORT).show()
             }
         }, onClose = { selectedEvent = null })
+    }
+}
+
+
+@Composable
+private fun ProfileDetailRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.Top) {
+        Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(76.dp))
+        Text(value, fontSize = 12.sp, modifier = Modifier.weight(1f))
     }
 }
 
