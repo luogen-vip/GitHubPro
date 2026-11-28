@@ -35,6 +35,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -137,12 +138,18 @@ private fun VideoPreview(file: File) {
     var position by remember(file.absolutePath) { mutableStateOf(0) }
     var dragging by remember(file.absolutePath) { mutableStateOf<Float?>(null) }
     var seekTarget by remember(file.absolutePath) { mutableStateOf<Int?>(null) }
+    var seekCompleted by remember(file.absolutePath) { mutableStateOf(false) }
     var showCenter by remember(file.absolutePath) { mutableStateOf(true) }
+    var lastScrubSeekAt by remember(file.absolutePath) { mutableStateOf(0L) }
 
     // Media3 ExoPlayer 的精确 seek：不再像 VideoView 那样落到前一个关键帧，
     // 用户拖到哪就从哪开始，不会先播旧位置再向左跳。
     val exo = remember(file.absolutePath) {
-        ExoPlayer.Builder(ctx).build().apply {
+        val loadControl = DefaultLoadControl.Builder()
+            // seek 后只要有一帧可播就起播，不再等默认的 2.5 秒缓冲；本地视频优先响应速度。
+            .setBufferDurationsMs(5_000, 15_000, 0, 0)
+            .build()
+        ExoPlayer.Builder(ctx).setLoadControl(loadControl).build().apply {
             setSeekParameters(SeekParameters.EXACT)
             setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
             prepare()
@@ -161,6 +168,7 @@ private fun VideoPreview(file: File) {
                     playing = false
                     position = duration
                     seekTarget = null
+                    seekCompleted = false
                 }
             }
 
@@ -174,12 +182,16 @@ private fun VideoPreview(file: File) {
                 newPosition: Player.PositionInfo,
                 reason: Int
             ) {
-                if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                if (reason == Player.DISCONTINUITY_REASON_SEEK ||
+                    reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT) {
                     val target = seekTarget
                     val newPos = newPosition.positionMs.coerceAtLeast(0L).toInt()
-                    if (target == null || kotlin.math.abs(newPos - target) <= 800) {
-                        position = newPos
-                        if (target != null) seekTarget = null
+                    // 只认正好落在目标位置的 seek 回调；旧位置或关键帧位置的回调直接忽略，
+                    // 否则向后拖时会先跳回旧位置再跳回来。
+                    if (target != null && kotlin.math.abs(newPos - target) <= 1) {
+                        seekCompleted = true
+                        // 保留用户拖到的目标位置，等播放器位置真正追上再交给它。
+                        position = target
                     }
                 }
             }
@@ -207,9 +219,10 @@ private fun VideoPreview(file: File) {
                         position = exo.currentPosition.coerceAtLeast(0L).toInt()
                     } else {
                         val current = exo.currentPosition.toInt()
-                        if (kotlin.math.abs(current - target) <= 250) {
+                        if (seekCompleted && current >= target) {
                             position = current
                             seekTarget = null
+                            seekCompleted = false
                         } else {
                             // seek 还没完成时滑块停在用户拖到的位置，绝不回跳。
                             position = target
@@ -231,11 +244,22 @@ private fun VideoPreview(file: File) {
         }
     }
 
+    fun seekScrubTo(ms: Int) {
+        if (duration <= 0) return
+        val target = ms.coerceIn(0, duration)
+        seekTarget = target
+        seekCompleted = kotlin.math.abs(target - exo.currentPosition) <= 50
+        exo.seekTo(target.toLong())
+        // 拖动过程中如果本来就在播放，让它从新位置继续，不要因为 seek 停住。
+        if (exo.playWhenReady) exo.play()
+    }
+
     fun seekToPosition(ms: Int) {
         if (duration <= 0) return
         val target = ms.coerceIn(0, duration)
         position = target
         seekTarget = target
+        seekCompleted = kotlin.math.abs(target - exo.currentPosition) <= 50
         exo.seekTo(target.toLong())
         if (exo.playWhenReady) exo.play()
     }
@@ -251,6 +275,7 @@ private fun VideoPreview(file: File) {
             if (ended) {
                 position = 0
                 seekTarget = null
+                seekCompleted = false
                 exo.seekTo(0L)
             }
             exo.play()
@@ -309,7 +334,17 @@ private fun VideoPreview(file: File) {
                 Slider(
                     value = (dragging ?: seekTarget?.let { if (duration > 0) it.toFloat() / duration else 0f }
                         ?: if (duration > 0) position.toFloat() / duration else 0f).coerceIn(0f, 1f),
-                    onValueChange = { dragging = it },
+                    onValueChange = {
+                        dragging = it
+                        if (prepared && duration > 0) {
+                            val now = android.os.SystemClock.elapsedRealtime()
+                            if (now - lastScrubSeekAt >= 120) {
+                                lastScrubSeekAt = now
+                                // 拖动过程中就提前 seek，松手时目标已经很近，不会等到松手才从 1 秒前开始解码。
+                                seekScrubTo((it * duration).toInt())
+                            }
+                        }
+                    },
                     onValueChangeFinished = {
                         val p = dragging
                         if (p != null && duration > 0) {
