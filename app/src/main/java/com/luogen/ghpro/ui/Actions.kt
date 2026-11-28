@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.luogen.ghpro.data.Api
+import com.luogen.ghpro.data.Bus
 import com.luogen.ghpro.data.Artifact
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Job
@@ -41,6 +42,8 @@ import com.luogen.ghpro.data.Run
 import com.luogen.ghpro.data.Step
 import com.luogen.ghpro.data.Workflow
 import com.luogen.ghpro.download.Downloader
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -60,6 +63,8 @@ fun ActionsTab(nav: NavController, owner: String, name: String, repo: Repo) {
     var lastSync by remember { mutableStateOf(0L) }
     var autoOn by remember { mutableStateOf(Cfg.autoRefresh) }
     var showWf by remember { mutableStateOf(false) }
+    // 通知/监听服务一发现新工作流或状态变化，列表立刻拉一次，不用等下一次轮询。
+    val busTick by Bus.tick.collectAsState()
 
     suspend fun load(silent: Boolean = false) {
         if (!silent) loading = true
@@ -73,14 +78,17 @@ fun ActionsTab(nav: NavController, owner: String, name: String, repo: Repo) {
         loading = false
     }
 
-    LaunchedEffect(owner, name) { if (runs.isEmpty()) load() }
+    // 有缓存也立刻拉一次：从详情返回或重新进入列表时，不能先拿旧状态顶着。
+    LaunchedEffect(owner, name) { load(silent = runs.isNotEmpty()) }
     LaunchedEffect(autoOn) {
         while (isActive && autoOn) {
-            val live = runs.any { isLiveStatus(it.status) }
-            // 有运行中的任务时 3 秒刷一次；全部结束后恢复用户设置的监听间隔。
-            delay(if (live) 3_000L else (Cfg.pollSeconds.coerceIn(8, 300)) * 1000L)
+            // 工作流列表始终 2 秒刷新：新运行、开始、成功、失败都尽快出现。
+            delay(2_000L)
             load(true)
         }
+    }
+    LaunchedEffect(busTick) {
+        if (busTick > 0L) load(true)
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -89,7 +97,7 @@ fun ActionsTab(nav: NavController, owner: String, name: String, repo: Repo) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton({ scope.launch { load() } }) { Icon(Icons.Filled.Refresh, null, Modifier.size(18.dp)) }
-            Text(if (lastSync == 0L) "同步中" else "${(System.currentTimeMillis() - lastSync) / 1000} 秒前同步 · 每 ${Cfg.pollSeconds} 秒自动",
+            Text(if (lastSync == 0L) "同步中" else "${(System.currentTimeMillis() - lastSync) / 1000} 秒前同步 · 每 2 秒自动刷新",
                 fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
             Text("自动", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Switch(checked = autoOn, onCheckedChange = { autoOn = it }, modifier = Modifier.height(28.dp))
@@ -197,9 +205,16 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
     suspend fun load(showToast: Boolean = false, includeArtifacts: Boolean = true) {
         if (showToast) refreshing = true
         try {
-            run = Api.run(owner, name, runId)
-            jobs = Api.runJobs(owner, name, runId)
-            if (includeArtifacts) artifacts = Api.runArtifacts(owner, name, runId)
+            // 三个请求并行发出，进入详情/刷新时不用一个等一个。
+            val fresh = coroutineScope {
+                val r = async { Api.run(owner, name, runId) }
+                val j = async { Api.runJobs(owner, name, runId) }
+                val a = if (includeArtifacts) async { Api.runArtifacts(owner, name, runId) } else null
+                Triple(r.await(), j.await(), a?.await())
+            }
+            run = fresh.first
+            jobs = fresh.second
+            fresh.third?.let { artifacts = it }
             UiCache.runData[runId] = run!!
             UiCache.runJobs[runId] = jobs
             if (includeArtifacts) UiCache.runArtifacts[runId] = artifacts
@@ -214,6 +229,11 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
         }
     }
     LaunchedEffect(runId) { load() }
+    // 后台监听/通知一发现这个运行有变化，详情页也立刻刷新，不等 3 秒轮询。
+    val busTick by Bus.tick.collectAsState()
+    LaunchedEffect(busTick) {
+        if (busTick > 0L) load(includeArtifacts = false)
+    }
     LaunchedEffect(auto, run?.status) {
         while (isActive && auto) {
             val st = run?.status
