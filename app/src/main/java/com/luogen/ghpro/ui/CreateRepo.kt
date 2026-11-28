@@ -19,7 +19,6 @@ import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Bus
 import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Repo
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -211,6 +210,7 @@ val FALLBACK_IGNORES = listOf("Android", "Kotlin", "Java", "Python", "Node", "Ja
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditRepoScreen(nav: NavController, owner: String, name: String) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     var repo by remember { mutableStateOf<Repo?>(null) }
     var newName by remember { mutableStateOf(name) }
@@ -235,6 +235,7 @@ fun EditRepoScreen(nav: NavController, owner: String, name: String) {
     LaunchedEffect(owner, name) {
         runCatching { Api.repo(owner, name) }.onSuccess {
             repo = it
+            newName = it.name
             desc = it.description ?: ""
             homepage = it.homepage ?: ""
             topics = it.topics?.joinToString(", ") ?: ""
@@ -248,6 +249,84 @@ fun EditRepoScreen(nav: NavController, owner: String, name: String) {
         loading = false
     }
 
+    fun saveRepo() {
+        val r = repo ?: return
+        // 名称留空时保持当前名称，绝不把空字符串发给 GitHub；这是之前 422 Validation Failed 的根因。
+        val targetName = newName.trim().ifBlank { r.name.ifBlank { name } }
+        val badName = targetName.length > 100 || targetName.contains(' ') || targetName.contains('/') ||
+            targetName == "." || targetName == ".." || targetName.endsWith(".git")
+        if (badName) {
+            scope.launch { snackbar.showSnackbar("仓库名称不合法：不能包含空格或斜杠，不能以 .git 结尾") }
+            return
+        }
+        if (desc.length > 350) {
+            scope.launch { snackbar.showSnackbar("描述最多 350 个字符") }
+            return
+        }
+        val topicList = topics.split(",", "，", " ")
+            .map { it.trim().lowercase() }
+            .filter { it.isNotBlank() }
+            .distinct()
+        val badTopic = topicList.firstOrNull { !it.matches(Regex("[a-z0-9][a-z0-9-]{0,49}")) }
+        if (badTopic != null) {
+            scope.launch { snackbar.showSnackbar("Topics 只能用英文、数字和连字符：$badTopic") }
+            return
+        }
+        if (topicList.size > 20) {
+            scope.launch { snackbar.showSnackbar("Topics 最多 20 个") }
+            return
+        }
+        val topicsChanged = topicList.sorted() != r.topics.orEmpty().map { it.lowercase() }.sorted()
+        Bus.actions.launch {
+            busy = true
+            try {
+                // 归档会让仓库变成只读；要同时改 Topics 和归档时，先把 Topics 写进去。
+                if (topicsChanged && archived) Api.setTopics(owner, name, topicList)
+                val fields = mutableMapOf<String, Any?>(
+                    "description" to desc.trim(),
+                    "homepage" to homepage.trim(),
+                    "private" to private,
+                    "archived" to archived,
+                    "has_issues" to hasIssues,
+                    "has_wiki" to hasWiki,
+                    "has_projects" to hasProjects,
+                    "has_discussions" to hasDiscussions
+                )
+                if (targetName != name) fields["name"] = targetName
+                // 改名和所有开关一次 PATCH 完成，避免先改名成功、后一步失败留下半套状态。
+                val saved = Api.patchRepo(owner, name, fields)
+                val savedKey = (saved.owner?.login ?: owner) + "/" + saved.name
+                UiCache.repoData[savedKey] = saved
+                if (savedKey != "$owner/$name") UiCache.repoData.remove("$owner/$name")
+                if (!saved.has_discussions) UiCache.repoDiscussions.remove(savedKey)
+                Bus.repoChanged()
+                if (topicsChanged && !archived) {
+                    try { Api.setTopics(owner, saved.name, topicList) }
+                    catch (e: Exception) {
+                        throw IllegalStateException("基础设置已保存，但 Topics 保存失败：${e.message}", e)
+                    }
+                }
+                Bus.poke()
+                newName = saved.name
+                android.widget.Toast.makeText(ctx, "已保存并生效", android.widget.Toast.LENGTH_SHORT).show()
+                if (!screenActive) return@launch
+                if (saved.name != name) {
+                    // 改名后旧 URL 已经不存在，直接替换掉旧仓库页，避免返回后 404
+                    nav.popBackStack("repo/$owner/$name", inclusive = true)
+                    nav.navigate("repo/$owner/${saved.name}")
+                } else {
+                    nav.popBackStack()
+                }
+            } catch (e: Exception) {
+                val msg = "保存失败：${e.message}"
+                if (screenActive) snackbar.showSnackbar(msg, duration = SnackbarDuration.Long)
+                else android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_LONG).show()
+            } finally {
+                busy = false
+            }
+        }
+    }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbar) },
@@ -256,54 +335,9 @@ fun EditRepoScreen(nav: NavController, owner: String, name: String) {
                 title = { Text("编辑 $owner/$name", fontSize = 14.sp) },
                 navigationIcon = { IconButton({ nav.popBackStack() }) { Icon(Icons.Filled.ArrowBack, "返回") } },
                 actions = {
-                    TextButton(enabled = !busy && repo != null, onClick = {
-                        Bus.actions.launch {
-                            busy = true
-                            try {
-                                if (newName != name) Api.renameRepo(owner, name, newName.trim())
-                                val saved = Api.patchRepo(owner, newName.trim(),
-                                    mapOf(
-                                        "description" to desc,
-                                        "homepage" to homepage,
-                                        "private" to private,
-                                        "archived" to archived,
-                                        "has_issues" to hasIssues,
-                                        "has_wiki" to hasWiki,
-                                        "has_projects" to hasProjects,
-                                        "has_discussions" to hasDiscussions
-                                    ))
-                                // 保存成功后立刻写回内存缓存：返回仓库页马上就是新开关，不靠再刷新几次
-                                val savedKey = (saved.owner?.login ?: owner) + "/" + saved.name
-                                UiCache.repoData[savedKey] = saved
-                                if (newName != name) UiCache.repoData.remove("$owner/$name")
-                                if (!saved.has_discussions) UiCache.repoDiscussions.remove(savedKey)
-                                Bus.repoChanged()
-                                if (topics.isNotBlank()) {
-                                    runCatching { Api.setTopics(owner, saved.name, topics.split(",").map { it.trim() }.filter { it.isNotBlank() }) }
-                                }
-                                Bus.poke()
-                                // 只让“已保存并生效”停留到能看清，随后立刻关闭编辑页；
-                                // 不再等 Snackbar 默认的几秒自动消失，避免保存按钮点了像没反应。
-                                if (!screenActive) {
-                                    // 用户已经按返回回到仓库页：保存结果已写缓存/通知刷新，不再动导航栈。
-                                    return@launch
-                                }
-                                snackbar.currentSnackbarData?.dismiss()
-                                snackbar.showSnackbar("已保存并生效", duration = SnackbarDuration.Short)
-                                delay(700)
-                                snackbar.currentSnackbarData?.dismiss()
-                                if (!screenActive) return@launch
-                                if (newName != name) {
-                                    // 改名后旧 URL 已经不存在，直接替换掉旧仓库页，避免返回后 404
-                                    nav.popBackStack("repo/$owner/$name", inclusive = true)
-                                    nav.navigate("repo/$owner/${saved.name}")
-                                } else {
-                                    nav.popBackStack()
-                                }
-                            } catch (e: Exception) { snackbar.showSnackbar("保存失败：${e.message}") }
-                            busy = false
-                        }
-                    }) { Text(if (busy) "保存中…" else "保存") }
+                    TextButton(enabled = !busy && repo != null, onClick = { saveRepo() }) {
+                        Text(if (busy) "保存中…" else "保存")
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )
@@ -311,7 +345,14 @@ fun EditRepoScreen(nav: NavController, owner: String, name: String) {
     ) { pad ->
         if (loading) { LoadingBox(); return@Scaffold }
         Column(Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState()).padding(14.dp)) {
-            OutlinedTextField(newName, { newName = it }, Modifier.fillMaxWidth(), label = { Text("仓库名称（改名会改变 URL）") }, singleLine = true)
+            Text("当前仓库：" + (repo?.full_name ?: "$owner/$name"), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(6.dp))
+            OutlinedTextField(
+                newName, { newName = it }, Modifier.fillMaxWidth(),
+                label = { Text("仓库名称（改名会改变 URL）") },
+                supportingText = { Text("留空保存时保持当前名称") },
+                singleLine = true
+            )
             Spacer(Modifier.height(10.dp))
             OutlinedTextField(desc, { desc = it }, Modifier.fillMaxWidth(), label = { Text("描述") }, minLines = 2)
             Spacer(Modifier.height(10.dp))
