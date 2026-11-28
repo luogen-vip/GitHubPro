@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Comment
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -435,36 +436,53 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
                                     pendingOps = (pendingOps - 1).coerceAtLeast(0)
                                 }
                             }) {
-                                Icon(if (isOpen) Icons.Filled.Check else Icons.Filled.LockOpen, null, Modifier.size(16.dp))
+                                Icon(if (isOpen) Icons.Filled.Check else Icons.Filled.Refresh, null, Modifier.size(16.dp))
                                 Text(if (isOpen) "关闭" else "重开", fontSize = 12.sp)
                             }
                         }
                         if (canPush) {
-                            IconButton(onClick = {
-                                val old = issueNow
-                                val targetLocked = !old.locked
-                                val seq = ++lockOpSeq
-                                val optimisticLock = old.copy(locked = targetLocked)
-                                issue = optimisticLock
-                                UiCache.issueOverrides["$owner/$name#$number"] = optimisticLock to System.currentTimeMillis()
-                                quickToast(if (targetLocked) "已锁定讨论" else "已解锁讨论")
-                                pendingOps++
-                                Bus.actions.launch {
-                                    kotlinx.coroutines.delay(150L)
-                                    if (seq != lockOpSeq) { pendingOps = (pendingOps - 1).coerceAtLeast(0); return@launch }
-                                    try {
-                                        Api.lockIssue(owner, name, number, targetLocked)
-                                        UiCache.issueOverrides["$owner/$name#$number"] = optimisticLock to System.currentTimeMillis()
-                                        Cfg.touchRepo("$owner/$name")
-                                        Bus.issuesChanged()
-                                    } catch (e: Exception) {
-                                        issue = old
-                                        UiCache.issueOverrides["$owner/$name#$number"] = old to System.currentTimeMillis()
-                                        quickToast("失败：${e.message}")
+                            // 图标和文字都表示“当前状态”，不是“点击后要做什么”：
+                            // 已锁定=闭合锁+已锁定；未锁定=打开锁+未锁定。点按后提示新的状态。
+                            TextButton(
+                                onClick = {
+                                    val old = issueNow
+                                    val targetLocked = !old.locked
+                                    val seq = ++lockOpSeq
+                                    val optimisticLock = old.copy(locked = targetLocked)
+                                    issue = optimisticLock
+                                    UiCache.issueOverrides["$owner/$name#$number"] = optimisticLock to System.currentTimeMillis()
+                                    quickToast(if (targetLocked) "已锁定讨论" else "已解锁讨论")
+                                    pendingOps++
+                                    Bus.actions.launch {
+                                        kotlinx.coroutines.delay(150L)
+                                        if (seq != lockOpSeq) { pendingOps = (pendingOps - 1).coerceAtLeast(0); return@launch }
+                                        try {
+                                            Api.lockIssue(owner, name, number, targetLocked)
+                                            if (seq == lockOpSeq) {
+                                                UiCache.issueOverrides["$owner/$name#$number"] = optimisticLock to System.currentTimeMillis()
+                                                Cfg.touchRepo("$owner/$name")
+                                                Bus.issuesChanged()
+                                            }
+                                        } catch (e: Exception) {
+                                            if (seq == lockOpSeq) {
+                                                issue = old
+                                                UiCache.issueOverrides["$owner/$name#$number"] = old to System.currentTimeMillis()
+                                                quickToast("失败：${e.message}")
+                                            }
+                                        }
+                                        pendingOps = (pendingOps - 1).coerceAtLeast(0)
                                     }
-                                    pendingOps = (pendingOps - 1).coerceAtLeast(0)
-                                }
-                            }) { Icon(if (issueNow.locked) Icons.Filled.LockOpen else Icons.Filled.Lock, "锁定讨论") }
+                                },
+                                contentPadding = PaddingValues(horizontal = 6.dp)
+                            ) {
+                                Icon(
+                                    if (issueNow.locked) Icons.Filled.Lock else Icons.Filled.LockOpen,
+                                    if (issueNow.locked) "当前已锁定，点击解锁" else "当前未锁定，点击锁定",
+                                    Modifier.size(15.dp)
+                                )
+                                Spacer(Modifier.width(3.dp))
+                                Text(if (issueNow.locked) "已锁定" else "未锁定", fontSize = 10.sp, maxLines = 1, softWrap = false)
+                            }
                         }
                     }
                 },
