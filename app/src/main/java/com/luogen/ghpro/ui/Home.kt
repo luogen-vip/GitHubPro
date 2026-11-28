@@ -50,6 +50,7 @@ import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Favorites
 import com.luogen.ghpro.data.Repo
 import com.luogen.ghpro.data.User
+import com.luogen.ghpro.data.UserStatus
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -298,10 +299,15 @@ fun HomeScreen(nav: NavController) {
                         Column(Modifier.weight(1f)) {
                             Text(me?.name ?: me?.login ?: Cfg.userName ?: "GitHub", fontSize = 15.sp,
                                 fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            val statusLine = remember(statusVer) { myStatusLine() }
-                            Text("@" + (me?.login ?: Cfg.login ?: "") + if (statusLine.isNullOrBlank()) "" else "  ·  $statusLine",
-                                fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                color = if (statusLine.isNullOrBlank()) MaterialTheme.colorScheme.onSurfaceVariant else GH.blue)
+                            val myStatus = remember(statusVer) {
+                                UserStatus(Cfg.statusEmoji, Cfg.statusMessage, Cfg.statusBusy, Cfg.statusExpiresAt,
+                                    Cfg.statusOrgId, Cfg.statusOrgLogin, Cfg.statusOrgName)
+                            }
+                            StatusLine(
+                                status = myStatus,
+                                prefix = "@" + (me?.login ?: Cfg.login ?: ""),
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         }
                         IconButton({ nav.navigate("settings") }) { Icon(Icons.Filled.Settings, "设置") }
                     }

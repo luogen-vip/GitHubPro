@@ -55,7 +55,11 @@ private fun isStatusEmoji(raw: String): Boolean {
 fun MyStatusCard() {
     val ver by Bus.statusPoke.collectAsState()
     var show by remember { mutableStateOf(false) }
-    val line = remember(ver) { myStatusLine() }
+    val hasStatus = remember(ver) { myStatusLine() != null }
+    val myStatus = remember(ver) {
+        UserStatus(Cfg.statusEmoji, Cfg.statusMessage, Cfg.statusBusy, Cfg.statusExpiresAt,
+            Cfg.statusOrgId, Cfg.statusOrgLogin, Cfg.statusOrgName)
+    }
 
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Column(Modifier.fillMaxWidth().padding(14.dp)) {
@@ -64,10 +68,13 @@ fun MyStatusCard() {
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
                     Text("我的状态", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    Text(if (line.isNullOrBlank()) "未设置。设置后立即写回 GitHub，别人也能看到。" else line,
-                        fontSize = 11.sp, color = if (line.isNullOrBlank()) MaterialTheme.colorScheme.onSurfaceVariant else GH.blue)
+                    StatusLine(
+                        status = myStatus,
+                        emptyText = "未设置。设置后立即写回 GitHub，别人也能看到。",
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
-                TextButton(onClick = { show = true }) { Text(if (line.isNullOrBlank()) "设置" else "修改", fontSize = 12.sp) }
+                TextButton(onClick = { show = true }) { Text(if (hasStatus) "修改" else "设置", fontSize = 12.sp) }
             }
             Text("状态由 GitHub 官方 GraphQL 保存，不是只改本机；外部改动会在本页静默同步，设置/清除后立即更新。",
                 fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))

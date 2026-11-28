@@ -11,7 +11,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -21,6 +25,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -32,6 +37,7 @@ import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Label
 import com.luogen.ghpro.data.UserStatus
 import com.luogen.ghpro.download.DownloadState
+import kotlinx.coroutines.delay
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
@@ -98,10 +104,10 @@ fun prettyStatusEmoji(raw: String?): String {
 }
 
 /** 状态文本；包含“仅某组织可见”，让用户一眼知道别人看不到的原因。 */
-fun statusLine(s: UserStatus?): String? {
+fun statusLine(s: UserStatus?, now: Instant = Instant.now()): String? {
     if (s == null) return null
     val expired = s.expiresAt?.let { raw ->
-        runCatching { java.time.Instant.parse(raw).isBefore(java.time.Instant.now()) }.getOrDefault(false)
+        runCatching { Instant.parse(raw).isBefore(now) }.getOrDefault(false)
     } ?: false
     if (expired) return null
     val emoji = prettyStatusEmoji(s.emoji)
@@ -121,6 +127,76 @@ fun myStatusLine(): String? = statusLine(UserStatus(
     Cfg.statusEmoji, Cfg.statusMessage, Cfg.statusBusy, Cfg.statusExpiresAt,
     Cfg.statusOrgId, Cfg.statusOrgLogin, Cfg.statusOrgName
 ))
+
+/**
+ * 状态 + 结束倒计时。倒计时按 GitHub 返回的 expiresAt 绝对时间计算，每秒只刷新这一行，
+ * 不依赖页面是否重新加载；App 被杀掉再打开也会按当前时间重新算。
+ */
+@Composable
+fun StatusLine(
+    status: UserStatus?,
+    prefix: String? = null,
+    emptyText: String? = null,
+    fontSize: TextUnit = 11.sp,
+    color: Color = GH.blue,
+    modifier: Modifier = Modifier
+) {
+    val expiresAt = status?.expiresAt
+    var nowMs by remember(expiresAt) { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(expiresAt) {
+        if (expiresAt.isNullOrBlank()) return@LaunchedEffect
+        while (true) {
+            val now = System.currentTimeMillis()
+            nowMs = now
+            // 对齐到下一整秒，避免每秒刷新漂移；只刷新这一小块，不重载页面。
+            delay((1000L - now % 1000L).coerceAtLeast(50L))
+        }
+    }
+    val line = status?.let { statusLine(it, Instant.ofEpochMilli(nowMs)) }
+    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+        if (!prefix.isNullOrBlank()) {
+            Text(prefix, fontSize = fontSize, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 130.dp))
+        }
+        if (line.isNullOrBlank()) {
+            if (!emptyText.isNullOrBlank()) {
+                if (!prefix.isNullOrBlank()) Text("  ·  ", fontSize = fontSize, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(emptyText, fontSize = fontSize, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            }
+        } else {
+            if (!prefix.isNullOrBlank()) Text("  ·  ", fontSize = fontSize, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(line, fontSize = fontSize, color = color, maxLines = 1,
+                overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            val remaining = statusRemainingText(expiresAt, nowMs)
+            if (remaining != null) {
+                Spacer(Modifier.width(5.dp))
+                Text(remaining, fontSize = 9.sp, color = color, maxLines = 1, softWrap = false,
+                    modifier = Modifier.background(color.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 4.dp, vertical = 1.dp))
+            }
+        }
+    }
+}
+
+/** 永久返回“永久”；有结束时间返回精确到秒的剩余时间。 */
+fun statusRemainingText(expiresAt: String?, nowMs: Long = System.currentTimeMillis()): String? {
+    if (expiresAt.isNullOrBlank()) return "永久"
+    val end = runCatching { Instant.parse(expiresAt).toEpochMilli() }.getOrNull() ?: return null
+    val left = end - nowMs
+    if (left <= 0) return null
+    val total = (left + 999L) / 1000L
+    val days = total / 86400L
+    val hours = (total % 86400L) / 3600L
+    val minutes = (total % 3600L) / 60L
+    val seconds = total % 60L
+    return if (days > 0) {
+        "剩 ${days}天 ${"%02d".format(hours)}:${"%02d".format(minutes)}:${"%02d".format(seconds)}"
+    } else {
+        "剩 ${"%02d".format(hours)}:${"%02d".format(minutes)}:${"%02d".format(seconds)}"
+    }
+}
 
 fun fullTime(iso: String?): String {
     val t = parseTime(iso) ?: return ""
