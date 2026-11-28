@@ -1,7 +1,8 @@
 package com.luogen.ghpro.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -16,7 +17,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -28,6 +31,7 @@ import com.luogen.ghpro.data.Notification
 import com.luogen.ghpro.data.NotificationSubject
 import com.luogen.ghpro.data.Repo
 import com.luogen.ghpro.data.LocalNotice
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** 把 App 自己记录的工作流/PR/发行版动态转换成通知列表项，旧的 GitHub 通知接口没有这些也要能看到。 */
@@ -45,6 +49,8 @@ private fun LocalNotice.asNotification(): Notification {
         "run", "run_start" -> "ci_activity"
         "pull" -> "review_requested"
         "pull_merge", "pull_state" -> "state_change"
+        "release" -> "release"
+        "release_asset" -> "release_asset"
         else -> kind
     }
     return Notification(
@@ -57,10 +63,11 @@ private fun LocalNotice.asNotification(): Notification {
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun NotificationsScreen(nav: NavController) {
     val ctx = LocalContext.current
+    val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     var all by remember { mutableStateOf(UiCache.notifAll) }
     val firstSnap = UiCache.notifSnaps[all]
@@ -70,9 +77,18 @@ fun NotificationsScreen(nav: NavController) {
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
     var confirmClearAll by remember { mutableStateOf(false) }
+    var clockMs by remember { mutableStateOf(System.currentTimeMillis()) }
     val snackbar = remember { SnackbarHostState() }
     val listState = rememberLazyListState(firstSnap?.index ?: 0, firstSnap?.offset ?: 0)
     val tick by com.luogen.ghpro.data.Bus.tick.collectAsState()
+
+    // “刚刚 / X 分钟前 / 今天 HH:mm”必须随时间自己走；跨过午夜后自动变成“昨天 HH:mm”。
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30_000L)
+            clockMs = System.currentTimeMillis()
+        }
+    }
 
     fun localAsNotifications(includeRead: Boolean = false): List<Notification> =
         Cfg.localNotices.map { it.asNotification() }.filter { includeRead || it.unread }
@@ -142,14 +158,59 @@ fun NotificationsScreen(nav: NavController) {
         scope.launch { snackbar.showSnackbar("已从本机清除 ${ids.size} 条通知") }
     }
 
-    /** 立即进入选择模式：先切 UI，再提示，不等待任何网络请求。 */
-    fun enterSelecting() {
-        selected = emptySet()
+    /** 立即进入选择模式：长按某条时直接把这一条勾上；只切 UI，不等待网络。 */
+    fun enterSelecting(first: Notification? = null) {
+        selected = first?.let { setOf(it.id) } ?: emptySet()
         selecting = true
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
         scope.launch {
             snackbar.currentSnackbarData?.dismiss()
-            snackbar.showSnackbar("选择模式已开启：点通知前的方框勾选")
+            snackbar.showSnackbar(
+                if (first == null) "选择模式已开启：点通知前的方框勾选"
+                else "已选中 1 条：可继续点方框，或点顶部全选"
+            )
         }
+    }
+
+    fun toggleSelected(n: Notification) {
+        selected = if (n.id in selected) selected - n.id else selected + n.id
+    }
+
+    /** 长按任意通知进入选择；已经在选择模式时，长按等同于再勾上这一条。 */
+    fun longPressNotification(n: Notification) {
+        if (!selecting) {
+            enterSelecting(n)
+        } else {
+            selected = selected + n.id
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        }
+    }
+
+    /** 单击通知：普通模式打开详情；选择模式只切换勾选，不跳页。 */
+    fun clickNotification(n: Notification) {
+        if (selecting) {
+            toggleSelected(n)
+            return
+        }
+        // 先把当前位置存下来，再从“全部”点进某条：返回后仍是全部页签 + 原位置
+        savePos()
+        Cfg.notifReadIds = Cfg.notifReadIds + n.id
+        if (all) {
+            list = list.map { if (it.id == n.id) it.copy(unread = false) else it }
+        } else {
+            // 未读页签：点过就立即从“未读”列表消失，返回时也不会又冒出来
+            list = list.filter { it.id != n.id }
+        }
+        UiCache.notifSnaps[all] = NotifSnap(list, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset)
+        if (!n.id.startsWith("local:")) {
+            scope.launch { runCatching { Api.markThreadRead(n.id) } }
+        }
+        val url = n.subject?.url ?: ""
+        val repo = n.repository?.full_name ?: ""
+        val target = notificationTarget(n)
+        if (target != null) nav.navigate(target)
+        else if (repo.isNotBlank()) nav.navigate("repo/$repo")
+        else openUrl(ctx, url)
     }
 
     /**
@@ -344,32 +405,10 @@ fun NotificationsScreen(nav: NavController) {
                         Row(
                             Modifier.fillMaxWidth()
                                 .background(if (n.unread) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.background)
-                                .clickable {
-                                    if (selecting) {
-                                        selected = if (n.id in selected) selected - n.id else selected + n.id
-                                    } else {
-                                        // 先把当前位置存下来，再从“全部”点进某条：返回后仍是全部页签 + 原位置
-                                        savePos()
-                                        val clicked = n
-                                        Cfg.notifReadIds = Cfg.notifReadIds + clicked.id
-                                        if (all) {
-                                            list = list.map { if (it.id == clicked.id) it.copy(unread = false) else it }
-                                        } else {
-                                            // 未读页签：点过就立即从“未读”列表消失，返回时也不会又冒出来
-                                            list = list.filter { it.id != clicked.id }
-                                        }
-                                        UiCache.notifSnaps[all] = NotifSnap(list, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset)
-                                        if (!clicked.id.startsWith("local:")) {
-                                            scope.launch { runCatching { Api.markThreadRead(clicked.id) } }
-                                        }
-                                        val url = n.subject?.url ?: ""
-                                        val repo = n.repository?.full_name ?: ""
-                                        val target = notificationTarget(n)
-                                        if (target != null) nav.navigate(target)
-                                        else if (repo.isNotBlank()) nav.navigate("repo/$repo")
-                                        else openUrl(ctx, url)
-                                    }
-                                }.padding(14.dp),
+                                .combinedClickable(
+                                    onClick = { clickNotification(n) },
+                                    onLongClick = { longPressNotification(n) }
+                                ).padding(14.dp),
                             verticalAlignment = Alignment.Top
                         ) {
                             if (selecting) {
@@ -403,19 +442,32 @@ fun NotificationsScreen(nav: NavController) {
                                 Spacer(Modifier.height(3.dp))
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     val repo = n.repository?.full_name ?: ""
-                                    if (repo.isNotBlank()) {
-                                        Text(repo, fontSize = 10.sp, color = GH.blue,
-                                            maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.then(if (selecting) Modifier else Modifier.clickable {
-                                                // 单独点仓库名只进仓库首页；点其他区域仍然进具体议题/PR/提交。
-                                                savePos()
-                                                nav.navigate("repo/$repo")
-                                            }))
-                                    }
-                                    Text(" · ${reasonCn(n.reason)} · ${timeAgo(n.updated_at)}",
-                                        fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    Text(
+                                        listOfNotNull(repo.takeIf { it.isNotBlank() }, reasonCn(n.reason).takeIf { it.isNotBlank() })
+                                            .joinToString(" · "),
+                                        fontSize = 10.sp,
+                                        color = if (repo.isNotBlank()) GH.blue else MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f, fill = false))
+                                        modifier = Modifier.weight(1f).then(
+                                            if (repo.isBlank() || selecting) Modifier
+                                            else Modifier.combinedClickable(
+                                                onClick = {
+                                                    // 单独点仓库名只进仓库首页；点其他区域仍然进具体议题/PR/提交。
+                                                    savePos()
+                                                    nav.navigate("repo/$repo")
+                                                },
+                                                onLongClick = { longPressNotification(n) }
+                                            )
+                                        )
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        notifTime(n.updated_at, clockMs),
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
                                 }
                             }
                             if (!selecting) {

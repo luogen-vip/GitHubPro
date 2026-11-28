@@ -11,12 +11,14 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.luogen.ghpro.MainActivity
 import com.luogen.ghpro.R
+import com.luogen.ghpro.data.Asset
 import com.luogen.ghpro.data.Cfg
 
 object Notifier {
     private val canceledIds = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
     const val CH_ACTION = "gh_action"
     const val CH_NOTIF = "gh_notif"
+    const val CH_RELEASE = "gh_release"
     const val CH_DOWNLOAD = "gh_download"
     const val CH_DOWNLOAD_DONE = "gh_download_done"
     const val CH_SERVICE = "gh_service"
@@ -29,6 +31,9 @@ object Notifier {
         })
         nm.createNotificationChannel(NotificationChannel(CH_NOTIF, "仓库动态", NotificationManager.IMPORTANCE_DEFAULT).apply {
             description = "Star、议题、PR、讨论、通知"
+        })
+        nm.createNotificationChannel(NotificationChannel(CH_RELEASE, "发行版更新", NotificationManager.IMPORTANCE_DEFAULT).apply {
+            description = "仓库发布新版本或上传新附件，显示版本号与文件名"
         })
         nm.createNotificationChannel(NotificationChannel(CH_DOWNLOAD, "下载", NotificationManager.IMPORTANCE_LOW).apply {
             description = "发行版/源码/产物下载进度"
@@ -87,6 +92,85 @@ object Notifier {
             .setContentIntent(contentIntent(ctx, route, id))
             .build()
         safeNotify(ctx, n, id)
+    }
+
+    /**
+     * 发行版专用通知：版本号、附件名和大小一次讲清；点通知精确跳对应发行版。
+     * 如果只有一个 APK，额外给“下载 APK”按钮，直接发起下载，省掉进仓库再点下载。
+     */
+    fun release(
+        ctx: Context,
+        repo: String,
+        tag: String,
+        releaseName: String?,
+        assets: List<Asset>,
+        route: String?,
+        isAssetUpdate: Boolean = false,
+        addedAssets: List<Asset> = emptyList()
+    ) {
+        if (!Cfg.notifyEnabled) return
+        val version = tag.ifBlank { releaseName?.takeIf { it.isNotBlank() } ?: "未命名版本" }
+        val allNames = assets.mapNotNull { it.name?.takeIf { n -> n.isNotBlank() } }
+        val changed = (if (isAssetUpdate) addedAssets else assets)
+            .mapNotNull { it.name?.takeIf { n -> n.isNotBlank() } }
+        val fileLines = assets.take(8).joinToString("\n") { a ->
+            val size = if (a.size > 0) "（${fmtBytes(ctx, a.size)}）" else ""
+            "· ${a.name}$size"
+        }
+        val more = if (assets.size > 8) "\n… 另有 ${assets.size - 8} 个文件" else ""
+        val header = if (isAssetUpdate) {
+            if (changed.isEmpty()) "$repo 的发行版 $version 附件有变化"
+            else "$repo 的发行版 $version 新增文件：${changed.take(5).joinToString("、")}"
+        } else {
+            "$repo 发布了新发行版 $version"
+        }
+        val body = buildString {
+            append(header)
+            releaseName?.takeIf { it.isNotBlank() && it != version }?.let { append("\n名称：$it") }
+            append("\n")
+            if (allNames.isEmpty()) append("暂无附件")
+            else append("文件（${allNames.size}）：\n$fileLines$more")
+            append("\n\n点按打开这个发行版")
+        }
+        val title = if (isAssetUpdate) "发行版文件有变化 · $repo"
+        else "新发行版 $version · $repo"
+        val content = when {
+            assets.isEmpty() -> "$repo · $version · 暂无附件"
+            allNames.isEmpty() -> "$repo · $version · ${assets.size} 个文件"
+            assets.size == 1 -> "$version · ${allNames.first()} · ${fmtBytes(ctx, assets.first().size)}"
+            else -> "$version · ${assets.size} 个文件 · 首个 ${allNames.first()}"
+        }
+        val id = ("release:$repo:$version").hashCode()
+        val pi = contentIntent(ctx, route, id)
+        val builder = NotificationCompat.Builder(ctx, CH_RELEASE)
+            .setSmallIcon(R.drawable.ic_small)
+            .setContentTitle(title)
+            .setContentText(content)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setContentIntent(pi)
+            .addAction(R.drawable.ic_small, "查看发行版", pi)
+
+        val apk = assets.firstOrNull {
+            it.name.endsWith(".apk", true) && !it.browser_download_url.isNullOrBlank()
+        }
+        if (!isAssetUpdate && apk != null) {
+            val dl = Intent(ctx, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra("notif_download_url", apk.browser_download_url.orEmpty())
+                putExtra("notif_download_name", apk.name)
+                putExtra("notif_download_repo", repo)
+                putExtra("notif_download_release", version)
+            }
+            val dlPi = PendingIntent.getActivity(
+                ctx, ("release-dl:$repo:${apk.name}").hashCode(), dl,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            builder.addAction(R.drawable.ic_small, "下载 APK", dlPi)
+        }
+        safeNotify(ctx, builder.build(), id)
     }
 
     fun downloadStart(name: String) { canceledIds.remove(name.hashCode()) }

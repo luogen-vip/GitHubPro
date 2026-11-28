@@ -76,7 +76,11 @@ fun DownloadsScreen(nav: NavController) {
         val target = pendingScroll ?: return@LaunchedEffect
         val idx = active.indexOfFirst { it.fileName == target }
         if (idx >= 0) {
-            listState.scrollToItem(1 + idx)   // 0 是“正在下载 N”标题，1 开始才是进度条
+            // 列表第一项就是最新下载的进度（“正在下载 N”已经移到列表外，不占可滚动位置）。
+            listState.scrollToItem(idx, 0)
+            // 新条目第一次测量高度后可能产生 1~2dp 的位置修正，下一帧再钉一次，避免还能向上滑一小点。
+            withFrameNanos { }
+            listState.scrollToItem(idx, 0)
             pendingScroll = null
         }
     }
@@ -94,6 +98,17 @@ fun DownloadsScreen(nav: NavController) {
         val cm = ctx.getSystemService(ClipboardManager::class.java)
         cm?.setPrimaryClip(ClipData.newPlainText("链接", text))
         Toast.makeText(ctx, "已复制下载链接", Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * 所有“重新下载 / 断点重试 / 继续下载”都走这里：
+     * 先把目标文件名记为待定位，再启动任务；任务状态一出现就滚到它的进度条。
+     */
+    fun startAndLocate(name: String, start: () -> Unit) {
+        val key = Downloader.sanitize(name)
+        Downloader.touchStarted(key)
+        pendingScroll = key
+        start()
     }
 
     Scaffold(
@@ -134,12 +149,14 @@ fun DownloadsScreen(nav: NavController) {
                         fontSize = 10.sp, color = GH.yellow, modifier = Modifier.weight(1f))
                 }
             }
+            // 这条固定在列表外：列表第一项就是最新下载的进度条，定位后上方没有可滚动的标题，
+            // 不会再出现“已经到最顶部了，还能向上滑一小点”的感觉。
+            if (active.isNotEmpty()) {
+                Text("正在下载 ${active.size}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp))
+            }
             LazyColumn(Modifier.fillMaxSize(), state = listState) {
                     if (active.isNotEmpty()) {
-                        item {
-                            Text("正在下载 ${active.size}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp))
-                        }
                         items(active, key = { "active-${it.fileName}" }) { d ->
                             Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(12.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -205,9 +222,11 @@ fun DownloadsScreen(nav: NavController) {
                                 }
                                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     if (!d.url.isNullOrBlank()) TextButton({
-                                        Downloader.startDownload(ctx, d.url!!, d.fileName, Cfg.token, d.useMirror,
-                                            source = "重试下载", expectedSize = d.total)
-                                        Toast.makeText(ctx, "已继续下载（支持断点就接着下）", Toast.LENGTH_SHORT).show()
+                                        startAndLocate(d.fileName) {
+                                            Downloader.startDownload(ctx, d.url!!, d.fileName, Cfg.token, d.useMirror,
+                                                source = "重试下载", expectedSize = d.total)
+                                        }
+                                        Toast.makeText(ctx, "已继续下载（支持断点就接着下），正在定位到这条进度", Toast.LENGTH_SHORT).show()
                                     }, contentPadding = PaddingValues(horizontal = 8.dp)) {
                                         Icon(Icons.Filled.Refresh, null, Modifier.size(14.dp)); Text("断点重试", fontSize = 11.sp)
                                     }
@@ -237,9 +256,11 @@ fun DownloadsScreen(nav: NavController) {
                                 }
                                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     if (!d.url.isNullOrBlank()) TextButton({
-                                        Downloader.startDownload(ctx, d.url!!, d.fileName, Cfg.token, d.useMirror,
-                                            source = "继续下载", expectedSize = d.total)
-                                        Toast.makeText(ctx, "正在继续下载", Toast.LENGTH_SHORT).show()
+                                        startAndLocate(d.fileName) {
+                                            Downloader.startDownload(ctx, d.url!!, d.fileName, Cfg.token, d.useMirror,
+                                                source = "继续下载", expectedSize = d.total)
+                                        }
+                                        Toast.makeText(ctx, "正在继续下载，已定位到这条进度", Toast.LENGTH_SHORT).show()
                                     }, contentPadding = PaddingValues(horizontal = 8.dp)) {
                                         Icon(Icons.Filled.Refresh, null, Modifier.size(14.dp)); Text("继续下载", fontSize = 11.sp)
                                     }
@@ -299,10 +320,10 @@ fun DownloadsScreen(nav: NavController) {
                                     Icon(Icons.Filled.ContentCopy, null, Modifier.size(14.dp)); Text("复制链接", fontSize = 11.sp)
                                 }
                                 TextButton({
-                                    Downloader.retryDownload(ctx, r,
-                                        onDone = { })
-                                    // 新任务会插到列表最上面的“正在下载”区；等状态出现后精确滚到这一条的进度条。
-                                    pendingScroll = Downloader.sanitize(r.name)
+                                    // 先记目标再启动，避免状态先出现、pendingScroll 后赋值而错过定位。
+                                    startAndLocate(r.name) {
+                                        Downloader.retryDownload(ctx, r, onDone = { })
+                                    }
                                     Toast.makeText(ctx, "已开始重新下载，正在定位到这条进度", Toast.LENGTH_SHORT).show()
                                 }, contentPadding = PaddingValues(horizontal = 8.dp)) {
                                     Icon(Icons.Filled.Download, null, Modifier.size(14.dp)); Text("重新下载", fontSize = 11.sp)

@@ -73,6 +73,23 @@ class MainActivity : ComponentActivity() {
             intent.removeExtra("open_file")
             return
         }
+        val dlUrl = intent.getStringExtra("notif_download_url")
+        if (!dlUrl.isNullOrBlank()) {
+            val name = intent.getStringExtra("notif_download_name")?.takeIf { it.isNotBlank() } ?: "download.bin"
+            val repo = intent.getStringExtra("notif_download_repo")
+            val release = intent.getStringExtra("notif_download_release")
+            Downloader.startDownload(
+                this, dlUrl, name, Cfg.token, useMirror = true,
+                source = "发行版通知", repo = repo, release = release
+            )
+            DeepLinkBus.open("downloads")
+            android.widget.Toast.makeText(this, "已开始下载 $name", android.widget.Toast.LENGTH_SHORT).show()
+            intent.removeExtra("notif_download_url")
+            intent.removeExtra("notif_download_name")
+            intent.removeExtra("notif_download_repo")
+            intent.removeExtra("notif_download_release")
+            return
+        }
         val explicit = intent.getStringExtra("open_route")
         val route = when {
             !explicit.isNullOrBlank() -> explicit

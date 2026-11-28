@@ -96,6 +96,9 @@ object Downloader {
     /** 本次下载开始时间；下载管理用它把“刚点重新下载”的文件排到最前面。 */
     fun startedAtOf(name: String): Long = startedAt[sanitize(name)] ?: 0L
 
+    /** 同一个文件再次点重新下载时，也要把它提到“正在下载”最上面。 */
+    fun touchStarted(name: String) { startedAt[sanitize(name)] = System.nanoTime() }
+
     private fun isCancelled(name: String): Boolean = cancelFlags[name] == true
     private fun isMobilePaused(name: String): Boolean = mobilePauses[name] == true
 
@@ -130,7 +133,7 @@ object Downloader {
     ): Job {
         val key = sanitize(fileName)
         jobs[key]?.takeIf { it.isActive }?.let { return it }
-        startedAt[key] = System.currentTimeMillis()
+        startedAt[key] = System.nanoTime()
         Notifier.downloadStart(key)
         cancelFlags.remove(key)
         mobilePauses.remove(key)

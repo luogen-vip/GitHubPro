@@ -36,24 +36,50 @@ import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 fun parseTime(iso: String?): Instant? = try {
     if (iso == null || iso.isBlank()) null else Instant.parse(iso)
 } catch (e: Exception) { null }
 
 fun timeAgo(iso: String?): String {
-    val t = parseTime(iso) ?: return ""
-    val now = Instant.now()
+    if (iso.isNullOrBlank()) return ""
+    // 全 App 统一用日历时间：今天/昨天/前天显示清楚，更早显示具体日期，避免“1 天前”把 47 小时说成 1 天。
+    return notifTime(iso)
+}
+
+private val NOTIF_HM = DateTimeFormatter.ofPattern("HH:mm", Locale.CHINA)
+private val NOTIF_MD = DateTimeFormatter.ofPattern("M月d日", Locale.CHINA)
+private val NOTIF_YMD = DateTimeFormatter.ofPattern("yyyy年M月d日", Locale.CHINA)
+
+/**
+ * 通知时间：今天显示“刚刚 / X 分钟前 / 今天 HH:mm”，跨天一律带日期。
+ * 不能只显示 HH:mm：昨天的通知会被误看成今天；到第二天也必须自动从“今天”变成“昨天”。
+ */
+fun notifTime(iso: String?, nowMs: Long = System.currentTimeMillis()): String {
+    val t = parseTime(iso) ?: return "时间未知"
+    if (t.toEpochMilli() <= 0L) return "时间未知"
+    val zone = ZoneId.systemDefault()
+    val now = Instant.ofEpochMilli(nowMs)
+    val at = t.atZone(zone)
+    val nowAt = now.atZone(zone)
     val sec = Duration.between(t, now).seconds
+
+    // GitHub/本机时间偶尔有几秒时钟偏差，极小未来时间仍按“刚刚”，不显示负数。
+    if (sec in -60L..59L) return "刚刚"
+
+    if (at.toLocalDate() == nowAt.toLocalDate()) {
+        if (sec in 60L..3599L) return "${sec / 60} 分钟前"
+        return "今天 ${at.format(NOTIF_HM)}"
+    }
+
+    val date = at.toLocalDate()
+    val today = nowAt.toLocalDate()
     return when {
-        sec < 0 -> "刚刚"
-        sec < 60 -> "刚刚"
-        sec < 3600 -> "${sec / 60} 分钟前"
-        sec < 86400 -> "${sec / 3600} 小时前"
-        sec < 86400 * 7 -> "${sec / 86400} 天前"
-        sec < 86400 * 30L -> "${sec / (86400 * 7)} 周前"
-        sec < 86400 * 365L -> "${sec / (86400 * 30)} 个月前"
-        else -> "${sec / (86400 * 365)} 年前"
+        date == today.minusDays(1) -> "昨天 ${at.format(NOTIF_HM)}"
+        date == today.minusDays(2) -> "前天 ${at.format(NOTIF_HM)}"
+        date.year == today.year -> "${date.format(NOTIF_MD)} ${at.format(NOTIF_HM)}"
+        else -> "${date.format(NOTIF_YMD)} ${at.format(NOTIF_HM)}"
     }
 }
 
@@ -176,6 +202,8 @@ fun reasonCn(r: String?): String = when (r) {
     "star" -> "新增 Star"
     "run" -> "工作流动态"
     "run_start" -> "工作流开始"
+    "release" -> "新发行版"
+    "release_asset" -> "发行版附件更新"
     else -> r ?: ""
 }
 

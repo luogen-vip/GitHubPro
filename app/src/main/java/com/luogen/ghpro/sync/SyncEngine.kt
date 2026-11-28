@@ -84,6 +84,7 @@ object SyncEngine {
         val token = Cfg.token ?: return emptyList()
         Api.token = token
         val changes = ArrayList<Change>()
+        val apiReleaseRoutes = HashSet<String>()
         val root = snapRoot()
         val repoSnap = root.getAsJsonObject("repos") ?: JsonObject().also { root.add("repos", it) }
         val runSnap = root.getAsJsonObject("runs") ?: JsonObject().also { root.add("runs", it) }
@@ -96,6 +97,10 @@ object SyncEngine {
         // 1. 通知
         try {
             val list = Api.notifications(all = false)
+            // 记录 GitHub 通知接口已经覆盖的发行版路由，避免下面轮询再生成一条重复的本地通知。
+            list.filter { it.subject?.type == "Release" }.forEach { n ->
+                notificationRoute(n)?.let { apiReleaseRoutes.add(it) }
+            }
             val seen = Cfg.lastSeenNotificationIds
             val firstRun = seen.isEmpty()
             val fresh = list.filter { n ->
@@ -140,12 +145,27 @@ object SyncEngine {
                         else -> "GitHub 通知"
                     }
                     val body = "${n.subject?.title ?: ""}\n$repo  ·  ${com.luogen.ghpro.ui.reasonCn(n.reason)}"
-                    Notifier.generic(ctx, title, body, notificationRoute(n))
+                    val route = notificationRoute(n)
+                    if (subjectType == "Release" && repo.isNotBlank()) {
+                        val parts = repo.split("/")
+                        val relId = Regex("/releases/(\\d+)").find(n.subject?.url ?: "")
+                            ?.groupValues?.getOrNull(1)?.toLongOrNull()
+                        val rel = if (parts.size == 2 && relId != null) {
+                            runCatching { Api.release(parts[0], parts[1], relId) }.getOrNull()
+                        } else null
+                        if (rel != null) {
+                            Notifier.release(ctx, repo, rel.tag_name, rel.name, rel.assets ?: emptyList(), route)
+                        } else {
+                            Notifier.generic(ctx, title, body, route)
+                        }
+                    } else {
+                        Notifier.generic(ctx, title, body, route)
+                    }
                     changes.add(Change(title, body, when {
                         subjectType == "PullRequest" && prMerged -> "pull_merge"
                         subjectType == "PullRequest" -> "pull_state"
                         else -> "notification"
-                    }, notificationRoute(n)))
+                    }, route))
                 }
             }
         } catch (e: Exception) { }
@@ -279,7 +299,7 @@ object SyncEngine {
                 if (!muted && repoDue) {
                     repoChecked.addProperty(full, now)
                     val repo = runCatching { Api.repo(o, r) }.getOrNull()
-                    val rel = runCatching { Api.releases(o, r).items.firstOrNull() }.getOrNull()
+                    val rel = runCatching { Api.releases(o, r).items.firstOrNull { !it.draft } }.getOrNull()
                     val oldRepo = repoSnap.getAsJsonObject(full)
                     if (repo != null && oldRepo != null) {
                         val oldPushed = oldRepo.get("pushed")?.asString
@@ -301,8 +321,10 @@ object SyncEngine {
                             }
                             val body = "$full 发布了新发行版 $newTag$fileLine"
                             val route = rel?.id?.takeIf { it > 0 }?.let { "release/$full/$it" } ?: repoRoute(full)
-                            Notifier.generic(ctx, "新发行版 $newTag", body, route)
-                            changes.add(Change("新发行版", body, "release", route))
+                            if (route !in apiReleaseRoutes) {
+                                Notifier.release(ctx, full, newTag, rel?.name, rel?.assets ?: emptyList(), route)
+                            }
+                            changes.add(Change("新发行版 $newTag · $full", body, "release", route))
                         } else {
                             // 同一个发行版后来又传附件：也要提醒，并点名新增文件
                             val hadAssets = oldRepo.has("assets")
@@ -317,8 +339,14 @@ object SyncEngine {
                                     "$full 的发行版 $newTag 新增文件：" + added.take(5).joinToString("、")
                                 }
                                 val route = rel?.id?.takeIf { it > 0 }?.let { "release/$full/$it" } ?: repoRoute(full)
-                                Notifier.generic(ctx, "发行版附件更新", body, route)
-                                changes.add(Change("发行版附件更新", body, "release_asset", route))
+                                if (route !in apiReleaseRoutes) {
+                                    val addedAssets = rel?.assets?.filter { it.name in added } ?: emptyList()
+                                    Notifier.release(ctx, full, newTag, rel?.name, rel?.assets ?: emptyList(), route,
+                                        isAssetUpdate = true, addedAssets = addedAssets)
+                                }
+                                val title = if (added.isEmpty()) "发行版 $newTag 文件有变化 · $full"
+                                else "发行版 $newTag 新增文件 · $full"
+                                changes.add(Change(title, body, "release_asset", route))
                             }
                         }
                     }
@@ -355,7 +383,9 @@ object SyncEngine {
             val stamp = System.currentTimeMillis()
             changes.forEachIndexed { i, c ->
                 // GitHub notifications 接口已经会展示的事件不再重复记一份，避免通知页出现两条。
-                if (c.kind in setOf("notification", "repo_gone", "repo_rename", "release", "release_asset", "pull_state", "pull_merge")) return@forEachIndexed
+                // 发行版例外：接口没有覆盖时，轮询到的真实发行版也要能在通知页看到；接口已覆盖才跳过。
+                if (c.kind in setOf("notification", "repo_gone", "repo_rename", "pull_state", "pull_merge")) return@forEachIndexed
+                if ((c.kind == "release" || c.kind == "release_asset") && c.route != null && c.route in apiReleaseRoutes) return@forEachIndexed
                 Cfg.addLocalNotice(LocalNotice(
                     id = "local:$stamp:$i:${c.kind}",
                     title = c.title,
