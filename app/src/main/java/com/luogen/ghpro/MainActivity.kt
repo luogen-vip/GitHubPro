@@ -15,7 +15,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import com.luogen.ghpro.data.Api
+import com.luogen.ghpro.data.Bus
 import com.luogen.ghpro.data.Cfg
+import com.luogen.ghpro.data.UserStatus
 import com.luogen.ghpro.ui.GHTheme
 import com.luogen.ghpro.ui.NavRoot
 import com.luogen.ghpro.ui.FilePreviewDialog
@@ -26,9 +29,19 @@ import com.luogen.ghpro.data.NetworkTools
 import com.luogen.ghpro.data.NetPrompts
 import com.luogen.ghpro.download.Downloader
 import com.luogen.ghpro.sync.Notifier
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val notifPerm = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private val statusScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var statusJob: Job? = null
 
     private fun openRouteFromRepo(repo: String?): String? {
         if (!repo.isNullOrBlank()) return "repo/${repo.trim('/')}"
@@ -100,6 +113,41 @@ class MainActivity : ComponentActivity() {
         intent.removeExtra("open_route")
         intent.removeExtra("open_url")
         intent.removeExtra("open_repo")
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // 只要 App 在前台就轻量轮询“我的状态”：外部 GitHub 改/清除后，首页和设置最多约 2 秒内同步。
+        statusJob?.cancel()
+        statusJob = statusScope.launch {
+            while (isActive) {
+                if (!Cfg.token.isNullOrBlank()) {
+                    runCatching { Api.myStatus() }.onSuccess { fresh ->
+                        val current = UserStatus(
+                            Cfg.statusEmoji, Cfg.statusMessage, Cfg.statusBusy, Cfg.statusExpiresAt,
+                            Cfg.statusOrgId, Cfg.statusOrgLogin, Cfg.statusOrgName
+                        )
+                        if (fresh != current) {
+                            Cfg.saveStatus(fresh)
+                            Bus.statusChanged()
+                        }
+                    }
+                }
+                delay(2_000L)
+            }
+        }
+    }
+
+    override fun onStop() {
+        statusJob?.cancel()
+        statusJob = null
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        statusJob?.cancel()
+        statusScope.cancel()
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {

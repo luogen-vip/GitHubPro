@@ -62,6 +62,7 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
     val snackbar = remember { SnackbarHostState() }
     val isMe = Cfg.login == login
     val followVer by Bus.followPoke.collectAsState()
+    val statusVer by Bus.statusPoke.collectAsState()
     var otherStatus by remember { mutableStateOf<UserStatus?>(null) }
 
     // 别人的状态是真实 GitHub 状态；开着主页时轮询，别人清除/修改后这里会自动更新。
@@ -168,7 +169,9 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
                                             Text(it, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
                                                 modifier = Modifier.clickable { showProfileDetail = true })
                                         }
-                                        val shownStatus = if (isMe) myStatusLine() else statusLine(otherStatus)
+                                        val shownStatus = remember(statusVer, isMe, otherStatus) {
+                                            if (isMe) myStatusLine() else statusLine(otherStatus)
+                                        }
                                         if (!shownStatus.isNullOrBlank()) {
                                             Text(shownStatus, fontSize = 11.sp, color = GH.blue,
                                                 maxLines = 2, overflow = TextOverflow.Ellipsis,
@@ -391,7 +394,9 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
 
     if (showProfileDetail && u != null) {
         val me = u!!
-        val detailStatus = if (isMe) myStatusLine() else statusLine(otherStatus)
+        val detailStatus = remember(statusVer, isMe, otherStatus) {
+            if (isMe) myStatusLine() else statusLine(otherStatus)
+        }
         AlertDialog(
             onDismissRequest = { showProfileDetail = false },
             title = { Text("完整资料", fontSize = 15.sp) },

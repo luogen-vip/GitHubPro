@@ -91,18 +91,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
 
     LaunchedEffect(Unit) { watching = WatchService.running.value }
 
-    // 只在进入设置页时同步状态，之后每 10 秒静默对齐一次；滚动不会触发，不再反复“正在读取”。
-    LaunchedEffect(Unit) {
-        if (Cfg.token.isNullOrBlank()) return@LaunchedEffect
-        runCatching { Api.myStatus() }.onSuccess { Cfg.saveStatus(it); Bus.statusChanged() }
-        while (isActive) {
-            delay(10_000L)
-            runCatching { Api.myStatus() }.onSuccess { fresh ->
-                val current = UserStatus(Cfg.statusEmoji, Cfg.statusMessage, Cfg.statusBusy, Cfg.statusExpiresAt)
-                if (fresh != current) { Cfg.saveStatus(fresh); Bus.statusChanged() }
-            }
-        }
-    }
+    // 我的状态由 MainActivity 的前台监听统一同步；这里不再单独轮询，避免多个请求互相覆盖。
 
     // 重装后监听列表为空时，自动把你的仓库 + 已 Star 的仓库补进来（只补一次，删掉不会复活）。
     LaunchedEffect(Unit) {
