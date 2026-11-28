@@ -79,7 +79,7 @@ fun DiscussionsTab(nav: NavController, owner: String, name: String, repo: Repo) 
         }
         load(showLoading = list.isEmpty())
         while (isActive) {
-            delay(4_000L)
+            delay(2_000L)
             load(showLoading = false, silent = true)
         }
     }
@@ -191,7 +191,7 @@ fun DiscussionDetailScreen(nav: NavController, owner: String, name: String, numb
     LaunchedEffect(number) {
         load()
         while (isActive) {
-            delay(4_000L)
+            delay(2_000L)
             load(silent = true)
         }
     }

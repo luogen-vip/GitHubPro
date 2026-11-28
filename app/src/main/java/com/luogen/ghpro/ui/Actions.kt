@@ -82,8 +82,8 @@ fun ActionsTab(nav: NavController, owner: String, name: String, repo: Repo) {
     LaunchedEffect(owner, name) { load(silent = runs.isNotEmpty()) }
     LaunchedEffect(autoOn) {
         while (isActive && autoOn) {
-            // 工作流列表始终 2 秒刷新：新运行、开始、成功、失败都尽快出现。
-            delay(2_000L)
+            // 工作流列表 1 秒刷新：新运行、开始、成功、失败都尽快出现。
+            delay(1_000L)
             load(true)
         }
     }
@@ -238,8 +238,8 @@ fun RunDetailScreen(nav: NavController, owner: String, name: String, runId: Long
         while (isActive && auto) {
             val st = run?.status
             if (st != "in_progress" && st != "queued" && st != "pending") break
-            // 运行详情必须实时：进行中每 3 秒拉一次；不重复拉产物，避免浪费 API 额度。
-            delay(3_000L)
+            // 运行详情必须实时：进行中每 2 秒拉一次；不重复拉产物，避免浪费 API 额度。
+            delay(2_000L)
             load(includeArtifacts = false)
         }
         // 刚结束时补一次产物列表；产物只在运行结束后才稳定。

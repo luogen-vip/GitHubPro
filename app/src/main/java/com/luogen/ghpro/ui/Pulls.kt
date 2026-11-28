@@ -102,10 +102,10 @@ fun PullListTab(nav: NavController, owner: String, name: String) {
     }
     LaunchedEffect(state) {
         while (isActive) {
-            delay(4_000L)
+            delay(2_000L)
             if (page == 1 && !loading) {
                 val at = UiCache.pullSyncAt[listKey()] ?: 0L
-                if (System.currentTimeMillis() - at >= 4_000L) runCatching { load(1, true, silent = true) }
+                if (System.currentTimeMillis() - at >= 2_000L) runCatching { load(1, true, silent = true) }
             }
         }
     }
@@ -206,7 +206,7 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
     LaunchedEffect(number) { load() }
     LaunchedEffect(number) {
         while (isActive) {
-            delay(3_000L)
+            delay(2_000L)
             if (!busy) runCatching { load() }
         }
     }

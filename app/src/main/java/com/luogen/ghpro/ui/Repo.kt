@@ -170,7 +170,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
     // 仓库统计（Star/复刻/关注/议题）自动追最新，别人操作也能看到
     LaunchedEffect(owner, name) {
         while (isActive) {
-            delay(5_000L)
+            delay(2_000L)
             if (!loading && statPending == 0) runCatching {
                 val fresh = Api.repo(owner, name)
                 repo = fresh
@@ -328,6 +328,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                             DropdownMenuItem(text = { Text("刷新最新状态") }, leadingIcon = { Icon(Icons.Filled.Refresh, null) }, onClick = {
                                 showMenu = false
                                 Api.invalidateGetCache()
+                                Api.invalidateConditionalCache()
                                 UiCache.repoData.remove(key); UiCache.repoRuns.remove(key); UiCache.repoIssues.remove(key)
                                 UiCache.repoPulls.remove(key); UiCache.repoReleases.remove(key); UiCache.repoCommits.remove(key)
                                 UiCache.codeListing.keys.filter { it.startsWith("$key|") }.forEach { UiCache.codeListing.remove(it) }
@@ -927,7 +928,7 @@ fun CommitsTab(nav: NavController, owner: String, name: String, repo: Repo) {
     }
     LaunchedEffect(branch) {
         while (isActive) {
-            delay(6_000L)
+            delay(2_000L)
             if (page == 1 && !loading) runCatching { load(1, true, silent = true) }
         }
     }
@@ -989,7 +990,7 @@ fun ContributorsTab(nav: NavController, owner: String, name: String) {
                 UiCache.repoContributors[ck] = it
             }
             loading = false
-            delay(8_000L)
+            delay(3_000L)
         }
     }
     if (loading) { LoadingBox(); return }

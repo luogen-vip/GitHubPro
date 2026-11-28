@@ -146,10 +146,10 @@ fun IssueListTab(nav: NavController, owner: String, name: String) {
     // 页面停留时后台补最新；不阻塞列表，也不改变当前滚动位置。
     LaunchedEffect(state) {
         while (isActive) {
-            delay(4_000L)
+            delay(2_000L)
             if (page == 1 && !loading) {
                 val at = UiCache.issueSyncAt[listKey()] ?: 0L
-                if (System.currentTimeMillis() - at >= 4_000L) runCatching { load(1, true, silent = true) }
+                if (System.currentTimeMillis() - at >= 2_000L) runCatching { load(1, true, silent = true) }
             }
         }
     }
@@ -367,7 +367,7 @@ fun IssueDetailScreen(nav: NavController, owner: String, name: String, number: I
         if (UiCache.repoData["$owner/$name"] == null) runCatching { UiCache.repoData["$owner/$name"] = Api.repo(owner, name) }
         load()
         while (isActive) {
-            delay(2_000L)
+            delay(1_000L)
             if (pendingOps == 0) {
                 runCatching {
                     val fresh = Api.issue(owner, name, number)

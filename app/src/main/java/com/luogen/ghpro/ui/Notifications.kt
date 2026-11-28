@@ -352,7 +352,7 @@ fun NotificationsScreen(nav: NavController) {
     // 通知页停留时每 5 秒真实拉一次远端；本地动态仍由 Bus.tick 立即合并。
     LaunchedEffect(all) {
         while (isActive) {
-            delay(5_000L)
+            delay(1_000L)
             if (!loading) load(showLoading = false, silent = true)
         }
     }

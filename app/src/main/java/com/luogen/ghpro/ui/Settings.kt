@@ -204,7 +204,7 @@ fun SettingsScreen(nav: NavController, onThemeChange: () -> Unit) {
                 fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
             SwitchRow("移动数据下载前确认", mobileDlWarn) { mobileDlWarn = it; Cfg.mobileDownloadWarn = it }
             SwitchRow("使用移动数据浏览时提醒", mobileBrowseWarn) { mobileBrowseWarn = it; Cfg.mobileBrowseWarn = it }
-            SliderRow("监听间隔", poll, 8f..120f, "${poll} 秒") {
+            SliderRow("监听间隔", poll, 2f..120f, "${poll} 秒") {
                 poll = it; Cfg.pollSeconds = it
             }
             SwitchRow("后台实时监听（前台服务）", watching) {

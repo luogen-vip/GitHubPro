@@ -30,15 +30,20 @@ class WatchService : Service() {
         running.value = true
         startForeground(1001, Notifier.serviceNotification(this, "正在实时监听工作流与通知"))
         job = scope.launch {
+            var tick = 0
             while (isActive) {
                 try {
-                    val changes = SyncEngine.syncOnce(this@WatchService, true)
+                    // 每轮只拉通知；每隔约 60 秒才做一次全量仓库/工作流扫描。
+                    // 这样通知能 2 秒巡检，又不会每 2 秒把几十个仓库全请求一遍。
+                    val full = tick % 30 == 0
+                    val changes = SyncEngine.syncOnce(this@WatchService, true, full)
+                    tick++
                     running.value = true
                     lastText.value = if (changes.isEmpty()) "刚刚同步 · 无新变化" else "发现 ${changes.size} 条新变化"
                 } catch (e: Exception) {
                     lastText.value = "同步失败：${e.message}"
                 }
-                delay((Cfg.pollSeconds.coerceIn(8, 300)) * 1000L)
+                delay((Cfg.pollSeconds.coerceIn(2, 300)) * 1000L)
             }
         }
     }

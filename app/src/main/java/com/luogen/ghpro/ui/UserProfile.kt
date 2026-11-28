@@ -72,7 +72,7 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
     LaunchedEffect(login) {
         while (true) {
             runCatching { Api.userStatus(login) }.onSuccess { otherStatus = it }
-            kotlinx.coroutines.delay(8_000L)
+            kotlinx.coroutines.delay(4_000L)
         }
     }
 
@@ -117,7 +117,7 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
     // 关注者/正在关注是实时数字：别人关注/取关我、我关注/取关别人，页面开着也要自动更新。
     LaunchedEffect(login) {
         while (true) {
-            kotlinx.coroutines.delay(5_000L)
+            kotlinx.coroutines.delay(2_000L)
             runCatching { Api.user(login) }.onSuccess { fresh ->
                 u = fresh
                 UiCache.userData[login] = fresh

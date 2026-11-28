@@ -75,12 +75,14 @@ object SyncEngine {
 
     /**
      * 一次真实同步：拉取通知 / 我的仓库 Star 变化 / 关注仓库的工作流状态变化。
+     * @param full true 才顺带检查 Star 变化、自己的仓库、工作流/发行版；
+     *             false 只拉通知，给前台监听做 2 秒级巡检，避免每 2 秒把所有仓库扫一遍。
      */
-    suspend fun syncOnce(ctx: Context, notify: Boolean = true): List<Change> = lock.withLock {
-        syncOnceLocked(ctx, notify)
+    suspend fun syncOnce(ctx: Context, notify: Boolean = true, full: Boolean = true): List<Change> = lock.withLock {
+        syncOnceLocked(ctx, notify, full)
     }
 
-    private suspend fun syncOnceLocked(ctx: Context, notify: Boolean = true): List<Change> {
+    private suspend fun syncOnceLocked(ctx: Context, notify: Boolean = true, full: Boolean = true): List<Change> {
         val token = Cfg.token ?: return emptyList()
         Api.token = token
         val changes = ArrayList<Change>()
@@ -111,7 +113,7 @@ object SyncEngine {
                 true
             }
             val newSeen = (seen + list.map { it.id }).toList().takeLast(300).toSet()
-            Cfg.lastSeenNotificationIds = newSeen
+            if (newSeen != seen) Cfg.lastSeenNotificationIds = newSeen
             if (notify && fresh.isNotEmpty() && !firstRun) {
                 fresh.take(5).forEach { n ->
                     val repo = n.repository?.full_name ?: ""
@@ -179,7 +181,7 @@ object SyncEngine {
         } catch (e: Exception) { }
 
         // 1.5 已 Star 的仓库被作者删除 / 转私有 / 改名：真实复查，发现就通知，不是靠列表消失猜
-        try {
+        if (full) try {
             val starredNow = ArrayList<String>()
             var sp = 1
             while (sp <= 3) {
@@ -216,7 +218,7 @@ object SyncEngine {
         } catch (e: Exception) { }
 
         // 2. 我的仓库 Star / 更新时间变化
-        try {
+        if (full) try {
             val repos = ArrayList<Repo>()
             var mp = 1
             while (mp <= 3) {
@@ -293,7 +295,7 @@ object SyncEngine {
             runSnap.add(key, o2)
         }
 
-        try {
+        if (full) try {
             // 服务端真实订阅的仓库 + 自己的仓库 + 本机关注的仓库都要看发行版；
             // 自己的仓库即使没手动 Watch，也能收到新发行版，不会出现“仓库里有发行版但 App 不提醒”。
             val ownRepos = runCatching { Api.myRepos(1, 30).items.map { it.full_name } }.getOrDefault(emptyList())
@@ -433,7 +435,7 @@ object SyncEngine {
             }
         }
         // 不再把“我的仓库 + 已 Star 的仓库”播种成监听；通知必须基于服务端真实订阅。
-        save(root)
+        if (full) save(root)
         if (changes.isNotEmpty()) Bus.poke()
         return changes
     }

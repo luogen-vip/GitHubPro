@@ -203,7 +203,7 @@ fun CodeTab(nav: NavController, owner: String, name: String, repo: Repo) {
     // 静默刷新，不闪 loading、不重置滚动位置。
     LaunchedEffect(branch, path) {
         while (isActive) {
-            delay(1_500L)
+            delay(1_000L)
             if (!selecting && !uploading && !deleting && deleteKey !in UiCache.deletingCode) runCatching { load(silent = true) }
         }
     }
@@ -666,7 +666,7 @@ fun FileScreen(nav: NavController, owner: String, name: String, branch: String, 
     }
     LaunchedEffect(path) {
         if (!isNew) while (isActive) {
-            delay(2_000L)
+            delay(1_000L)
             if (previewKind == "text" && !editing && !loading && !fatal404 && "$owner/$name|$branch" !in UiCache.deletingCode) runCatching { load(true) }
         }
     }

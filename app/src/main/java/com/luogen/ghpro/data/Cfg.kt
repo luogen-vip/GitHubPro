@@ -110,8 +110,18 @@ object Cfg {
         set(v) { sp.edit().putInt("threads", v).apply() }
 
     var pollSeconds: Int
-        get() = sp.getInt("poll_s", 20)
-        set(v) { sp.edit().putInt("poll_s", v).apply() }
+        // 前台监听默认 2 秒；老版本默认 20 秒只迁移一次，之后用户自己选的值仍优先。
+        get() {
+            val v = sp.getInt("poll_s", 2)
+            if (v == 20 && !sp.getBoolean("poll_fast_migrated", false)) {
+                sp.edit().putInt("poll_s", 2).putBoolean("poll_fast_migrated", true).apply()
+                return 2
+            }
+            return v
+        }
+        set(v) {
+            sp.edit().putInt("poll_s", v).putBoolean("poll_fast_migrated", true).apply()
+        }
 
     /** 单独关掉通知的仓库，默认全部开启。 */
     private fun mutedSet(): MutableSet<String> =

@@ -72,6 +72,7 @@ fun HomeScreen(nav: NavController) {
     var loadingMore by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var reqGen by remember { mutableStateOf(0) }
+    var silentBusy by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf(UiCache.homeTab) }   // 0 我的仓库 1 已 Star
     var sort by remember { mutableStateOf(UiCache.homeSort) }
     var lang by remember { mutableStateOf<String?>(null) }
@@ -153,10 +154,13 @@ fun HomeScreen(nav: NavController) {
     }
 
     suspend fun refreshSilently() {
+        if (silentBusy) return
+        silentBusy = true
         val req = ++reqGen
         val t = tab
         val s = sort
         val pg0 = page
+        try {
         runCatching {
             if (pg0 > 1) {
                 val all = ArrayList<Repo>()
@@ -181,6 +185,9 @@ fun HomeScreen(nav: NavController) {
             }
             if (req == reqGen && t == tab && s == sort)
                 UiCache.homeSnaps["$t|$s"] = HomeSnap(repos, page, hasNext)
+        }
+        } finally {
+            silentBusy = false
         }
     }
 
@@ -238,7 +245,7 @@ fun HomeScreen(nav: NavController) {
         runCatching { Api.me() }.onSuccess { me = it; UiCache.homeMe = it }
         if (safeMode) return@LaunchedEffect
         while (isActive) {
-            delay(5_000L)
+            delay(2_000L)
             // 关注数不受“自动刷新仓库”开关影响：它必须始终反映真实数字。
             runCatching { Api.me() }.onSuccess { me = it; UiCache.homeMe = it }
             if (Cfg.autoRefresh && !loading && !loadingMore) refreshSilently()

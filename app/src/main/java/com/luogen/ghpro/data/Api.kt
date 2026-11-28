@@ -77,8 +77,14 @@ object Api {
 
     // 页面快速切换时，多个组件可能同时拉同一个 GET：短缓存负责“秒回”，
     // in-flight 合并负责“同一个请求只打一次网络”。写入操作成功后立刻清空，避免旧数据盖新数据。
-    private const val GET_CACHE_MS = 1_200L
+    private const val GET_CACHE_MS = 800L
     private data class CachedResp(val resp: Resp, val at: Long)
+    // ETag 条件请求：数据没变时 GitHub 返回 304，带认证的 304 不消耗主速率额度。
+    // 这样页面可以 1 秒巡检一次，而不是为了省额度把刷新拖到 20 秒。
+    private data class ETagEntry(val etag: String, val body: String, val headers: Headers)
+    private val etagCache = object : LinkedHashMap<String, ETagEntry>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ETagEntry>?): Boolean = size > 32
+    }
     private val getCache = object : LinkedHashMap<String, CachedResp>(32, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CachedResp>?): Boolean = size > 48
     }
@@ -116,12 +122,20 @@ object Api {
         synchronized(getLock) { getCache[key] = CachedResp(resp, System.currentTimeMillis()) }
     }
 
-    /** 手动“刷新最新状态”时调用：不能被 1.2 秒缓存挡住。 */
+    /** 手动“刷新最新状态”时调用：不能被 0.8 秒短缓存挡住。 */
     fun invalidateGetCache() {
         synchronized(getLock) {
             cacheGen++
             getCache.clear()
         }
+    }
+
+    private fun etagKey(url: String, accept: String): String =
+        "${token?.hashCode() ?: 0}|$accept|$url"
+
+    /** 手动刷新时连条件缓存也丢掉，强制拿完整最新响应。 */
+    fun invalidateConditionalCache() {
+        synchronized(getLock) { etagCache.clear() }
     }
 
     val gson: Gson = GsonBuilder().setLenient().create()
@@ -270,12 +284,16 @@ object Api {
         onProgress: ((Long, Long) -> Unit)?,
         client: OkHttpClient
     ): Resp = withContext(Dispatchers.IO) {
+        val requestUrl = absoluteUrl ?: buildUrl(path, query)
+        val ekey = if (method == "GET") etagKey(requestUrl, accept) else null
+        val saved = ekey?.let { k -> synchronized(getLock) { etagCache[k] } }
         val b = Request.Builder()
-            .url(absoluteUrl ?: buildUrl(path, query))
+            .url(requestUrl)
             .header("User-Agent", "GitHubPro/1.0 (Android)")
             .header("Accept", accept)
             .header("X-GitHub-Api-Version", "2022-11-28")
         token?.takeIf { it.isNotBlank() }?.let { b.header("Authorization", "Bearer $it") }
+        saved?.let { b.header("If-None-Match", it.etag) }
         extraHeaders.forEach { (k, v) -> b.header(k, v) }
         val rawBody = when {
             method == "GET" -> null
@@ -292,6 +310,10 @@ object Api {
         resp.use {
             val text = it.body?.string() ?: ""
             it.header("X-RateLimit-Remaining")?.toIntOrNull()?.let { r -> lastRateRemaining = r }
+            if (it.code == 304 && saved != null) {
+                // 304 没有正文，用上次真实响应；Link 分页头也必须沿用旧响应。
+                return@use Resp(saved.body, saved.headers, 200)
+            }
             if (it.code !in 200..299) {
                 val msg = try {
                     val o = JsonParser.parseString(text).asJsonObject
@@ -305,6 +327,12 @@ object Api {
                     else -> msg
                 }
                 throw ApiException(it.code, hint, text)
+            }
+            if (ekey != null) {
+                val etag = it.header("ETag")
+                if (etag != null && text.length <= 512_000) {
+                    synchronized(getLock) { etagCache[ekey] = ETagEntry(etag, text, it.headers) }
+                }
             }
             Resp(text, it.headers, it.code)
         }
