@@ -96,16 +96,16 @@ fun PullListTab(nav: NavController, owner: String, name: String) {
         list = cached.orEmpty()
         loading = cached == null && syncAt == null
         error = null
-        val fresh = syncAt != null && System.currentTimeMillis() - syncAt < 30_000L
+        // 缓存先秒开，进入页面立刻静默核对最新；不要因为“不到 30 秒”就显示旧列表。
         if (cached == null || syncAt == null) load(1, true)
-        else if (!fresh) load(1, true, silent = true)
+        else load(1, true, silent = true)
     }
     LaunchedEffect(state) {
         while (isActive) {
-            delay(10_000L)
+            delay(4_000L)
             if (page == 1 && !loading) {
                 val at = UiCache.pullSyncAt[listKey()] ?: 0L
-                if (System.currentTimeMillis() - at >= 10_000L) runCatching { load(1, true, silent = true) }
+                if (System.currentTimeMillis() - at >= 4_000L) runCatching { load(1, true, silent = true) }
             }
         }
     }
@@ -206,7 +206,7 @@ fun PullDetailScreen(nav: NavController, owner: String, name: String, number: In
     LaunchedEffect(number) { load() }
     LaunchedEffect(number) {
         while (isActive) {
-            delay(5_000L)
+            delay(3_000L)
             if (!busy) runCatching { load() }
         }
     }

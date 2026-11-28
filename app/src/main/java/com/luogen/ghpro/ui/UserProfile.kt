@@ -33,6 +33,8 @@ import com.luogen.ghpro.data.Cfg
 import com.luogen.ghpro.data.Repo
 import com.luogen.ghpro.data.User
 import com.luogen.ghpro.data.UserStatus
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
@@ -76,16 +78,26 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
 
     suspend fun load() {
         try {
-            u = Api.user(login)
-            reposLoading = true
-            repos = Api.userRepos(login, 1, 60).items
-            reposLoading = false
-            u?.let { UiCache.userData[login] = it }
-            UiCache.userRepos[login] = repos
-            following = UiCache.followOverride(login)
-                ?: runCatching { Api.isFollowing(login) }.getOrDefault(false)
+            // 用户资料、仓库列表、关注状态并发取；有缓存时页面先显示，网络回来再覆盖。
+            coroutineScope {
+                val userJob = async { Api.user(login) }
+                val reposJob = async { Api.userRepos(login, 1, 60) }
+                val followStateJob = async {
+                    UiCache.followOverride(login)
+                        ?: runCatching { Api.isFollowing(login) }.getOrDefault(false)
+                }
+                val freshUser = userJob.await()
+                val freshRepos = reposJob.await()
+                u = freshUser
+                reposLoading = repos.isEmpty()
+                repos = freshRepos.items
+                following = followStateJob.await()
+                freshUser?.let { UiCache.userData[login] = it }
+                UiCache.userRepos[login] = repos
+            }
             error = null
-        } catch (e: Exception) { error = e.message }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { error = e.message }
         reposLoading = false
         loading = false
     }
@@ -110,6 +122,11 @@ fun UserScreen(nav: NavController, login: String, initialPeople: Int = -1) {
                 u = fresh
                 UiCache.userData[login] = fresh
                 if (Cfg.login == login) UiCache.homeMe = fresh
+            }
+            // 仓库页签开着时，别人新建/改名的仓库也要跟上来；不闪 loading、不打断滚动。
+            if (tab == 0 && !reposLoading) runCatching { Api.userRepos(login, 1, 60) }.onSuccess { fresh ->
+                repos = fresh.items
+                UiCache.userRepos[login] = fresh.items
             }
         }
     }

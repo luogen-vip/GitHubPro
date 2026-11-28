@@ -10,6 +10,7 @@ import java.io.IOException
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CompletableDeferred
 import okhttp3.Headers
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MediaType
@@ -73,6 +74,55 @@ object Api {
     @Volatile var base: String = "https://api.github.com"
     @Volatile var lastRateRemaining: Int = -1
     @Volatile var useCacheOnly: Boolean = false
+
+    // 页面快速切换时，多个组件可能同时拉同一个 GET：短缓存负责“秒回”，
+    // in-flight 合并负责“同一个请求只打一次网络”。写入操作成功后立刻清空，避免旧数据盖新数据。
+    private const val GET_CACHE_MS = 1_200L
+    private data class CachedResp(val resp: Resp, val at: Long)
+    private val getCache = object : LinkedHashMap<String, CachedResp>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CachedResp>?): Boolean = size > 48
+    }
+    private val getLock = Any()
+    private val getInFlight = HashMap<String, CompletableDeferred<Resp>>()
+    @Volatile private var cacheGen = 0
+
+    private fun cacheKey(
+        path: String,
+        method: String,
+        body: String?,
+        query: Map<String, String?>,
+        accept: String,
+        absoluteUrl: String?,
+        extraHeaders: Map<String, String>,
+        onProgress: ((Long, Long) -> Unit)?
+    ): String? {
+        if (method != "GET" || body != null || onProgress != null || path == "/graphql") return null
+        if (path.contains("/contents/")) return null // 文件正文可能很大，交给页面自己的 fileContent 缓存
+        val url = absoluteUrl ?: buildUrl(path, query)
+        val h = extraHeaders.entries.sortedBy { it.key }.joinToString("|") { "${it.key}:${it.value}" }
+        return "${token?.hashCode() ?: 0}|${cacheGen}|$accept|$h|$url"
+    }
+
+    private fun cached(key: String): Resp? = synchronized(getLock) {
+        val hit = getCache[key] ?: return null
+        if (System.currentTimeMillis() - hit.at > GET_CACHE_MS) {
+            getCache.remove(key)
+            null
+        } else hit.resp
+    }
+
+    private fun putCache(key: String, resp: Resp) {
+        if (resp.body.length > 512_000) return // 超大 JSON 不占内存缓存
+        synchronized(getLock) { getCache[key] = CachedResp(resp, System.currentTimeMillis()) }
+    }
+
+    /** 手动“刷新最新状态”时调用：不能被 1.2 秒缓存挡住。 */
+    fun invalidateGetCache() {
+        synchronized(getLock) {
+            cacheGen++
+            getCache.clear()
+        }
+    }
 
     val gson: Gson = GsonBuilder().setLenient().create()
     private val JSON = "application/json; charset=utf-8".toMediaType()
@@ -151,6 +201,47 @@ object Api {
         extraHeaders: Map<String, String> = emptyMap(),
         onProgress: ((Long, Long) -> Unit)? = null,
         client: OkHttpClient = http
+    ): Resp {
+        val key = cacheKey(path, method, body, query, accept, absoluteUrl, extraHeaders, onProgress)
+        if (key != null) {
+            cached(key)?.let { return it }
+            var owner = false
+            val flight = synchronized(getLock) {
+                getInFlight[key] ?: CompletableDeferred<Resp>().also {
+                    getInFlight[key] = it
+                    owner = true
+                }
+            }
+            if (!owner) return flight.await()
+            try {
+                val resp = execNetwork(path, method, body, query, accept, absoluteUrl, extraHeaders, onProgress, client)
+                putCache(key, resp)
+                flight.complete(resp)
+                return resp
+            } catch (e: Exception) {
+                flight.completeExceptionally(e)
+                throw e
+            } finally {
+                synchronized(getLock) {
+                    if (getInFlight[key] === flight) getInFlight.remove(key)
+                }
+            }
+        }
+        val resp = execNetwork(path, method, body, query, accept, absoluteUrl, extraHeaders, onProgress, client)
+        if (method != "GET") invalidateGetCache()
+        return resp
+    }
+
+    private suspend fun execNetwork(
+        path: String,
+        method: String,
+        body: String?,
+        query: Map<String, String?>,
+        accept: String,
+        absoluteUrl: String?,
+        extraHeaders: Map<String, String>,
+        onProgress: ((Long, Long) -> Unit)?,
+        client: OkHttpClient
     ): Resp {
         var last: Exception? = null
         repeat(2) { i ->
@@ -1076,6 +1167,9 @@ object Api {
     // ---------------- 发行版 ----------------
     suspend fun releases(o: String, r: String, page: Int = 1): Page<Release> =
         callList("/repos/$o/$r/releases", mapOf("per_page" to "20", "page" to "$page"))
+    /** 概览页只要最近一条；直接走 latest，避免下载整页发行版和全部附件。 */
+    suspend fun latestRelease(o: String, r: String): Release? =
+        runCatching { callObj("/repos/$o/$r/releases/latest", Release::class.java) }.getOrNull()
     suspend fun release(o: String, r: String, id: Long): Release = callObj("/repos/$o/$r/releases/$id", Release::class.java)
     suspend fun createRelease(o: String, r: String, tag: String, name: String?, body: String?, draft: Boolean, prerelease: Boolean, target: String?): Release {
         val jo = JsonObject().apply {

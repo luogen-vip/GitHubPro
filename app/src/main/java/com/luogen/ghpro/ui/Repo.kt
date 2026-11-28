@@ -54,6 +54,8 @@ import com.luogen.ghpro.data.TranslateApi
 import com.luogen.ghpro.data.Page
 import com.luogen.ghpro.data.User
 import com.luogen.ghpro.download.Downloader
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -98,53 +100,50 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
         lastToast = Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).also { it.show() }
     }
 
-    suspend fun load() {
+    suspend fun load(silent: Boolean = false) {
         try {
-            val r = Api.repo(owner, name)
-            repo = r
-            UiCache.repoData[key] = r
-            error = null
-            loading = false
-            runCatching {
-                val st = Api.isStarred(owner, name)
-                starred = st
-                starReady = true
-                UiCache.repoStarred[key] = st
-                Cfg.setStarredCached(key, st)
+            // 仓库本体、Star、订阅、语言、最近发布互不依赖，并发拉取；
+            // 仓库本体一回来就先渲染，其余状态随后同帧补上，不再一项一项排队。
+            coroutineScope {
+                val repoJob = async { Api.repo(owner, name) }
+                val starJob = async { runCatching { Api.isStarred(owner, name) }.getOrNull() }
+                val watchStateJob = async { runCatching { Api.isWatching(owner, name) }.getOrNull() }
+                val langJob = async { runCatching { Api.languages(owner, name) }.getOrNull() }
+                val releaseJob = async { Api.latestRelease(owner, name)?.published_at }
+
+                val r = repoJob.await()
+                repo = r
+                UiCache.repoData[key] = r
+                error = null
+                loading = false
+
+                starJob.await()?.let { st ->
+                    starred = st
+                    starReady = true
+                    UiCache.repoStarred[key] = st
+                    Cfg.setStarredCached(key, st)
+                }
+                watchStateJob.await()?.let { real ->
+                    val local = UiCache.repoWatchOverride(key)
+                    if (local == null) { watching = real; UiCache.repoWatching[key] = real }
+                }
+                langJob.await()?.let { languages = it; UiCache.repoLangs[key] = it }
+                releaseJob.await()?.let { latestReleaseAt = it }
             }
-            runCatching {
-                val real = Api.isWatching(owner, name)
-                val local = UiCache.repoWatchOverride(key)
-                if (local == null) { watching = real; UiCache.repoWatching[key] = real }
-            }
-            runCatching { languages = Api.languages(owner, name); UiCache.repoLangs[key] = languages }
-            runCatching { Api.releases(owner, name).items.firstOrNull()?.published_at?.let { v -> latestReleaseAt = v } }
-        } catch (e: Exception) {
-            error = if (e.message?.contains("404") == true || e.message?.contains("Not Found", true) == true)
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) {
+            if (!silent) error = if (e.message?.contains("404") == true || e.message?.contains("Not Found", true) == true)
                 "仓库不存在：作者可能已经删除、改名，或把它改成了私有仓库。\n如果它原本在你的 Star 列表里，会自动收到“仓库已消失”的通知。"
             else e.message
         } finally { loading = false }
     }
 
-    // 有缓存就直接用缓存，不再自动重复请求；需要最新数据用右上角刷新
+    // 缓存先秒开，随后立刻后台核对最新；不再等 30 秒，也不再一项一项排队。
     LaunchedEffect(owner, name) {
         if (UiCache.repoData[key] == null) load()
         else {
             repo = UiCache.repoData[key]; loading = false
-            // 缓存可能不是最新：进页面时把 Star / 关注状态重新核对一遍（失败就继续用缓存，不挡页面）
-            scope.launch {
-                runCatching { Api.repo(owner, name) }.onSuccess { fresh ->
-                    // 缓存只负责秒开；进页面后立刻用服务端统计覆盖，Star/关注/复刻/议题数都是真值
-                    if (statPending == 0) { repo = fresh; UiCache.repoData[key] = fresh }
-                }
-                runCatching { Api.isStarred(owner, name) }.onSuccess {
-                    starred = it; starReady = true; UiCache.repoStarred[key] = it; Cfg.setStarredCached(key, it)
-                }
-                runCatching { Api.isWatching(owner, name) }.onSuccess { real ->
-                    val local = UiCache.repoWatchOverride(key)
-                    if (local == null) { watching = real; UiCache.repoWatching[key] = real }
-                }
-            }
+            scope.launch { load(silent = true) }
         }
     }
     LaunchedEffect(key) { IssueCounts.ensure(key) }
@@ -328,6 +327,7 @@ fun RepoScreen(nav: NavController, owner: String, name: String) {
                         DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                             DropdownMenuItem(text = { Text("刷新最新状态") }, leadingIcon = { Icon(Icons.Filled.Refresh, null) }, onClick = {
                                 showMenu = false
+                                Api.invalidateGetCache()
                                 UiCache.repoData.remove(key); UiCache.repoRuns.remove(key); UiCache.repoIssues.remove(key)
                                 UiCache.repoPulls.remove(key); UiCache.repoReleases.remove(key); UiCache.repoCommits.remove(key)
                                 UiCache.codeListing.keys.filter { it.startsWith("$key|") }.forEach { UiCache.codeListing.remove(it) }
@@ -711,13 +711,14 @@ fun OverviewTab(
     }
 
     LaunchedEffect(owner, name) {
-        // 同一个仓库切到代码/议题再切回概览：README 不重新请求、不先空后长，滚动位置才不会被拉回顶部。
-        if (key in UiCache.repoReadmeLoaded) {
-            readme = UiCache.repoReadme[key]
+        // 先用缓存秒开，再静默核对最新 README；不先清空，滚动位置不会被拉回顶部。
+        val cached = UiCache.repoReadme[key]
+        if (cached != null) {
+            readme = cached
             readmeLoading = false
-            return@LaunchedEffect
+        } else {
+            readmeLoading = readme == null
         }
-        readmeLoading = readme == null
         val loaded = runCatching { Api.fileContent(owner, name, "README.md", r.default_branch) }
             .recoverCatching { Api.fileContent(owner, name, "readme.md", r.default_branch) }
             .getOrNull()
@@ -924,6 +925,12 @@ fun CommitsTab(nav: NavController, owner: String, name: String, repo: Repo) {
         val cached = UiCache.repoCommits[ck()]
         if (cached != null && cached.isNotEmpty()) { list = cached; loading = false; load(1, true, silent = true) } else load(1, true)
     }
+    LaunchedEffect(branch) {
+        while (isActive) {
+            delay(6_000L)
+            if (page == 1 && !loading) runCatching { load(1, true, silent = true) }
+        }
+    }
     LaunchedEffect(Unit) {
         runCatching { Api.branches(owner, name).map { it.name } }.onSuccess { if (it.isNotEmpty()) branches = it }
     }
@@ -975,11 +982,15 @@ fun ContributorsTab(nav: NavController, owner: String, name: String) {
     var list by remember { mutableStateOf(UiCache.repoContributors[ck] ?: emptyList()) }
     var loading by remember { mutableStateOf(list.isEmpty()) }
     LaunchedEffect(owner, name) {
-        if (list.isEmpty()) {
-            list = runCatching { Api.contributors(owner, name) }.getOrDefault(emptyList())
-            UiCache.repoContributors[ck] = list
+        // 贡献者是真实数据，页面开着就持续补最新；有缓存先显示，不闪 loading。
+        while (isActive) {
+            runCatching { Api.contributors(owner, name) }.onSuccess {
+                list = it
+                UiCache.repoContributors[ck] = it
+            }
+            loading = false
+            delay(8_000L)
         }
-        loading = false
     }
     if (loading) { LoadingBox(); return }
     if (list.isEmpty()) { EmptyBox("暂无贡献者数据"); return }

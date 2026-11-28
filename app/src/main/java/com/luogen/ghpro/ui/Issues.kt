@@ -139,18 +139,17 @@ fun IssueListTab(nav: NavController, owner: String, name: String) {
             val age = System.currentTimeMillis() - issueLocalPoke
             if (age in 0..1500L) delay(1500L - age)
         }
-        // 刚返回时只要缓存还新鲜就不请求，避免“每次返回都加载”；超过 30 秒才后台静默补最新。
-        val fresh = syncAt != null && System.currentTimeMillis() - syncAt < 30_000L
+        // 缓存只负责秒开；每次进入都立刻后台补最新，不再等 30 秒。
         if (cached == null || syncAt == null) load(1, true)
-        else if (!fresh) load(1, true, silent = true)
+        else load(1, true, silent = true)
     }
     // 页面停留时后台补最新；不阻塞列表，也不改变当前滚动位置。
     LaunchedEffect(state) {
         while (isActive) {
-            delay(8_000L)
+            delay(4_000L)
             if (page == 1 && !loading) {
                 val at = UiCache.issueSyncAt[listKey()] ?: 0L
-                if (System.currentTimeMillis() - at >= 8_000L) runCatching { load(1, true, silent = true) }
+                if (System.currentTimeMillis() - at >= 4_000L) runCatching { load(1, true, silent = true) }
             }
         }
     }

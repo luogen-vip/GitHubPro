@@ -27,6 +27,7 @@ import com.luogen.ghpro.data.Api
 import com.luogen.ghpro.data.Discussion
 import com.luogen.ghpro.data.Repo
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 @Composable
@@ -53,7 +54,7 @@ fun DiscussionsTab(nav: NavController, owner: String, name: String, repo: Repo) 
         }
     }
 
-    suspend fun load(showLoading: Boolean = true) {
+    suspend fun load(showLoading: Boolean = true, silent: Boolean = false) {
         if (showLoading) loading = true
         try {
             val page = Api.discussions(owner, name)
@@ -62,16 +63,25 @@ fun DiscussionsTab(nav: NavController, owner: String, name: String, repo: Repo) 
             if (page.enabled) UiCache.repoDiscussions[dk] = list else UiCache.repoDiscussions.remove(dk)
             error = null
             msg = if (!page.enabled) "GitHub 返回：这个仓库还没有开启 Discussions" else null
-        } catch (e: Exception) {
-            // 网络/权限错误就如实显示错误，绝不再把“没读到”推断成“已开启”
-            error = e.message
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) {
+            // 静默轮询失败时保留当前列表；只有首屏没有数据才把错误铺满页面。
+            if (!silent || list.isEmpty()) error = e.message
             msg = null
         }
         loading = false
     }
     LaunchedEffect(owner, name, repo.has_discussions) {
-        // 有缓存也静默复查服务端开关；缓存先展示，但绝不把“没开”缓存成“已开启”
-        if (repo.has_discussions) load(showLoading = list.isEmpty()) else loading = false
+        // 有缓存也先展示，紧接着静默复查；停留期间每 4 秒补一次最新讨论。
+        if (!repo.has_discussions) {
+            loading = false
+            return@LaunchedEffect
+        }
+        load(showLoading = list.isEmpty())
+        while (isActive) {
+            delay(4_000L)
+            load(showLoading = false, silent = true)
+        }
     }
 
     when {
@@ -167,14 +177,24 @@ fun DiscussionDetailScreen(nav: NavController, owner: String, name: String, numb
         if (restored) snapshotFlow { scrollState.value }.collect { UiCache.discussionScroll[dkey] = it }
     }
 
-    suspend fun load() {
+    suspend fun load(silent: Boolean = false) {
         try {
             d = Api.discussionDetail(owner, name, number)
             error = if (d == null) "没有找到这个讨论" else null
-        } catch (e: Exception) { error = e.message }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) {
+            // 已有内容时轮询失败不能把正文清成错误页。
+            if (!silent || d == null) error = e.message
+        }
         loading = false
     }
-    LaunchedEffect(number) { load() }
+    LaunchedEffect(number) {
+        load()
+        while (isActive) {
+            delay(4_000L)
+            load(silent = true)
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,

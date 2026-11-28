@@ -11,8 +11,8 @@ android {
         applicationId = "com.luogen.ghpro"
         minSdk = 26
         targetSdk = 34
-        versionCode = 55
-        versionName = "1.0.54"
+        versionCode = 56
+        versionName = "1.0.55"
         vectorDrawables { useSupportLibrary = true }
     }
 

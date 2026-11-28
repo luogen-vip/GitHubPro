@@ -12,17 +12,23 @@ import kotlinx.coroutines.sync.withLock
  */
 object IssueCounts {
     private val map = mutableStateMapOf<String, Int>()
-    private val tried = HashSet<String>()
+    private val tried = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val lastAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val mutex = Mutex()
+    private const val FRESH_MS = 30_000L
 
     fun get(full: String): Int? = map[full]
 
     suspend fun loadBatch(repos: List<Repo>) {
-        val todo = repos.map { it.full_name }.filter { it.contains("/") && it !in tried }.distinct()
+        val now = System.currentTimeMillis()
+        val todo = repos.map { it.full_name }
+            .filter { it.contains("/") && (it !in tried || now - (lastAt[it] ?: 0L) > FRESH_MS) }
+            .distinct()
         if (todo.isEmpty()) return
         mutex.withLock {
-            todo.filter { it !in tried }.chunked(25).forEach { chunk ->
-                chunk.forEach { tried.add(it) }
+            todo.filter { it !in tried || System.currentTimeMillis() - (lastAt[it] ?: 0L) > FRESH_MS }
+                .chunked(25).forEach { chunk ->
+                chunk.forEach { tried.add(it); lastAt[it] = System.currentTimeMillis() }
                 val res = runCatching {
                     Api.issueCounts(chunk.map { it.substringBefore("/") to it.substringAfter("/") })
                 }.getOrDefault(emptyMap())
@@ -39,10 +45,13 @@ object IssueCounts {
     fun invalidate(full: String) {
         map.remove(full)
         tried.remove(full)
+        lastAt.remove(full)
     }
 
     suspend fun ensure(full: String) {
-        if (!full.contains("/") || map.containsKey(full) || full in tried) return
+        if (!full.contains("/")) return
+        val fresh = map.containsKey(full) && System.currentTimeMillis() - (lastAt[full] ?: 0L) <= FRESH_MS
+        if (fresh) return
         loadBatch(listOf(Repo(id = 0, name = full.substringAfter("/"), full_name = full,
             owner = null)))
     }

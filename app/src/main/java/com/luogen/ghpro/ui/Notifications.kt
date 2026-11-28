@@ -34,6 +34,7 @@ import com.luogen.ghpro.data.NotificationSubject
 import com.luogen.ghpro.data.Repo
 import com.luogen.ghpro.data.LocalNotice
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /** 把 App 自己记录的工作流/PR/发行版动态转换成通知列表项，旧的 GitHub 通知接口没有这些也要能看到。 */
@@ -299,7 +300,7 @@ fun NotificationsScreen(nav: NavController) {
         }
     }
 
-    suspend fun load(showLoading: Boolean = true) {
+    suspend fun load(showLoading: Boolean = true, silent: Boolean = false) {
         if (showLoading) loading = true
         try {
             val data = Api.notifications(all)
@@ -311,10 +312,14 @@ fun NotificationsScreen(nav: NavController) {
             error = null
             UiCache.notifAll = all
             UiCache.notifSnaps[all] = NotifSnap(list, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset)
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) {
             val locals = localAsNotifications(all)
             if (list.isEmpty()) list = prune(locals)
-            error = if (locals.isEmpty()) e.message else null
+            // 后台轮询失败时保留已有通知；只有页面真的没内容才报错。
+            error = if (!silent || list.isEmpty()) {
+                if (locals.isEmpty()) e.message else null
+            } else null
         }
         loading = false
     }
@@ -337,9 +342,18 @@ fun NotificationsScreen(nav: NavController) {
             error = null
             loading = false
             if (snap.index > 0 || snap.offset > 0) listState.scrollToItem(snap.index, snap.offset)
+            // 快照秒开，但通知必须继续追最新；后台刷新不闪 loading。
+            load(showLoading = false, silent = true)
         } else {
             list = emptyList()
             load(true)
+        }
+    }
+    // 通知页停留时每 5 秒真实拉一次远端；本地动态仍由 Bus.tick 立即合并。
+    LaunchedEffect(all) {
+        while (isActive) {
+            delay(5_000L)
+            if (!loading) load(showLoading = false, silent = true)
         }
     }
     DisposableEffect(all) {

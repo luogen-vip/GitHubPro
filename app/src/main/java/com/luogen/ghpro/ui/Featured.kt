@@ -161,8 +161,8 @@ fun FeaturedScreen(nav: NavController) {
             } else if (listState.firstVisibleItemIndex != snap.index || listState.firstVisibleItemScrollOffset != snap.offset) {
                 listState.scrollToItem(snap.index, snap.offset)
             }
-            // 刚切换排序、或缓存超过 40 秒才静默校准；不遮挡、不跳位置。
-            if (fromSwitch || System.currentTimeMillis() - lastSync >= 40_000L) runCatching { load(true) }
+            // 刚切换排序、或缓存超过 20 秒才静默校准；不遮挡、不跳位置。
+            if (fromSwitch || System.currentTimeMillis() - lastSync >= 20_000L) runCatching { load(true) }
         } else {
             // 只用 GitHub 搜索接口真实返回的仓库；接口失败就显示失败/重试，不显示内置仓库列表。
             list = emptyList(); total = 0; lastSync = 0
@@ -199,15 +199,15 @@ fun FeaturedScreen(nav: NavController) {
     }
     DisposableEffect(sort) { onDispose { saveFeatured() } }
 
-    // 每 40 秒自动刷新，排名变化自己更新
+    // 每 20 秒自动刷新，排名变化自己更新
     LaunchedEffect(sort) {
         while (isActive) {
-            delay(40_000L)
+            delay(20_000L)
             if (loading) continue
             if (list.isEmpty()) {
                 // 首屏失败/超时后不要停在那里；40 秒后再自动试一次。
                 runCatching { load() }
-            } else if (System.currentTimeMillis() - lastSync >= 40_000L) {
+            } else if (System.currentTimeMillis() - lastSync >= 20_000L) {
                 runCatching { load(true) }
             }
         }
